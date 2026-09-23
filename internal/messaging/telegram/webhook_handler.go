@@ -2,10 +2,10 @@ package telegram
 
 import (
 	"context"
-	"log"
 
 	"github.com/gofiber/fiber/v2"
 
+	"aura-saku/internal/logger"
 	"aura-saku/internal/service/bot"
 )
 
@@ -26,7 +26,7 @@ func NewWebhookHandler(client *Client, botSvc *bot.Service, secretToken string) 
 
 		msg, err := client.ParseWebhookPayload(c.Body())
 		if err != nil {
-			log.Printf("telegram webhook: failed to parse payload: %v", err)
+			logger.Error(logger.TelegramParseFailed, "telegram webhook parse payload", err)
 			return c.SendStatus(fiber.StatusBadRequest)
 		}
 

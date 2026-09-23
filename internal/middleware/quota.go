@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -11,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"aura-saku/internal/apperror"
+	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
 )
@@ -44,7 +44,7 @@ func DailyQuota(redisClient *redis.Client, db *gorm.DB, freeQuota int) fiber.Han
 
 		count, err := redisClient.Get(ctx, quotaKey).Int()
 		if err != nil && err != redis.Nil {
-			log.Printf("daily quota: redis get failed, failing open: %v", err)
+			logger.Error(logger.RedisOpFailed, "daily quota redis get, failing open", err)
 			return c.Next()
 		}
 

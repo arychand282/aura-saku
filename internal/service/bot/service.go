@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 
 	"gorm.io/gorm"
 
 	"aura-saku/internal/ai"
 	"aura-saku/internal/apperror"
+	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
 	"aura-saku/internal/service/reconciliation"
@@ -44,12 +44,12 @@ func NewService(db *gorm.DB, messenger messaging.Messenger, aiClient ai.AIClient
 func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessage) {
 	user, err := s.getOrCreateUser(msg.ChatID)
 	if err != nil {
-		log.Printf("bot: get or create user for chat %d: %v", msg.ChatID, err)
+		logger.Error(logger.SvcUserResolveFailed, fmt.Sprintf("get or create user for chat %d", msg.ChatID), err)
 		return
 	}
 
 	if err := s.messenger.SendTypingIndicator(ctx, msg.ChatID); err != nil {
-		log.Printf("bot: send typing indicator: %v", err)
+		logger.Error(logger.TelegramSendFailed, fmt.Sprintf("send typing indicator to chat %d", msg.ChatID), err)
 	}
 
 	switch msg.Command {
@@ -82,7 +82,7 @@ func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messag
 			s.reply(ctx, msg.ChatID, "You don't have any transactions to undo yet.")
 			return
 		}
-		log.Printf("bot: undo last transaction for user %d: %v", user.ID, err)
+		logger.Error(logger.SvcUndoFailed, fmt.Sprintf("undo last transaction for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Something went wrong undoing your last transaction.")
 		return
 	}
@@ -105,7 +105,7 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 			s.reply(ctx, msg.ChatID, "Balance sync isn't wired up yet — coming in a future update.")
 			return
 		}
-		log.Printf("bot: sync balance for user %d: %v", user.ID, err)
+		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("sync balance for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Something went wrong syncing your balance.")
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		source = models.SourceVoice
 		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID)
 		if dlErr != nil {
-			log.Printf("bot: download voice file for user %d: %v", user.ID, dlErr)
+			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download voice file for user %d", user.ID), dlErr)
 			s.reply(ctx, msg.ChatID, "Sorry, I couldn't download your voice note. Please try again.")
 			return
 		}
@@ -137,7 +137,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	if err != nil {
-		log.Printf("bot: AI parse error for user %d: %v", user.ID, err)
+		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Sorry, I had trouble processing that. Please try again in a moment.")
 		return
 	}
@@ -149,7 +149,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if err != nil {
-		log.Printf("bot: create transaction for user %d: %v", user.ID, err)
+		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Something went wrong saving your transaction.")
 		return
 	}
@@ -162,6 +162,6 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {
 	if err := s.messenger.SendMessage(ctx, chatID, text); err != nil {
-		log.Printf("bot: send reply to chat %d: %v", chatID, err)
+		logger.Error(logger.TelegramSendFailed, fmt.Sprintf("send reply to chat %d", chatID), err)
 	}
 }

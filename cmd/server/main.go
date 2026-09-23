@@ -14,6 +14,7 @@ import (
 	"aura-saku/internal/api"
 	"aura-saku/internal/config"
 	"aura-saku/internal/db"
+	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging/telegram"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
@@ -25,26 +26,26 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config load: %v", err)
+		logger.Fatal(logger.CfgLoadFailed, "config load", err)
 	}
 
 	gormDB, err := db.NewPostgres(cfg)
 	if err != nil {
-		log.Fatalf("postgres connect: %v", err)
+		logger.Fatal(logger.DBConnectFailed, "postgres connect", err)
 	}
 
 	redisClient, err := db.NewRedis(cfg)
 	if err != nil {
-		log.Fatalf("redis connect: %v", err)
+		logger.Fatal(logger.RedisConnectFailed, "redis connect", err)
 	}
 
 	if err := db.RunMigrations(gormDB); err != nil {
-		log.Fatalf("run migrations: %v", err)
+		logger.Fatal(logger.DBMigrationFailed, "run migrations", err)
 	}
 
 	aiClient, err := factory.NewAIClient(cfg)
 	if err != nil {
-		log.Fatalf("build AI client: %v", err)
+		logger.Fatal(logger.AIClientBuildFailed, "build AI client", err)
 	}
 
 	telegramClient := telegram.New(cfg.TelegramBotToken)
@@ -72,7 +73,7 @@ func main() {
 		addr := ":" + cfg.AppPort
 		log.Printf("aura-saku listening on %s (env=%s, ai_provider=%s)", addr, cfg.AppEnv, aiClient.ProviderName())
 		if err := app.Listen(addr); err != nil {
-			log.Fatalf("fiber listen: %v", err)
+			logger.Fatal(logger.ServerListenFailed, "fiber listen", err)
 		}
 	}()
 
@@ -84,7 +85,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {
-		log.Printf("shutdown error: %v", err)
+		logger.Error(logger.ServerShutdownFailed, "graceful shutdown", err)
 	}
 	log.Println("server stopped")
 }

@@ -2,13 +2,13 @@ package middleware
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 
 	"aura-saku/internal/apperror"
+	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 )
 
@@ -29,7 +29,7 @@ func RateLimiter(redisClient *redis.Client, windowSeconds, maxRequests int) fibe
 
 		count, err := redisClient.Incr(ctx, key).Result()
 		if err != nil {
-			log.Printf("rate limiter: redis incr failed, failing open: %v", err)
+			logger.Error(logger.RedisOpFailed, "rate limiter redis incr, failing open", err)
 			return c.Next()
 		}
 		if count == 1 {
