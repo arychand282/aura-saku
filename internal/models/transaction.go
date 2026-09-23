@@ -30,8 +30,8 @@ const (
 // aggregation is always done in a single consistent currency without ever
 // mutating the original recorded values.
 type Transaction struct {
-	ID         uint `gorm:"primaryKey"`
-	UserID     uint `gorm:"not null;index"`
+	ID         uint  `gorm:"primaryKey"`
+	UserID     uint  `gorm:"not null;index"`
 	CategoryID *uint `gorm:"index"`
 
 	Type        TransactionType `gorm:"size:15;not null;index"`

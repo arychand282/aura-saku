@@ -52,7 +52,7 @@ type inlineData struct {
 }
 
 type genRequest struct {
-	Contents []genContent `json:"contents"`
+	Contents         []genContent `json:"contents"`
 	GenerationConfig struct {
 		ResponseMimeType string `json:"responseMimeType"`
 	} `json:"generationConfig"`

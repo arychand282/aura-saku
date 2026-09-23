@@ -76,17 +76,20 @@ func (s *Service) getOrCreateUser(chatID int64) (*models.User, error) {
 }
 
 func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
-	_, err := s.txSvc.UndoLast(ctx, user.ID)
+	undoneTx, err := s.txSvc.UndoLast(ctx, user.ID)
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotImplemented) {
-			s.reply(ctx, msg.ChatID, "Undo isn't wired up yet — coming in a future update.")
+		if errors.Is(err, apperror.ErrNoUndoableTransaction) {
+			s.reply(ctx, msg.ChatID, "You don't have any transactions to undo yet.")
 			return
 		}
 		log.Printf("bot: undo last transaction for user %d: %v", user.ID, err)
 		s.reply(ctx, msg.ChatID, "Something went wrong undoing your last transaction.")
 		return
 	}
-	s.reply(ctx, msg.ChatID, "Your last transaction has been undone.")
+	s.reply(ctx, msg.ChatID, fmt.Sprintf(
+		"Undone: %s of %.2f %s.",
+		undoneTx.Type, undoneTx.OriginalAmount, undoneTx.OriginalCurrency,
+	))
 }
 
 func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -144,21 +147,17 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
-	_, err = s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
+	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotImplemented) {
-			s.reply(ctx, msg.ChatID, fmt.Sprintf(
-				"Got it: %s of %.2f %s for \"%s\" — saving transactions isn't wired up yet.",
-				parsed.Type, parsed.Amount, parsed.Currency, parsed.CategoryName,
-			))
-			return
-		}
 		log.Printf("bot: create transaction for user %d: %v", user.ID, err)
 		s.reply(ctx, msg.ChatID, "Something went wrong saving your transaction.")
 		return
 	}
 
-	s.reply(ctx, msg.ChatID, "Transaction recorded!")
+	s.reply(ctx, msg.ChatID, fmt.Sprintf(
+		"Recorded: %s of %.2f %s for \"%s\".",
+		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName,
+	))
 }
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {
