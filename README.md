@@ -66,8 +66,17 @@ internal/messaging Messenger interface + telegram/whatsapp implementations
 internal/middleware  input length, rate limit, daily quota, recover/logger
 internal/service  bot (command routing), transaction, budget, reconciliation, fx
 internal/api      REST router + handlers for the future Next.js dashboard
+internal/logger   error-code registry + logging helpers
 pkg/httpresponse  JSON response envelope helpers
 ```
+
+## Debugging production errors
+
+Every error/fatal log line is prefixed with a stable code, e.g.:
+```
+[AURA-TG-002] send reply to chat 777: telegram sendMessage error (status 404): ...
+```
+Look up what a code means (and every code that exists) in `internal/logger/logger.go` — it's a flat, single-file registry, grep it by the code shown in the log.
 
 ## What's implemented vs. TODO
 
