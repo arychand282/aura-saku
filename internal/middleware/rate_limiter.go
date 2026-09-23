@@ -1,0 +1,47 @@
+package middleware
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
+
+	"aura-saku/internal/apperror"
+	"aura-saku/internal/messaging"
+)
+
+// RateLimiter is a Redis-backed fixed-window burst guard per Telegram chat
+// ID: INCR the window counter, set its TTL on first hit, and reject once the
+// count exceeds maxRequests within windowSeconds. On Redis errors this fails
+// OPEN (allows the request through) so a Redis outage doesn't take down the
+// whole bot — the daily quota check downstream remains the hard cost cap.
+func RateLimiter(redisClient *redis.Client, windowSeconds, maxRequests int) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		msg, ok := c.Locals(IncomingMessageLocalsKey).(*messaging.IncomingMessage)
+		if !ok {
+			return c.Next()
+		}
+
+		ctx := c.Context()
+		key := fmt.Sprintf("aura:ratelimit:%d", msg.ChatID)
+
+		count, err := redisClient.Incr(ctx, key).Result()
+		if err != nil {
+			log.Printf("rate limiter: redis incr failed, failing open: %v", err)
+			return c.Next()
+		}
+		if count == 1 {
+			redisClient.Expire(ctx, key, time.Duration(windowSeconds)*time.Second)
+		}
+
+		if int(count) > maxRequests {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": apperror.ErrRateLimited.Error(),
+			})
+		}
+
+		return c.Next()
+	}
+}
