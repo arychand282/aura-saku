@@ -78,6 +78,10 @@ Every error/fatal log line is prefixed with a stable code, e.g.:
 ```
 Look up what a code means (and every code that exists) in `internal/logger/logger.go` — it's a flat, single-file registry, grep it by the code shown in the log.
 
+## Timezone convention
+
+Backend and database are **UTC everywhere**, enforced at the connection level rather than by convention alone: `internal/db/postgres.go` sets `TimeZone=UTC` on the Postgres DSN and overrides GORM's `NowFunc` to `time.Now().UTC()` (GORM's default uses server-local time for every `CreatedAt`/`UpdatedAt`/`DeletedAt`, which would otherwise silently leak the host machine's timezone into storage). Docker containers also set `TZ=UTC` as defense-in-depth. When writing new code, always call `time.Now().UTC()` explicitly rather than relying on ambient config — never assume the process is running in a UTC-timezone environment. Convert to a user's local time only at the display layer (Telegram replies, dashboard UI, CSV exports), using `User.TimezoneOffset`.
+
 ## What's implemented vs. TODO
 
 **Implemented:** config/DB/Redis wiring, all 9 GORM models + migrations, the full security middleware chain (length check → rate limit → daily quota, in that order, before any AI call), the Telegram webhook (fast-ack + async goroutine dispatch), Gemini text & voice-note parsing (structured JSON output with fence-stripping, validation, and one repair retry), bot command routing (`/start`, `/undo`, `/sync`, free-text/voice), and stub-but-functional dashboard endpoints (`/healthz`, `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`).

@@ -124,7 +124,7 @@ func (s *Service) resolveCategory(ctx context.Context, categoryName string) (*ui
 // TODO: handle richer relative hints ("3 days ago", weekday names, explicit
 // dates) — anything unrecognized currently defaults to now.
 func resolveOccurredAt(hint string) time.Time {
-	now := time.Now()
+	now := time.Now().UTC()
 	switch strings.ToLower(strings.TrimSpace(hint)) {
 	case "", "today", "now":
 		return now

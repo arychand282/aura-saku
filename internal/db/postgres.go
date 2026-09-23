@@ -12,8 +12,11 @@ import (
 )
 
 func NewPostgres(cfg *config.Config) (*gorm.DB, error) {
+	// TimeZone=UTC pins the session's TimeZone GUC so any implicit
+	// conversion/display on the Postgres side is UTC-consistent, matching
+	// NowFunc below and every timestamptz column in the schema.
 	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s TimeZone=UTC",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
 	)
 
@@ -24,6 +27,10 @@ func NewPostgres(cfg *config.Config) (*gorm.DB, error) {
 
 	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(gormLogLevel),
+		// NowFunc centralizes UTC for every GORM-managed timestamp
+		// (CreatedAt/UpdatedAt/DeletedAt on every model) — without this,
+		// GORM's default is time.Now() in the server process's local zone.
+		NowFunc: func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
