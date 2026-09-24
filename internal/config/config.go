@@ -77,6 +77,12 @@ type Config struct {
 	AdminLoginRateLimitWindowSeconds int
 	AdminLoginRateLimitMaxAttempts   int
 
+	// DashboardRateLimit guards the session-authenticated dashboard API
+	// (/api/v1/transactions, /reports/*, /export), keyed per effective user
+	// ID rather than IP — see middleware.SessionRateLimiter.
+	DashboardRateLimitWindowSeconds int
+	DashboardRateLimitMaxRequests   int
+
 	LogLevel string
 }
 
@@ -140,6 +146,9 @@ func Load() (*Config, error) {
 
 		AdminLoginRateLimitWindowSeconds: getEnvInt("ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300),
 		AdminLoginRateLimitMaxAttempts:   getEnvInt("ADMIN_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 5),
+
+		DashboardRateLimitWindowSeconds: getEnvInt("DASHBOARD_RATE_LIMIT_WINDOW_SECONDS", 60),
+		DashboardRateLimitMaxRequests:   getEnvInt("DASHBOARD_RATE_LIMIT_MAX_REQUESTS", 120),
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
 	}

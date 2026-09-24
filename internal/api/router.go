@@ -59,7 +59,10 @@ func Setup(app *fiber.App, deps Deps) {
 	// Every other dashboard endpoint requires a verified session. A "user"
 	// session is locked to its own data; an admin/superadmin session may
 	// pass ?user_id= to view any user's data.
-	v1 := app.Group("/api/v1", middleware.RequireSession(deps.Redis, deps.DB, deps.Config.JWTSecret))
+	v1 := app.Group("/api/v1",
+		middleware.RequireSession(deps.Redis, deps.DB, deps.Config.JWTSecret),
+		middleware.SessionRateLimiter(deps.Redis, deps.Config.DashboardRateLimitWindowSeconds, deps.Config.DashboardRateLimitMaxRequests),
+	)
 
 	txHandler := handlers.NewTransactionHandler(deps.DB)
 	v1.Get("/transactions", txHandler.List)
