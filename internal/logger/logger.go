@@ -34,6 +34,7 @@ const (
 	SvcUndoFailed        Code = "AURA-SVC-002" // transaction.Service.UndoLast failed
 	SvcSyncFailed        Code = "AURA-SVC-003" // reconciliation.Service.Sync failed
 	SvcCreateTxFailed    Code = "AURA-SVC-004" // transaction.Service.CreateFromParsed failed
+	SvcBudgetEvalFailed  Code = "AURA-SVC-005" // budget.Service.EvaluateBudget failed
 )
 
 // Error logs a recoverable error tagged with its code, e.g.:

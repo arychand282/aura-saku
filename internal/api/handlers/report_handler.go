@@ -8,7 +8,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
-	"aura-saku/internal/apperror"
 	"aura-saku/internal/models"
 	"aura-saku/internal/service/budget"
 	"aura-saku/pkg/httpresponse"
@@ -115,7 +114,8 @@ func (h *ReportHandler) TopCategories(c *fiber.Ctx) error {
 	})
 }
 
-// BudgetProgress delegates to budget.Service, which is TODO-stubbed for now.
+// BudgetProgress returns the user's current-month 50/30/20 status plus a
+// rollover suggestion for last month's surplus, if any.
 func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
 	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
 	if err != nil {
@@ -124,11 +124,18 @@ func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
 
 	status, err := h.budgetSvc.EvaluateBudget(c.Context(), uint(userID))
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotImplemented) {
-			return httpresponse.Error(c, fiber.StatusNotImplemented, "budget progress is not wired up yet")
-		}
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to evaluate budget")
 	}
 
-	return httpresponse.Success(c, fiber.StatusOK, status)
+	// Rollover suggestion is a nice-to-have on top of the core budget
+	// status; a failure here shouldn't fail the whole response.
+	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), uint(userID))
+	if err != nil {
+		rollover = ""
+	}
+
+	return httpresponse.Success(c, fiber.StatusOK, fiber.Map{
+		"status":              status,
+		"rollover_suggestion": rollover,
+	})
 }

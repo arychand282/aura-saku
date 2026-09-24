@@ -53,8 +53,8 @@ func main() {
 	fxSvc := fx.NewStaticService()
 	txSvc := transaction.NewService(gormDB, fxSvc)
 	budgetSvc := budget.NewService(gormDB)
-	reconSvc := reconciliation.NewService(gormDB)
-	botSvc := bot.NewService(gormDB, telegramClient, aiClient, txSvc, reconSvc)
+	reconSvc := reconciliation.NewService(gormDB, txSvc)
+	botSvc := bot.NewService(gormDB, telegramClient, aiClient, txSvc, budgetSvc, reconSvc)
 
 	app := fiber.New(fiber.Config{
 		AppName: "aura-saku",

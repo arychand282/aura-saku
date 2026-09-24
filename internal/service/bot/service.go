@@ -13,6 +13,7 @@ import (
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
+	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/transaction"
 )
@@ -26,15 +27,17 @@ type Service struct {
 	messenger messaging.Messenger
 	aiClient  ai.AIClient
 	txSvc     *transaction.Service
+	budgetSvc *budget.Service
 	reconSvc  *reconciliation.Service
 }
 
-func NewService(db *gorm.DB, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, reconSvc *reconciliation.Service) *Service {
+func NewService(db *gorm.DB, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service) *Service {
 	return &Service{
 		db:        db,
 		messenger: messenger,
 		aiClient:  aiClient,
 		txSvc:     txSvc,
+		budgetSvc: budgetSvc,
 		reconSvc:  reconSvc,
 	}
 }
@@ -99,17 +102,22 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 		return
 	}
 
-	_, err = s.reconSvc.Sync(ctx, user.ID, amount)
+	rec, err := s.reconSvc.Sync(ctx, user.ID, amount)
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotImplemented) {
-			s.reply(ctx, msg.ChatID, "Balance sync isn't wired up yet — coming in a future update.")
-			return
-		}
 		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("sync balance for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Something went wrong syncing your balance.")
 		return
 	}
-	s.reply(ctx, msg.ChatID, "Balance synced.")
+
+	if rec.Status == models.ReconMatched {
+		s.reply(ctx, msg.ChatID, fmt.Sprintf("Balance synced — matches your recorded balance of %.2f.", rec.CalculatedBalance))
+		return
+	}
+
+	s.reply(ctx, msg.ChatID, fmt.Sprintf(
+		"Found a %.2f discrepancy (your balance: %.2f, recorded: %.2f). I've logged an adjustment entry to keep things accurate — use /undo if that's wrong.",
+		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance,
+	))
 }
 
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -154,10 +162,24 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
-	s.reply(ctx, msg.ChatID, fmt.Sprintf(
+	reply := fmt.Sprintf(
 		"Recorded: %s of %.2f %s for \"%s\".",
 		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName,
-	))
+	)
+
+	// Instant budget feedback: only expenses can trip a Needs/Wants
+	// guardrail, so skip the lookup entirely for other transaction types.
+	if createdTx.Type == models.TxExpense {
+		if status, budgetErr := s.budgetSvc.EvaluateBudget(ctx, user.ID); budgetErr != nil {
+			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("evaluate budget for user %d", user.ID), budgetErr)
+		} else {
+			for _, warning := range status.Warnings {
+				reply += "\n⚠️ " + warning
+			}
+		}
+	}
+
+	s.reply(ctx, msg.ChatID, reply)
 }
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {

@@ -72,6 +72,46 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 	return tx, nil
 }
 
+// CreateAdjustment persists a system-generated balance adjustment
+// transaction (used by reconciliation.Service when /sync finds a
+// discrepancy between the user's actual and calculated balance). It always
+// records in the user's default currency, so no FX conversion applies.
+// Positive amount records an income adjustment (unrecorded money in);
+// negative records an expense adjustment (unrecorded money out).
+func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount float64, currency, description string) (*models.Transaction, error) {
+	txType := models.TxIncome
+	absAmount := amount
+	if amount < 0 {
+		txType = models.TxExpense
+		absAmount = -amount
+	}
+
+	tx := &models.Transaction{
+		UserID:           userID,
+		Type:             txType,
+		Description:      description,
+		OriginalAmount:   absAmount,
+		OriginalCurrency: strings.ToUpper(currency),
+		ExchangeRate:     1,
+		ConvertedAmount:  absAmount,
+		Source:           models.SourceSync,
+		RawInput:         description,
+		OccurredAt:       time.Now().UTC(),
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Omit("User").Create(tx).Error; err != nil {
+			return fmt.Errorf("insert adjustment transaction: %w", err)
+		}
+		return writeUndoHistory(txDB, userID, tx, "created")
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return tx, nil
+}
+
 // UndoLast soft-deletes the most recent transaction for a user and records
 // an UndoHistory("undone") snapshot in the same DB transaction.
 func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transaction, error) {
@@ -100,19 +140,70 @@ func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transactio
 	return &tx, nil
 }
 
+// defaultCategoryBuckets seeds newly-created categories with a best-effort
+// 50/30/20 bucket guess from common category names, so budget.Service has
+// something to group by without requiring a separate category-management
+// feature. This is a keyword heuristic, not a classifier — categories not
+// listed here default to BucketNone (counted in totals but not toward any
+// Needs/Wants/Savings limit) until a smarter classification exists.
+var defaultCategoryBuckets = map[string]models.BudgetBucket{
+	"food":           models.BucketNeeds,
+	"groceries":      models.BucketNeeds,
+	"rent":           models.BucketNeeds,
+	"housing":        models.BucketNeeds,
+	"utilities":      models.BucketNeeds,
+	"transport":      models.BucketNeeds,
+	"transportation": models.BucketNeeds,
+	"healthcare":     models.BucketNeeds,
+	"health":         models.BucketNeeds,
+	"insurance":      models.BucketNeeds,
+	"education":      models.BucketNeeds,
+	"bills":          models.BucketNeeds,
+
+	"entertainment": models.BucketWants,
+	"shopping":      models.BucketWants,
+	"dining":        models.BucketWants,
+	"restaurant":    models.BucketWants,
+	"travel":        models.BucketWants,
+	"hobby":         models.BucketWants,
+	"subscription":  models.BucketWants,
+	"coffee":        models.BucketWants,
+
+	"savings":        models.BucketSavings,
+	"investment":     models.BucketSavings,
+	"debt":           models.BucketSavings,
+	"emergency fund": models.BucketSavings,
+}
+
 func (s *Service) resolveCategory(ctx context.Context, categoryName string) (*uint, error) {
 	name := strings.ToLower(strings.TrimSpace(categoryName))
 	if name == "" {
 		return nil, nil
 	}
 
+	bucket := models.BucketNone
+	if b, ok := defaultCategoryBuckets[name]; ok {
+		bucket = b
+	}
+
 	var category models.Category
 	err := s.db.WithContext(ctx).
 		Where(models.Category{Name: name}).
-		Attrs(models.Category{Bucket: models.BucketNone, IsSystem: false}).
+		Attrs(models.Category{Bucket: bucket, IsSystem: false}).
 		FirstOrCreate(&category).Error
 	if err != nil {
 		return nil, err
+	}
+
+	// Self-heal: Attrs only applies when FirstOrCreate inserts a new row, so
+	// a category created before defaultCategoryBuckets had an entry for it
+	// (or before this heuristic existed at all) would otherwise stay
+	// BucketNone forever even once we know better.
+	if bucket != models.BucketNone && category.Bucket == models.BucketNone {
+		if err := s.db.WithContext(ctx).Model(&models.Category{}).Where("id = ?", category.ID).Update("bucket", bucket).Error; err != nil {
+			return nil, err
+		}
+		category.Bucket = bucket
 	}
 
 	return &category.ID, nil
