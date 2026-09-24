@@ -137,12 +137,24 @@ Running it again for the same email updates their name/password/role — it doub
 
 Dashboard endpoints (all session-gated): `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`. `/healthz` remains open (no session needed).
 
+**Webhook idempotency (`internal/idempotency`):** Telegram redelivers a webhook update if it doesn't get a timely 200 OK, and nothing previously deduplicated by `update_id` — a redelivered message got parsed and saved as a second, duplicate transaction. `NewWebhookHandler` now calls `idempotency.MarkSeen` (Redis `SET NX`, 24h TTL) before dispatching; a redelivery is ack'd 200 without reprocessing. Deliberately generic (namespace + id, not Telegram-specific) so a future WhatsApp webhook can reuse it under its own namespace.
+
 ## TODO (next session)
 
 - Bot/dashboard UX to create and select additional accounts (schema is ready — see Accounts above)
 - CSV/Excel export pagination or streaming if transaction history grows past the current 5000-row safety cap
 - Route-level authorization distinguishing `admin` vs `superadmin` (both currently pass the same `RequireSession` check — no admin-only-vs-superadmin-only endpoints exist yet to actually differentiate)
 - Set the session cookie's `Secure` flag once this is deployed behind real HTTPS (currently `false` so local HTTP dev works)
+
+## Known backend hardening gaps (not yet addressed)
+
+Surveyed but deliberately deferred — worth revisiting before real production traffic:
+
+- **No rate limiting on the dashboard API itself.** `/webhook/telegram` and `/auth/admin-login` are rate-limited; `/api/v1/transactions`, `/reports/*`, `/export` are not. A leaked/stolen session token could hammer these with no cap (cost/DB-load risk, not a data-exposure one, since auth is still required).
+- **Health check has no explicit timeout.** `sqlDB.Ping()`/`redis.Ping()` in `internal/api/handlers/health_handler.go` rely on driver defaults rather than a short deadline — a hung (not cleanly erroring) Postgres connection could make `/healthz` hang instead of failing fast, which matters for container orchestration liveness checks.
+- **No automated tests for `bot.Service` itself.** Every lower-level service (`transaction`, `budget`, `reconciliation`, `quota`, `reward`, `auth`, `idempotency`) has real test coverage; the command-routing layer tying them together (including the quota/reward gating logic in `enforceQuota`) is only verified by manual `curl` sessions, not regression tests.
+- **No CORS configuration yet.** Not exploitable today (no browser dashboard exists to call the API cross-origin), but needs deliberate setup (not a wildcard `*`, since sessions are cookie-based) once the Next.js frontend exists.
+- **No audit trail for admin `?user_id=` access.** Given this is financial data and multiple admins are planned, logging "admin X viewed user Y's data at time Z" is worth having before that becomes a real multi-admin system.
 
 ## Commands
 

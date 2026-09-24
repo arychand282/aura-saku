@@ -42,7 +42,7 @@ func Setup(app *fiber.App, deps Deps) {
 	app.Post("/webhook/telegram",
 		middleware.LimitInputLength(deps.TelegramClient, deps.Config.MaxInputChars),
 		middleware.RateLimiter(deps.Redis, deps.Config.RateLimitWindowSeconds, deps.Config.RateLimitMaxRequests),
-		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret),
+		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret, deps.Redis),
 	)
 
 	// Auth endpoints are registered directly on app (not the session-gated
