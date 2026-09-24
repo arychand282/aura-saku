@@ -168,13 +168,13 @@ func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResp
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
 	return c.chat(ctx, systemPrompt, "User message: "+userText)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
 	userContent := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
 		originalText, clarificationReply,
@@ -182,12 +182,12 @@ func (c *Client) AnswerClarification(ctx context.Context, originalText string, c
 	return c.chat(ctx, systemPrompt, userContent)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	transcript, err := c.transcribe(ctx, audioBytes, mimeType)
 	if err != nil {
 		return nil, nil, fmt.Errorf("transcribe audio: %w", err)
 	}
-	return c.ParseTransactionText(ctx, transcript, defaultCurrency)
+	return c.ParseTransactionText(ctx, transcript, defaultCurrency, preferredLanguage)
 }
 
 func (c *Client) transcribe(ctx context.Context, audioBytes []byte, mimeType string) (string, error) {

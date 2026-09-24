@@ -52,6 +52,7 @@ func (c *Client) ParseWebhookPayload(body []byte) (*messaging.IncomingMessage, e
 	}
 	if msg.From != nil {
 		incoming.UserID = msg.From.ID
+		incoming.LanguageCode = msg.From.LanguageCode
 	}
 
 	if msg.Voice != nil {

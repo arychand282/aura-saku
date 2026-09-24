@@ -72,7 +72,7 @@ func TestEvaluateBudget(t *testing.T) {
 		t.Fatalf("create wants expense: %v", err)
 	}
 
-	status, err := budgetSvc.EvaluateBudget(ctx, user.ID)
+	status, err := budgetSvc.EvaluateBudget(ctx, user.ID, models.LanguageEN)
 	if err != nil {
 		t.Fatalf("EvaluateBudget: %v", err)
 	}

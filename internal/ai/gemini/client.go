@@ -173,17 +173,17 @@ func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, 
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
 		{Text: "User message: " + userText},
 	}
 	return c.generate(ctx, parts)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
 		{Text: "Transcribe the following voice note and extract the transaction it describes."},
 		{InlineData: &inlineData{
 			MimeType: mimeType,
@@ -193,9 +193,9 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 	return c.generate(ctx, parts)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
 		{Text: "Original user message: " + originalText},
 		{Text: "The user was asked to clarify and replied: " + clarificationReply},
 		{Text: "Combine both messages into a single transaction extraction."},

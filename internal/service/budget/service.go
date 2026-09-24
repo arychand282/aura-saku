@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"aura-saku/internal/i18n"
 	"aura-saku/internal/models"
 )
 
@@ -34,7 +35,7 @@ func NewService(db *gorm.DB) *Service {
 // their configured Needs/Wants/Savings allocation of this period's income,
 // and flags anomalies: over-allocation, and a Wants spending pace projected
 // to overshoot by month end.
-func (s *Service) EvaluateBudget(ctx context.Context, userID uint) (*Status, error) {
+func (s *Service) EvaluateBudget(ctx context.Context, userID uint, lang models.Language) (*Status, error) {
 	b, err := s.getOrCreateActiveBudget(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve active budget: %w", err)
@@ -63,20 +64,17 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint) (*Status, err
 	}
 
 	if income <= 0 {
-		status.Warnings = append(status.Warnings,
-			"No income recorded yet this period — log your income (e.g. \"salary 5000000\") to enable budget limit tracking.")
+		status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetNoIncome))
 		return status, nil
 	}
 
 	if status.NeedsSpent > status.NeedsLimit {
-		status.Warnings = append(status.Warnings, fmt.Sprintf(
-			"Needs spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
+		status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetNeedsExceeded,
 			b.NeedsPercent, status.NeedsSpent, status.NeedsLimit))
 	}
 
 	if status.WantsSpent > status.WantsLimit {
-		status.Warnings = append(status.Warnings, fmt.Sprintf(
-			"Wants spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
+		status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetWantsExceeded,
 			b.WantsPercent, status.WantsSpent, status.WantsLimit))
 	} else if status.WantsLimit > 0 {
 		// Impulse/anomaly detector: project this month's Wants spend at the
@@ -84,9 +82,7 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint) (*Status, err
 		// allocation, even though it hasn't yet.
 		projected := status.WantsSpent / float64(now.Day()) * float64(daysInMonth(now))
 		if projected > status.WantsLimit*1.2 {
-			status.Warnings = append(status.Warnings, fmt.Sprintf(
-				"Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
-				projected, status.WantsLimit))
+			status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetWantsPace, projected, status.WantsLimit))
 		}
 	}
 
@@ -96,7 +92,7 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint) (*Status, err
 // SuggestRollover proposes shifting last calendar month's income-minus-expense
 // surplus into savings. Returns an empty string (no error) when there was no
 // surplus to suggest rolling over.
-func (s *Service) SuggestRollover(ctx context.Context, userID uint) (string, error) {
+func (s *Service) SuggestRollover(ctx context.Context, userID uint, lang models.Language) (string, error) {
 	now := time.Now().UTC()
 	prevMonthStart := startOfMonth(now.AddDate(0, -1, 0))
 	thisMonthStart := startOfMonth(now)
@@ -115,7 +111,7 @@ func (s *Service) SuggestRollover(ctx context.Context, userID uint) (string, err
 		return "", nil
 	}
 
-	return fmt.Sprintf("You had a surplus of %.2f last month — consider moving it into savings or investments.", surplus), nil
+	return i18n.T(lang, i18n.KeyBudgetRollover, surplus), nil
 }
 
 func (s *Service) getOrCreateActiveBudget(ctx context.Context, userID uint) (*models.Budget, error) {

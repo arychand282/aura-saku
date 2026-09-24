@@ -35,17 +35,20 @@ type UsageMetadata struct {
 // outside this package ever imports a vendor SDK directly.
 type AIClient interface {
 	// ParseTransactionText sends raw user text and expects back structured
-	// JSON conforming to ParsedTransaction.
-	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string) (*ParsedTransaction, *UsageMetadata, error)
+	// JSON conforming to ParsedTransaction. preferredLanguage ("id"/"en")
+	// controls what language ClarificationQuestion comes back in —
+	// category_name is always English regardless (see internal/ai/prompt),
+	// since it feeds internal budget categorization.
+	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
 
 	// TranscribeAndParseAudio handles voice notes. Providers with native
 	// audio support (Gemini) transcribe+parse in one round trip; providers
 	// without it would transcribe then internally call ParseTransactionText.
-	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string) (*ParsedTransaction, *UsageMetadata, error)
+	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
 
 	// AnswerClarification re-parses given the original ambiguous context
 	// plus the user's clarifying reply.
-	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string) (*ParsedTransaction, *UsageMetadata, error)
+	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
 
 	ProviderName() string
 }

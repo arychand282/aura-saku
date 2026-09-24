@@ -112,6 +112,8 @@ Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, t
 
 **Accounts (`internal/models.Account`, `internal/service/account`):** schema groundwork for multi-account support — every user gets one auto-created "Default" account, and every transaction/reconciliation is attributed to it. No bot/dashboard UX to create or select additional accounts yet (intentionally deferred); see the code comments on `Transaction.AccountID` and `reconciliation.balanceSign` for how a second account and cross-account transfers are expected to be modeled when that UX is built.
 
+**Language (`internal/i18n`):** every bot reply is localized to English or Bahasa Indonesia via `User.Language`, auto-detected from Telegram's own `language_code` on first contact (empty/unrecognized defaults to Indonesian, the primary market), overridable anytime with `/language en` or `/language id`. `category_name` is always extracted in English regardless of reply language, since it feeds the Needs/Wants/Savings bucket-classification keyword map in `internal/service/transaction` — only user-facing text (clarification questions, bot replies, budget warnings) is localized. The dashboard's `/api/v1/reports/budget-progress` also accepts an optional `?lang=` override independent of the user's stored bot-chat preference.
+
 Dashboard endpoints: `/healthz`, `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`.
 
 ## TODO (next session)

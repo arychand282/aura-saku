@@ -10,6 +10,7 @@ import (
 
 	"aura-saku/internal/ai"
 	"aura-saku/internal/apperror"
+	"aura-saku/internal/i18n"
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
@@ -45,7 +46,7 @@ func NewService(db *gorm.DB, messenger messaging.Messenger, aiClient ai.AIClient
 // HandleUpdate is the single entrypoint invoked (async, off the webhook's
 // request goroutine) for every inbound message.
 func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessage) {
-	user, err := s.getOrCreateUser(msg.ChatID)
+	user, err := s.getOrCreateUser(msg)
 	if err != nil {
 		logger.Error(logger.SvcUserResolveFailed, fmt.Sprintf("get or create user for chat %d", msg.ChatID), err)
 		return
@@ -57,20 +58,30 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 
 	switch msg.Command {
 	case "/start":
-		s.reply(ctx, msg.ChatID, "Welcome to Aura-Saku! Send me something like \"lunch 25000\" to record an expense, or a voice note.")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyWelcome))
 	case "/undo":
 		s.handleUndo(ctx, user, msg)
 	case "/sync":
 		s.handleSync(ctx, user, msg)
+	case "/language":
+		s.handleLanguage(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
 }
 
-func (s *Service) getOrCreateUser(chatID int64) (*models.User, error) {
+// getOrCreateUser resolves the user, seeding Language from Telegram's own
+// language_code on first contact (see i18n.DetectFromTelegramCode). Attrs
+// only applies on insert, so returning users keep whatever /language they
+// last chose.
+func (s *Service) getOrCreateUser(msg *messaging.IncomingMessage) (*models.User, error) {
 	var user models.User
-	result := s.db.Where(models.User{TelegramChatID: chatID}).
-		Attrs(models.User{DefaultCurrency: "IDR", Tier: models.TierFree}).
+	result := s.db.Where(models.User{TelegramChatID: msg.ChatID}).
+		Attrs(models.User{
+			DefaultCurrency: "IDR",
+			Tier:            models.TierFree,
+			Language:        i18n.DetectFromTelegramCode(msg.LanguageCode),
+		}).
 		FirstOrCreate(&user)
 	if result.Error != nil {
 		return nil, result.Error
@@ -78,46 +89,58 @@ func (s *Service) getOrCreateUser(chatID int64) (*models.User, error) {
 	return &user, nil
 }
 
+func (s *Service) handleLanguage(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	lang, ok := i18n.ParseCommandInput(msg.CommandArgs)
+	if !ok {
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyLanguageUsage))
+		return
+	}
+
+	if err := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", user.ID).Update("language", lang).Error; err != nil {
+		logger.Error(logger.SvcUserResolveFailed, fmt.Sprintf("update language for user %d", user.ID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyLanguageUsage))
+		return
+	}
+
+	s.reply(ctx, msg.ChatID, i18n.T(lang, i18n.KeyLanguageSet))
+}
+
 func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	undoneTx, err := s.txSvc.UndoLast(ctx, user.ID)
 	if err != nil {
 		if errors.Is(err, apperror.ErrNoUndoableTransaction) {
-			s.reply(ctx, msg.ChatID, "You don't have any transactions to undo yet.")
+			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoNone))
 			return
 		}
 		logger.Error(logger.SvcUndoFailed, fmt.Sprintf("undo last transaction for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, "Something went wrong undoing your last transaction.")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, fmt.Sprintf(
-		"Undone: %s of %.2f %s.",
-		undoneTx.Type, undoneTx.OriginalAmount, undoneTx.OriginalCurrency,
-	))
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoSuccess,
+		undoneTx.Type, undoneTx.OriginalAmount, undoneTx.OriginalCurrency))
 }
 
 func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	amount, err := strconv.ParseFloat(msg.CommandArgs, 64)
 	if err != nil {
-		s.reply(ctx, msg.ChatID, "Usage: /sync <actual balance>, e.g. /sync 1500000")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncUsage))
 		return
 	}
 
 	rec, err := s.reconSvc.Sync(ctx, user.ID, amount)
 	if err != nil {
 		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("sync balance for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, "Something went wrong syncing your balance.")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncFailed))
 		return
 	}
 
 	if rec.Status == models.ReconMatched {
-		s.reply(ctx, msg.ChatID, fmt.Sprintf("Balance synced — matches your recorded balance of %.2f.", rec.CalculatedBalance))
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncMatched, rec.CalculatedBalance))
 		return
 	}
 
-	s.reply(ctx, msg.ChatID, fmt.Sprintf(
-		"Found a %.2f discrepancy (your balance: %.2f, recorded: %.2f). I've logged an adjustment entry to keep things accurate — use /undo if that's wrong.",
-		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance,
-	))
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncDiscrepancy,
+		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance))
 }
 
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -128,33 +151,32 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		raw    string
 	)
 
+	preferredLanguage := string(user.Language)
+
 	if msg.IsVoice {
 		source = models.SourceVoice
 		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID)
 		if dlErr != nil {
 			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download voice file for user %d", user.ID), dlErr)
-			s.reply(ctx, msg.ChatID, "Sorry, I couldn't download your voice note. Please try again.")
+			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyVoiceDownloadFailed))
 			return
 		}
 		raw = "[voice note]"
-		parsed, _, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency)
+		parsed, _, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
 	} else {
 		source = models.SourceText
 		raw = msg.Text
-		parsed, _, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency)
+		parsed, _, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
 	}
 
 	if err != nil {
 		if errors.Is(err, apperror.ErrProviderAudioUnsupported) {
 			// Expected capability gap, not a failure — no error log.
-			s.reply(ctx, msg.ChatID, fmt.Sprintf(
-				"Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
-				s.aiClient.ProviderName(),
-			))
+			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyVoiceUnsupported, s.aiClient.ProviderName()))
 			return
 		}
 		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, "Sorry, I had trouble processing that. Please try again in a moment.")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble))
 		return
 	}
 
@@ -166,19 +188,17 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if err != nil {
 		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, "Something went wrong saving your transaction.")
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
 		return
 	}
 
-	reply := fmt.Sprintf(
-		"Recorded: %s of %.2f %s for \"%s\".",
-		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName,
-	)
+	reply := i18n.T(user.Language, i18n.KeyTransactionRecorded,
+		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName)
 
 	// Instant budget feedback: only expenses can trip a Needs/Wants
 	// guardrail, so skip the lookup entirely for other transaction types.
 	if createdTx.Type == models.TxExpense {
-		if status, budgetErr := s.budgetSvc.EvaluateBudget(ctx, user.ID); budgetErr != nil {
+		if status, budgetErr := s.budgetSvc.EvaluateBudget(ctx, user.ID, user.Language); budgetErr != nil {
 			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("evaluate budget for user %d", user.ID), budgetErr)
 		} else {
 			for _, warning := range status.Warnings {

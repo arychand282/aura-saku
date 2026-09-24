@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"aura-saku/internal/i18n"
 	"aura-saku/internal/models"
 	"aura-saku/internal/service/budget"
 	"aura-saku/pkg/httpresponse"
@@ -115,21 +116,26 @@ func (h *ReportHandler) TopCategories(c *fiber.Ctx) error {
 }
 
 // BudgetProgress returns the user's current-month 50/30/20 status plus a
-// rollover suggestion for last month's surplus, if any.
+// rollover suggestion for last month's surplus, if any. Warning messages are
+// localized to the user's stored Language, unless a `lang` query param
+// overrides it for this request (e.g. a dashboard viewed in a different
+// language than the user's bot chat preference).
 func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
 	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
 	}
 
-	status, err := h.budgetSvc.EvaluateBudget(c.Context(), uint(userID))
+	lang := h.resolveLanguage(c, uint(userID))
+
+	status, err := h.budgetSvc.EvaluateBudget(c.Context(), uint(userID), lang)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to evaluate budget")
 	}
 
 	// Rollover suggestion is a nice-to-have on top of the core budget
 	// status; a failure here shouldn't fail the whole response.
-	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), uint(userID))
+	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), uint(userID), lang)
 	if err != nil {
 		rollover = ""
 	}
@@ -138,4 +144,15 @@ func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
 		"status":              status,
 		"rollover_suggestion": rollover,
 	})
+}
+
+func (h *ReportHandler) resolveLanguage(c *fiber.Ctx, userID uint) models.Language {
+	if lang, ok := i18n.ParseCommandInput(c.Query("lang")); ok {
+		return lang
+	}
+	var user models.User
+	if err := h.db.Select("language").First(&user, userID).Error; err == nil && user.Language != "" {
+		return user.Language
+	}
+	return models.LanguageID
 }
