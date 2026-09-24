@@ -22,6 +22,7 @@ type TransactionRow struct {
 	ExchangeRate     float64   `json:"exchange_rate"`
 	ConvertedAmount  float64   `json:"converted_amount"`
 	Source           string    `json:"source"`
+	RawInput         string    `json:"raw_input"`
 }
 
 // fetchTransactionRows is the single query both the paginated dashboard
@@ -33,7 +34,8 @@ func fetchTransactionRows(ctx context.Context, db *gorm.DB, userID uint, limit, 
 		Select(`transactions.id, transactions.occurred_at, transactions.type,
 			COALESCE(categories.name, '') as category_name, transactions.description,
 			transactions.original_amount, transactions.original_currency,
-			transactions.exchange_rate, transactions.converted_amount, transactions.source`).
+			transactions.exchange_rate, transactions.converted_amount, transactions.source,
+			transactions.raw_input`).
 		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
 		Where("transactions.user_id = ?", userID).
 		Order("transactions.occurred_at DESC").

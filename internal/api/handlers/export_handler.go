@@ -22,7 +22,7 @@ const exportMaxRows = 5000
 var exportColumns = []string{
 	"ID", "Date", "Type", "Category", "Description",
 	"Original Amount", "Original Currency", "Exchange Rate",
-	"Converted Amount", "Source",
+	"Converted Amount", "Source", "Original Chat",
 }
 
 type ExportHandler struct {
@@ -68,6 +68,7 @@ func toRecord(r TransactionRow) []string {
 		strconv.FormatFloat(r.ExchangeRate, 'f', 8, 64),
 		strconv.FormatFloat(r.ConvertedAmount, 'f', 2, 64),
 		r.Source,
+		r.RawInput,
 	}
 }
 
