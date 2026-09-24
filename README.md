@@ -63,8 +63,10 @@ internal/db       Postgres/Redis connections, AutoMigrate registration
 internal/models   GORM domain models (users, transactions, budgets, reconciliation, usage logs, ...)
 internal/ai       AIClient interface + gemini/openai/anthropic implementations + factory
 internal/messaging Messenger interface + telegram/whatsapp implementations
-internal/middleware  input length, rate limit, daily quota, recover/logger
-internal/service  bot (command routing), transaction, budget, reconciliation, fx
+internal/middleware  input length, rate limit, recover/logger
+internal/quota    daily AI-prompt quota Redis key + increment (checked/enforced in service/bot)
+internal/reward   earn-bonus-quota affiliate-link + claim-code flow
+internal/service  bot (command routing), transaction, budget, reconciliation, fx, usage
 internal/api      REST router + handlers for the future Next.js dashboard
 internal/logger   error-code registry + logging helpers
 pkg/httpresponse  JSON response envelope helpers
@@ -98,7 +100,7 @@ Leave any of these blank to use the built-in default.
 
 ## What's implemented
 
-Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, the full security middleware chain (length check → rate limit → daily quota, in that order, before any AI call), the Telegram webhook (fast-ack + async goroutine dispatch), UTC-everywhere timestamps, error-code-tagged logging (`internal/logger`).
+Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, the security middleware chain (length check → rate limit, before any AI call; daily quota is enforced downstream in `bot.Service`, see below), the Telegram webhook (fast-ack + async goroutine dispatch), UTC-everywhere timestamps, error-code-tagged logging (`internal/logger`).
 
 **AI (`internal/ai`):** Gemini, OpenAI, and Anthropic all fully implemented against their REST APIs (no SDKs) — structured JSON output with fence-stripping, schema validation, and one repair retry, shared across all three providers (`ai.StripJSONFences`, `ai.ValidateParsedTransaction`). Gemini and OpenAI both support voice-note transcription (Gemini natively, OpenAI via Whisper); Anthropic has no native audio support and returns `apperror.ErrProviderAudioUnsupported`, which the bot surfaces as a clear message rather than a generic failure. The system prompt tells the model today's date and asks it to resolve relative time language ("yesterday", "3 days ago") into a strict ISO date itself, which `internal/service/transaction.resolveOccurredAt` then parses — offloading that reasoning to the model instead of pattern-matching natural language in Go.
 
@@ -109,6 +111,10 @@ Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, t
 **Reconciliation (`internal/service/reconciliation`):** `/sync` computes the calculated balance and, on a discrepancy, auto-records a blind-spot adjustment transaction (same "commit immediately, `/undo` to revert" pattern used elsewhere).
 
 **FX (`internal/service/fx`):** `LiveService` fetches real historical rates from Frankfurter, falling back to a static rate table on any failure so a provider outage never blocks recording a transaction.
+
+**Quota enforcement (`internal/quota`, `internal/service/usage`):** the free-tier daily AI-prompt cap is now actually enforced. Both the check and the increment live in `bot.Service` (moved out of HTTP middleware specifically so a blocked user gets an actual localized reply instead of a silent webhook-level 429 nobody sees) — a successful AI call increments the Redis counter (`quota.Increment`) and persists an `AIUsageLog` row (token/latency detail) plus a `QuotaUsage` daily mirror via `internal/service/usage`, fire-and-forget so neither write delays the reply. `FREE_TIER_DAILY_QUOTA`/`PRO_TIER_DAILY_QUOTA` in `.env` control the limits.
+
+**Earn bonus quota (`internal/reward`):** when a free user hits their daily limit, if `REWARD_AFFILIATE_URL` is configured, the bot offers that link plus a one-time code; `/claim <code>` grants `REWARD_BONUS_AMOUNT` extra prompts for the day, up to `REWARD_MAX_CLAIMS_PER_DAY` times. This is a deliberately scoped-down v1: it's an honor-system flow (no landing page or ad-network callback verifying the user actually visited the link) since that would require web infrastructure that doesn't exist yet. Leave `REWARD_AFFILIATE_URL` blank to disable the feature entirely.
 
 **Accounts (`internal/models.Account`, `internal/service/account`):** schema groundwork for multi-account support — every user gets one auto-created "Default" account, and every transaction/reconciliation is attributed to it. No bot/dashboard UX to create or select additional accounts yet (intentionally deferred); see the code comments on `Transaction.AccountID` and `reconciliation.balanceSign` for how a second account and cross-account transfers are expected to be modeled when that UX is built.
 

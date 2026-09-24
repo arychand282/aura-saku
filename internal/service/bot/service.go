@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"aura-saku/internal/ai"
@@ -14,32 +16,54 @@ import (
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
+	"aura-saku/internal/quota"
+	"aura-saku/internal/reward"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/transaction"
+	"aura-saku/internal/service/usage"
 )
+
+// Config bundles the small set of tunables bot.Service needs from
+// internal/config, kept as its own type so NewService's parameter list
+// doesn't grow with every quota/reward knob.
+type Config struct {
+	FreeTierDailyQuota int
+
+	// RewardAffiliateURL enables the earn-bonus-quota flow when set; empty
+	// disables it (no reward is ever offered without a real link configured).
+	RewardAffiliateURL    string
+	RewardBonusAmount     int
+	RewardMaxClaimsPerDay int
+}
 
 // Service is the platform-agnostic bot brain: it receives a normalized
 // messaging.IncomingMessage (from Telegram today, WhatsApp later) and routes
 // it to the right command/parsing flow. It never imports a concrete
 // messaging or AI provider package — only the interfaces.
 type Service struct {
-	db        *gorm.DB
-	messenger messaging.Messenger
-	aiClient  ai.AIClient
-	txSvc     *transaction.Service
-	budgetSvc *budget.Service
-	reconSvc  *reconciliation.Service
+	db          *gorm.DB
+	redisClient *redis.Client
+	messenger   messaging.Messenger
+	aiClient    ai.AIClient
+	txSvc       *transaction.Service
+	budgetSvc   *budget.Service
+	reconSvc    *reconciliation.Service
+	usageSvc    *usage.Service
+	cfg         Config
 }
 
-func NewService(db *gorm.DB, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, cfg Config) *Service {
 	return &Service{
-		db:        db,
-		messenger: messenger,
-		aiClient:  aiClient,
-		txSvc:     txSvc,
-		budgetSvc: budgetSvc,
-		reconSvc:  reconSvc,
+		db:          db,
+		redisClient: redisClient,
+		messenger:   messenger,
+		aiClient:    aiClient,
+		txSvc:       txSvc,
+		budgetSvc:   budgetSvc,
+		reconSvc:    reconSvc,
+		usageSvc:    usageSvc,
+		cfg:         cfg,
 	}
 }
 
@@ -65,6 +89,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleSync(ctx, user, msg)
 	case "/language":
 		s.handleLanguage(ctx, user, msg)
+	case "/claim":
+		s.handleClaim(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
@@ -143,18 +169,94 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance))
 }
 
+func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	code := strings.TrimSpace(msg.CommandArgs)
+	if code == "" {
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimUsage))
+		return
+	}
+
+	result, err := reward.Claim(ctx, s.redisClient, msg.ChatID, code, s.cfg.RewardBonusAmount, s.cfg.RewardMaxClaimsPerDay)
+	if err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("claim reward for chat %d", msg.ChatID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
+		return
+	}
+
+	switch result {
+	case reward.ClaimGranted:
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimSuccess, s.cfg.RewardBonusAmount))
+	case reward.ClaimLimitReached:
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimLimitReached))
+	default:
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
+	}
+}
+
+// enforceQuota checks the free-tier daily AI-prompt cap before any AI call
+// is made, replying (and returning true) if the user is blocked. Pro tier
+// always passes. Redis errors on the core count/bonus reads fail OPEN
+// (allow the request through) rather than incorrectly blocking a user over
+// an infrastructure hiccup — this is a cost guardrail, not a security gate.
+func (s *Service) enforceQuota(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) bool {
+	if user.Tier == models.TierPro {
+		return false
+	}
+
+	count, err := quota.CountToday(ctx, s.redisClient, msg.ChatID)
+	if err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("read quota count for chat %d, failing open", msg.ChatID), err)
+		return false
+	}
+
+	bonus, err := reward.BonusGrantedToday(ctx, s.redisClient, msg.ChatID)
+	if err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("read reward bonus for chat %d, failing open", msg.ChatID), err)
+		return false
+	}
+
+	if count < s.cfg.FreeTierDailyQuota+bonus {
+		return false
+	}
+
+	if s.cfg.RewardAffiliateURL != "" {
+		claims, cErr := reward.ClaimsToday(ctx, s.redisClient, msg.ChatID)
+		if cErr != nil {
+			logger.Error(logger.RedisOpFailed, fmt.Sprintf("read reward claims for chat %d", msg.ChatID), cErr)
+		} else if claims < s.cfg.RewardMaxClaimsPerDay {
+			if code, iErr := reward.IssueCode(ctx, s.redisClient, msg.ChatID); iErr == nil {
+				s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuotaExceededWithReward,
+					s.cfg.FreeTierDailyQuota, s.cfg.RewardBonusAmount, s.cfg.RewardAffiliateURL, code))
+				return true
+			} else {
+				logger.Error(logger.RedisOpFailed, "issue reward code", iErr)
+			}
+		}
+	}
+
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuotaExceededNoReward, s.cfg.FreeTierDailyQuota))
+	return true
+}
+
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if s.enforceQuota(ctx, user, msg) {
+		return
+	}
+
 	var (
-		parsed *ai.ParsedTransaction
-		err    error
-		source models.TransactionSource
-		raw    string
+		parsed      *ai.ParsedTransaction
+		usageMeta   *ai.UsageMetadata
+		err         error
+		source      models.TransactionSource
+		raw         string
+		requestType string
 	)
 
 	preferredLanguage := string(user.Language)
 
 	if msg.IsVoice {
 		source = models.SourceVoice
+		requestType = "audio_transcribe"
 		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID)
 		if dlErr != nil {
 			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download voice file for user %d", user.ID), dlErr)
@@ -162,11 +264,12 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 			return
 		}
 		raw = "[voice note]"
-		parsed, _, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
+		parsed, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
 	} else {
 		source = models.SourceText
+		requestType = "text_parse"
 		raw = msg.Text
-		parsed, _, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
+		parsed, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
 	}
 
 	if err != nil {
@@ -179,6 +282,15 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble))
 		return
 	}
+
+	// A successful AI call counts against today's quota regardless of tier
+	// (Redis is only ever checked for free-tier users, but recording it for
+	// everyone gives complete audit data) and regardless of whether the
+	// result was ambiguous — the API cost was already incurred either way.
+	if qErr := quota.Increment(ctx, s.redisClient, msg.ChatID); qErr != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("increment quota for chat %d", msg.ChatID), qErr)
+	}
+	go s.usageSvc.RecordAICall(context.Background(), user.ID, models.AIProvider(s.aiClient.ProviderName()), requestType, usageMeta)
 
 	if parsed.IsAmbiguous {
 		s.reply(ctx, msg.ChatID, parsed.ClarificationQuestion)

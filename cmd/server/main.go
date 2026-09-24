@@ -21,6 +21,7 @@ import (
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/transaction"
+	"aura-saku/internal/service/usage"
 )
 
 func main() {
@@ -54,7 +55,13 @@ func main() {
 	txSvc := transaction.NewService(gormDB, fxSvc)
 	budgetSvc := budget.NewService(gormDB)
 	reconSvc := reconciliation.NewService(gormDB, txSvc)
-	botSvc := bot.NewService(gormDB, telegramClient, aiClient, txSvc, budgetSvc, reconSvc)
+	usageSvc := usage.NewService(gormDB)
+	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, bot.Config{
+		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
+		RewardAffiliateURL:    cfg.RewardAffiliateURL,
+		RewardBonusAmount:     cfg.RewardBonusAmount,
+		RewardMaxClaimsPerDay: cfg.RewardMaxClaimsPerDay,
+	})
 
 	app := fiber.New(fiber.Config{
 		AppName: "aura-saku",

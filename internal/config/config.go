@@ -58,6 +58,13 @@ type Config struct {
 	FreeTierDailyQuota     int
 	ProTierDailyQuota      int
 
+	// RewardAffiliateURL enables the free-tier "earn bonus quota" flow when
+	// set (empty disables it entirely — no reward is offered without a real
+	// link configured). See internal/reward.
+	RewardAffiliateURL    string
+	RewardBonusAmount     int
+	RewardMaxClaimsPerDay int
+
 	LogLevel string
 }
 
@@ -109,6 +116,10 @@ func Load() (*Config, error) {
 		RateLimitMaxRequests:   getEnvInt("RATE_LIMIT_MAX_REQUESTS", 5),
 		FreeTierDailyQuota:     getEnvInt("FREE_TIER_DAILY_QUOTA", 3),
 		ProTierDailyQuota:      getEnvInt("PRO_TIER_DAILY_QUOTA", -1),
+
+		RewardAffiliateURL:    getEnv("REWARD_AFFILIATE_URL", ""),
+		RewardBonusAmount:     getEnvInt("REWARD_BONUS_AMOUNT", 3),
+		RewardMaxClaimsPerDay: getEnvInt("REWARD_MAX_CLAIMS_PER_DAY", 1),
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
 	}

@@ -76,6 +76,13 @@ const (
 	KeyBudgetWantsExceeded = "budget_wants_exceeded"
 	KeyBudgetWantsPace     = "budget_wants_pace"
 	KeyBudgetRollover      = "budget_rollover"
+
+	KeyQuotaExceededWithReward = "quota_exceeded_with_reward"
+	KeyQuotaExceededNoReward   = "quota_exceeded_no_reward"
+	KeyClaimUsage              = "claim_usage"
+	KeyClaimSuccess            = "claim_success"
+	KeyClaimInvalidCode        = "claim_invalid_code"
+	KeyClaimLimitReached       = "claim_limit_reached"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -101,6 +108,13 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsExceeded: "Wants spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
 		KeyBudgetWantsPace:     "Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
 		KeyBudgetRollover:      "You had a surplus of %.2f last month — consider moving it into savings or investments.",
+
+		KeyQuotaExceededWithReward: "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or earn %d more today: %s\nAfter visiting, send /claim %s here to unlock them.",
+		KeyQuotaExceededNoReward:   "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or try again tomorrow.",
+		KeyClaimUsage:              "Usage: /claim <code> — you'll get a code when you hit your daily limit.",
+		KeyClaimSuccess:            "🎉 You've unlocked %d bonus prompts for today!",
+		KeyClaimInvalidCode:        "That code isn't valid or has expired. You'll get a fresh one next time you hit your daily limit.",
+		KeyClaimLimitReached:       "You've already claimed your bonus for today. Try again tomorrow!",
 	},
 	models.LanguageID: {
 		KeyWelcome:               "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -124,6 +138,13 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsExceeded: "Pengeluaran Wants sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
 		KeyBudgetWantsPace:     "Laju pengeluaran Wants-mu diperkirakan mencapai %.2f di akhir bulan, melebihi alokasi %.2f — pertimbangkan untuk mengurangi pengeluaran.",
 		KeyBudgetRollover:      "Kamu punya surplus %.2f bulan lalu — pertimbangkan untuk memindahkannya ke tabungan atau investasi.",
+
+		KeyQuotaExceededWithReward: "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau dapatkan %d tambahan hari ini: %s\nSetelah mengunjungi link itu, kirim /claim %s di sini untuk membukanya.",
+		KeyQuotaExceededNoReward:   "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau coba lagi besok.",
+		KeyClaimUsage:              "Cara pakai: /claim <kode> — kamu akan dapat kode saat mencapai batas harian.",
+		KeyClaimSuccess:            "🎉 Kamu mendapat %d prompt bonus untuk hari ini!",
+		KeyClaimInvalidCode:        "Kode itu tidak valid atau sudah kedaluwarsa. Kamu akan dapat kode baru saat mencapai batas harian lagi.",
+		KeyClaimLimitReached:       "Kamu sudah klaim bonus untuk hari ini. Coba lagi besok!",
 	},
 }
 
