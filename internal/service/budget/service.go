@@ -15,10 +15,13 @@ import (
 // Status is the shape returned by EvaluateBudget — the post-entry feedback
 // shown to the user and surfaced on the dashboard.
 type Status struct {
-	NeedsSpent, NeedsLimit     float64
-	WantsSpent, WantsLimit     float64
-	SavingsSpent, SavingsLimit float64
-	Warnings                   []string
+	NeedsSpent   float64  `json:"needs_spent"`
+	NeedsLimit   float64  `json:"needs_limit"`
+	WantsSpent   float64  `json:"wants_spent"`
+	WantsLimit   float64  `json:"wants_limit"`
+	SavingsSpent float64  `json:"savings_spent"`
+	SavingsLimit float64  `json:"savings_limit"`
+	Warnings     []string `json:"warnings"`
 }
 
 // Service owns the 50/30/20 budget guardrail logic: post-entry feedback,

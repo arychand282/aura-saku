@@ -86,8 +86,8 @@ func (h *ReportHandler) TopCategories(c *fiber.Ctx) error {
 	}
 
 	type categoryRow struct {
-		CategoryName string
-		Total        float64
+		CategoryName string  `json:"category_name"`
+		Total        float64 `json:"total"`
 	}
 	var rows []categoryRow
 	result := h.db.Table("transactions").

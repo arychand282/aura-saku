@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/csv"
 	"fmt"
 	"strconv"
@@ -34,19 +33,6 @@ func NewExportHandler(db *gorm.DB) *ExportHandler {
 	return &ExportHandler{db: db}
 }
 
-type exportRow struct {
-	ID               uint
-	OccurredAt       time.Time
-	Type             string
-	CategoryName     string
-	Description      string
-	OriginalAmount   float64
-	OriginalCurrency string
-	ExchangeRate     float64
-	ConvertedAmount  float64
-	Source           string
-}
-
 // Export streams a user's full transaction history as CSV or XLSX.
 func (h *ExportHandler) Export(c *fiber.Ctx) error {
 	userID := effectiveUserID(c)
@@ -56,7 +42,7 @@ func (h *ExportHandler) Export(c *fiber.Ctx) error {
 		return httpresponse.Error(c, fiber.StatusBadRequest, "format must be csv or xlsx")
 	}
 
-	rows, err := h.fetchRows(c.Context(), userID)
+	rows, err := fetchTransactionRows(c.Context(), h.db, userID, exportMaxRows, 0)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to fetch transactions for export")
 	}
@@ -70,22 +56,7 @@ func (h *ExportHandler) Export(c *fiber.Ctx) error {
 	return h.writeCSV(c, rows)
 }
 
-func (h *ExportHandler) fetchRows(ctx context.Context, userID uint) ([]exportRow, error) {
-	var rows []exportRow
-	err := h.db.WithContext(ctx).Table("transactions").
-		Select(`transactions.id, transactions.occurred_at, transactions.type,
-			COALESCE(categories.name, '') as category_name, transactions.description,
-			transactions.original_amount, transactions.original_currency,
-			transactions.exchange_rate, transactions.converted_amount, transactions.source`).
-		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
-		Where("transactions.user_id = ?", userID).
-		Order("transactions.occurred_at DESC").
-		Limit(exportMaxRows).
-		Scan(&rows).Error
-	return rows, err
-}
-
-func toRecord(r exportRow) []string {
+func toRecord(r TransactionRow) []string {
 	return []string{
 		strconv.FormatUint(uint64(r.ID), 10),
 		r.OccurredAt.Format(time.RFC3339),
@@ -100,7 +71,7 @@ func toRecord(r exportRow) []string {
 	}
 }
 
-func (h *ExportHandler) writeCSV(c *fiber.Ctx, rows []exportRow) error {
+func (h *ExportHandler) writeCSV(c *fiber.Ctx, rows []TransactionRow) error {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 
@@ -121,7 +92,7 @@ func (h *ExportHandler) writeCSV(c *fiber.Ctx, rows []exportRow) error {
 	return c.Send(buf.Bytes())
 }
 
-func (h *ExportHandler) writeXLSX(c *fiber.Ctx, rows []exportRow) error {
+func (h *ExportHandler) writeXLSX(c *fiber.Ctx, rows []TransactionRow) error {
 	f := excelize.NewFile()
 	defer f.Close()
 

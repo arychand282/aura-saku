@@ -31,20 +31,20 @@ func (h *TransactionHandler) List(c *fiber.Ctx) error {
 		limit = 20
 	}
 
-	var transactions []models.Transaction
-	result := h.db.
-		Where("user_id = ?", userID).
-		Order("occurred_at DESC").
-		Offset((page - 1) * limit).
-		Limit(limit).
-		Find(&transactions)
-	if result.Error != nil {
+	rows, err := fetchTransactionRows(c.Context(), h.db, userID, limit, (page-1)*limit)
+	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to fetch transactions")
 	}
 
+	var totalCount int64
+	if err := h.db.Model(&models.Transaction{}).Where("user_id = ?", userID).Count(&totalCount).Error; err != nil {
+		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to count transactions")
+	}
+
 	return httpresponse.Success(c, fiber.StatusOK, fiber.Map{
-		"transactions": transactions,
+		"transactions": rows,
 		"page":         page,
 		"limit":        limit,
+		"total_count":  totalCount,
 	})
 }
