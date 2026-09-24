@@ -77,6 +77,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyBudgetWantsPace, KeyBudgetRollover,
 		KeyQuotaExceededWithReward, KeyQuotaExceededNoReward,
 		KeyClaimUsage, KeyClaimSuccess, KeyClaimInvalidCode, KeyClaimLimitReached,
+		KeyDashboardLink, KeyDashboardUnavailable,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

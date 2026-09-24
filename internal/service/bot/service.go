@@ -12,6 +12,7 @@ import (
 
 	"aura-saku/internal/ai"
 	"aura-saku/internal/apperror"
+	"aura-saku/internal/auth"
 	"aura-saku/internal/i18n"
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
@@ -35,6 +36,10 @@ type Config struct {
 	RewardAffiliateURL    string
 	RewardBonusAmount     int
 	RewardMaxClaimsPerDay int
+
+	// DashboardBaseURL enables /dashboard when set; empty replies "not
+	// available yet" instead of a broken link.
+	DashboardBaseURL string
 }
 
 // Service is the platform-agnostic bot brain: it receives a normalized
@@ -91,6 +96,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleLanguage(ctx, user, msg)
 	case "/claim":
 		s.handleClaim(ctx, user, msg)
+	case "/dashboard":
+		s.handleDashboard(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
@@ -191,6 +198,23 @@ func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messa
 	default:
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
 	}
+}
+
+func (s *Service) handleDashboard(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if s.cfg.DashboardBaseURL == "" {
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
+		return
+	}
+
+	token, err := auth.IssueLoginToken(ctx, s.redisClient, user.ID)
+	if err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("issue dashboard login token for user %d", user.ID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
+		return
+	}
+
+	link := fmt.Sprintf("%s/auth/verify?token=%s", strings.TrimRight(s.cfg.DashboardBaseURL, "/"), token)
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardLink, link))
 }
 
 // enforceQuota checks the free-tier daily AI-prompt cap before any AI call

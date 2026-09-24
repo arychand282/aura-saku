@@ -65,6 +65,18 @@ type Config struct {
 	RewardBonusAmount     int
 	RewardMaxClaimsPerDay int
 
+	// JWTSecret signs dashboard session tokens — required, since signing
+	// with an empty/weak key would let anyone forge a session.
+	JWTSecret       string
+	SessionTTLHours int
+
+	// DashboardBaseURL is used to build the login link the bot sends via
+	// /dashboard (empty means that command replies "not available yet").
+	DashboardBaseURL string
+
+	AdminLoginRateLimitWindowSeconds int
+	AdminLoginRateLimitMaxAttempts   int
+
 	LogLevel string
 }
 
@@ -121,6 +133,14 @@ func Load() (*Config, error) {
 		RewardBonusAmount:     getEnvInt("REWARD_BONUS_AMOUNT", 3),
 		RewardMaxClaimsPerDay: getEnvInt("REWARD_MAX_CLAIMS_PER_DAY", 1),
 
+		JWTSecret:       getEnv("JWT_SECRET", ""),
+		SessionTTLHours: getEnvInt("SESSION_TTL_HOURS", 168),
+
+		DashboardBaseURL: getEnv("DASHBOARD_BASE_URL", ""),
+
+		AdminLoginRateLimitWindowSeconds: getEnvInt("ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300),
+		AdminLoginRateLimitMaxAttempts:   getEnvInt("ADMIN_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 5),
+
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
 	}
 
@@ -136,6 +156,7 @@ func (c *Config) validate() error {
 		"DB_USER":     c.DBUser,
 		"DB_PASSWORD": c.DBPassword,
 		"DB_NAME":     c.DBName,
+		"JWT_SECRET":  c.JWTSecret,
 	}
 	for name, val := range required {
 		if val == "" {

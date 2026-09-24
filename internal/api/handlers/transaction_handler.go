@@ -19,14 +19,8 @@ func NewTransactionHandler(db *gorm.DB) *TransactionHandler {
 }
 
 // List returns a paginated list of a user's transactions.
-//
-// TODO(auth): once the dashboard has real session auth, derive user_id from
-// the authenticated session instead of trusting a query param.
 func (h *TransactionHandler) List(c *fiber.Ctx) error {
-	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
-	if err != nil {
-		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
-	}
+	userID := effectiveUserID(c)
 
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	if page < 1 {

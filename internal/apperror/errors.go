@@ -11,4 +11,6 @@ var (
 	ErrUnsupportedProvider      = errors.New("unsupported provider")
 	ErrNoUndoableTransaction    = errors.New("no transaction available to undo")
 	ErrProviderAudioUnsupported = errors.New("this AI provider does not support audio transcription")
+	ErrInvalidSession           = errors.New("invalid or expired session")
+	ErrInvalidLoginToken        = errors.New("invalid or expired login token")
 )

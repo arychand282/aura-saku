@@ -61,6 +61,7 @@ func main() {
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,
 		RewardBonusAmount:     cfg.RewardBonusAmount,
 		RewardMaxClaimsPerDay: cfg.RewardMaxClaimsPerDay,
+		DashboardBaseURL:      cfg.DashboardBaseURL,
 	})
 
 	app := fiber.New(fiber.Config{

@@ -48,15 +48,8 @@ type exportRow struct {
 }
 
 // Export streams a user's full transaction history as CSV or XLSX.
-//
-// TODO(auth): once the dashboard has real session auth, derive user_id from
-// the authenticated session instead of trusting a query param (same
-// limitation as TransactionHandler.List).
 func (h *ExportHandler) Export(c *fiber.Ctx) error {
-	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
-	if err != nil {
-		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
-	}
+	userID := effectiveUserID(c)
 
 	format := c.Query("format", "csv")
 	if format != "csv" && format != "xlsx" {
@@ -77,7 +70,7 @@ func (h *ExportHandler) Export(c *fiber.Ctx) error {
 	return h.writeCSV(c, rows)
 }
 
-func (h *ExportHandler) fetchRows(ctx context.Context, userID uint64) ([]exportRow, error) {
+func (h *ExportHandler) fetchRows(ctx context.Context, userID uint) ([]exportRow, error) {
 	var rows []exportRow
 	err := h.db.WithContext(ctx).Table("transactions").
 		Select(`transactions.id, transactions.occurred_at, transactions.type,

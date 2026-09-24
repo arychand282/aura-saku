@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -25,7 +27,8 @@ type Deps struct {
 }
 
 // Setup mounts every route: health check, the Telegram webhook (behind the
-// full security middleware chain), and the dashboard REST API.
+// full security middleware chain), auth endpoints, and the dashboard REST
+// API (behind session auth).
 func Setup(app *fiber.App, deps Deps) {
 	app.Use(middleware.Recover())
 	app.Use(middleware.RequestLogger())
@@ -42,7 +45,21 @@ func Setup(app *fiber.App, deps Deps) {
 		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret),
 	)
 
-	v1 := app.Group("/api/v1")
+	// Auth endpoints are registered directly on app (not the session-gated
+	// v1 group below) since logging in is, by definition, unauthenticated.
+	sessionTTL := time.Duration(deps.Config.SessionTTLHours) * time.Hour
+	authHandler := handlers.NewAuthHandler(deps.DB, deps.Redis, deps.Config.JWTSecret, sessionTTL)
+	app.Post("/api/v1/auth/verify", authHandler.VerifyLoginToken)
+	app.Post("/api/v1/auth/admin-login",
+		middleware.IPRateLimiter(deps.Redis, deps.Config.AdminLoginRateLimitWindowSeconds, deps.Config.AdminLoginRateLimitMaxAttempts),
+		authHandler.AdminLogin,
+	)
+	app.Post("/api/v1/auth/logout", authHandler.Logout)
+
+	// Every other dashboard endpoint requires a verified session. A "user"
+	// session is locked to its own data; an admin/superadmin session may
+	// pass ?user_id= to view any user's data.
+	v1 := app.Group("/api/v1", middleware.RequireSession(deps.Redis, deps.DB, deps.Config.JWTSecret))
 
 	txHandler := handlers.NewTransactionHandler(deps.DB)
 	v1.Get("/transactions", txHandler.List)

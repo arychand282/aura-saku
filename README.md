@@ -58,12 +58,14 @@ Expect `{"ok":true,"result":true}`. Message your bot on Telegram and watch `make
 ```
 cmd/server        entrypoint: config, db, redis, migrations, AI client, messenger, services, Fiber app
 cmd/migrate       standalone migration CLI
+cmd/createadmin   bootstrap/update a dashboard admin account (email, name, password, role)
 internal/config   env loading + validation
 internal/db       Postgres/Redis connections, AutoMigrate registration
-internal/models   GORM domain models (users, transactions, budgets, reconciliation, usage logs, ...)
+internal/models   GORM domain models (users, admins, transactions, budgets, reconciliation, usage logs, ...)
 internal/ai       AIClient interface + gemini/openai/anthropic implementations + factory
 internal/messaging Messenger interface + telegram/whatsapp implementations
-internal/middleware  input length, rate limit, recover/logger
+internal/middleware  input length, rate limit, session auth, recover/logger
+internal/auth     login-token + JWT session issuance/verification/revocation
 internal/quota    daily AI-prompt quota Redis key + increment (checked/enforced in service/bot)
 internal/reward   earn-bonus-quota affiliate-link + claim-code flow
 internal/service  bot (command routing), transaction, budget, reconciliation, fx, usage
@@ -120,13 +122,27 @@ Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, t
 
 **Language (`internal/i18n`):** every bot reply is localized to English or Bahasa Indonesia via `User.Language`, auto-detected from Telegram's own `language_code` on first contact (empty/unrecognized defaults to Indonesian, the primary market), overridable anytime with `/language en` or `/language id`. `category_name` is always extracted in English regardless of reply language, since it feeds the Needs/Wants/Savings bucket-classification keyword map in `internal/service/transaction` — only user-facing text (clarification questions, bot replies, budget warnings) is localized. The dashboard's `/api/v1/reports/budget-progress` also accepts an optional `?lang=` override independent of the user's stored bot-chat preference.
 
-Dashboard endpoints: `/healthz`, `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`.
+**Dashboard authentication (`internal/auth`, `internal/middleware/auth.go`):** every `/api/v1/*` endpoint (except `/auth/*` itself) now requires a verified session — the `user_id` query param it used to trust directly is gone as an attack surface. Two ways to get a session:
+
+- **Bot users:** send `/dashboard` to the bot; it replies with a one-time login link (`POST /api/v1/auth/verify` with the token), valid for 10 minutes, single-use. The resulting session is locked to that user's own `user_id` — passing a different `?user_id=` is silently ignored.
+- **Admins/superadmins:** `POST /api/v1/auth/admin-login` with `email`/`password` (accounts live in the `admins` table, created via `cmd/createadmin`, not `.env` — see below). An admin/superadmin session *is* allowed to pass `?user_id=` to view any user's data, since that's the point of the role.
+
+Sessions are JWTs (role + identity claims, so a future frontend can read them client-side to decide what menu to render) referenced by an httpOnly `aura_session` cookie, but each token also carries a random session ID that must still exist in Redis — `POST /api/v1/auth/logout`, or deactivating an admin (`Admin.IsActive = false`), deletes that Redis entry and the token stops working immediately, even though its signature would otherwise still verify until natural expiry (`SESSION_TTL_HOURS`, default 7 days). Admin sessions are additionally re-checked against `Admin.IsActive` in Postgres on every request for exactly this reason. `POST /api/v1/auth/admin-login` has its own IP-keyed rate limit (`ADMIN_LOGIN_RATE_LIMIT_*`) since it's a real brute-forceable credential check.
+
+Create the first admin:
+```
+go run ./cmd/createadmin -email=you@example.com -name="Your Name" -password=<password> -role=superadmin
+```
+Running it again for the same email updates their name/password/role — it doubles as a password-reset tool.
+
+Dashboard endpoints (all session-gated): `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`. `/healthz` remains open (no session needed).
 
 ## TODO (next session)
 
 - Bot/dashboard UX to create and select additional accounts (schema is ready — see Accounts above)
 - CSV/Excel export pagination or streaming if transaction history grows past the current 5000-row safety cap
-- Dashboard auth (all endpoints currently trust a `user_id` query param — see `TODO(auth)` comments in `internal/api/handlers`)
+- Route-level authorization distinguishing `admin` vs `superadmin` (both currently pass the same `RequireSession` check — no admin-only-vs-superadmin-only endpoints exist yet to actually differentiate)
+- Set the session cookie's `Secure` flag once this is deployed behind real HTTPS (currently `false` so local HTTP dev works)
 
 ## Commands
 

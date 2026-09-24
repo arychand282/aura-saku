@@ -12,6 +12,7 @@ import (
 func RunMigrations(gormDB *gorm.DB) error {
 	return gormDB.AutoMigrate(
 		&models.User{},
+		&models.Admin{},
 		&models.Account{},
 		&models.Subscription{},
 		&models.Category{},

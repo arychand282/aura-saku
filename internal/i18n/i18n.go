@@ -83,6 +83,9 @@ const (
 	KeyClaimSuccess            = "claim_success"
 	KeyClaimInvalidCode        = "claim_invalid_code"
 	KeyClaimLimitReached       = "claim_limit_reached"
+
+	KeyDashboardLink        = "dashboard_link"
+	KeyDashboardUnavailable = "dashboard_unavailable"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -115,6 +118,9 @@ var catalog = map[models.Language]map[string]string{
 		KeyClaimSuccess:            "🎉 You've unlocked %d bonus prompts for today!",
 		KeyClaimInvalidCode:        "That code isn't valid or has expired. You'll get a fresh one next time you hit your daily limit.",
 		KeyClaimLimitReached:       "You've already claimed your bonus for today. Try again tomorrow!",
+
+		KeyDashboardLink:        "Here's your one-time dashboard login link (valid for 10 minutes): %s",
+		KeyDashboardUnavailable: "The dashboard isn't available yet. Please check back later.",
 	},
 	models.LanguageID: {
 		KeyWelcome:               "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -145,6 +151,9 @@ var catalog = map[models.Language]map[string]string{
 		KeyClaimSuccess:            "🎉 Kamu mendapat %d prompt bonus untuk hari ini!",
 		KeyClaimInvalidCode:        "Kode itu tidak valid atau sudah kedaluwarsa. Kamu akan dapat kode baru saat mencapai batas harian lagi.",
 		KeyClaimLimitReached:       "Kamu sudah klaim bonus untuk hari ini. Coba lagi besok!",
+
+		KeyDashboardLink:        "Ini link login dashboard sekali pakai (berlaku 10 menit): %s",
+		KeyDashboardUnavailable: "Dashboard belum tersedia. Silakan coba lagi nanti.",
 	},
 }
 

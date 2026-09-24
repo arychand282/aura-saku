@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"errors"
-	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -41,10 +40,7 @@ func periodRange(period string) (time.Time, time.Time, error) {
 
 // Summary aggregates a user's transaction totals by type over the requested period.
 func (h *ReportHandler) Summary(c *fiber.Ctx) error {
-	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
-	if err != nil {
-		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
-	}
+	userID := effectiveUserID(c)
 
 	period := c.Query("period", "monthly")
 	start, end, err := periodRange(period)
@@ -81,10 +77,7 @@ func (h *ReportHandler) Summary(c *fiber.Ctx) error {
 
 // TopCategories returns the top 5 expense categories by converted amount over the requested period.
 func (h *ReportHandler) TopCategories(c *fiber.Ctx) error {
-	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
-	if err != nil {
-		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
-	}
+	userID := effectiveUserID(c)
 
 	period := c.Query("period", "monthly")
 	start, end, err := periodRange(period)
@@ -121,21 +114,18 @@ func (h *ReportHandler) TopCategories(c *fiber.Ctx) error {
 // overrides it for this request (e.g. a dashboard viewed in a different
 // language than the user's bot chat preference).
 func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
-	userID, err := strconv.ParseUint(c.Query("user_id"), 10, 64)
-	if err != nil {
-		return httpresponse.Error(c, fiber.StatusBadRequest, "user_id query param is required")
-	}
+	userID := effectiveUserID(c)
 
-	lang := h.resolveLanguage(c, uint(userID))
+	lang := h.resolveLanguage(c, userID)
 
-	status, err := h.budgetSvc.EvaluateBudget(c.Context(), uint(userID), lang)
+	status, err := h.budgetSvc.EvaluateBudget(c.Context(), userID, lang)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to evaluate budget")
 	}
 
 	// Rollover suggestion is a nice-to-have on top of the core budget
 	// status; a failure here shouldn't fail the whole response.
-	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), uint(userID), lang)
+	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), userID, lang)
 	if err != nil {
 		rollover = ""
 	}
