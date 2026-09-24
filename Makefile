@@ -10,7 +10,10 @@ migrate:
 	go run ./cmd/migrate
 
 test:
-	go test ./...
+	@# Integration tests call config.Load(), which reads .env from the test
+	@# binary's own package directory (not the module root) — without this,
+	@# `go test ./...` silently skips every integration test in the repo.
+	@if [ -f .env ]; then set -a && . ./.env && set +a && go test ./...; else go test ./...; fi
 
 docker-up:
 	docker compose up --build

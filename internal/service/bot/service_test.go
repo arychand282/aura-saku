@@ -1,0 +1,470 @@
+package bot_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+
+	"aura-saku/internal/ai"
+	"aura-saku/internal/apperror"
+	"aura-saku/internal/config"
+	"aura-saku/internal/db"
+	"aura-saku/internal/i18n"
+	"aura-saku/internal/messaging"
+	"aura-saku/internal/models"
+	"aura-saku/internal/quota"
+	"aura-saku/internal/service/bot"
+	"aura-saku/internal/service/budget"
+	"aura-saku/internal/service/fx"
+	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/transaction"
+	"aura-saku/internal/service/usage"
+)
+
+// mockMessenger records every reply sent, keyed by chat ID, so tests can
+// assert on exactly what the user would have seen without a real Telegram
+// connection.
+type mockMessenger struct {
+	mu           sync.Mutex
+	messages     map[int64][]string
+	downloadErr  error
+	downloadData []byte
+	downloadMime string
+}
+
+func newMockMessenger() *mockMessenger {
+	return &mockMessenger{messages: map[int64][]string{}}
+}
+
+func (m *mockMessenger) ParseWebhookPayload(body []byte) (*messaging.IncomingMessage, error) {
+	return nil, errors.New("not used in tests: HandleUpdate is invoked directly")
+}
+
+func (m *mockMessenger) SendMessage(ctx context.Context, chatID int64, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages[chatID] = append(m.messages[chatID], text)
+	return nil
+}
+
+func (m *mockMessenger) SendTypingIndicator(ctx context.Context, chatID int64) error { return nil }
+
+func (m *mockMessenger) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	if m.downloadErr != nil {
+		return nil, "", m.downloadErr
+	}
+	return m.downloadData, m.downloadMime, nil
+}
+
+func (m *mockMessenger) PlatformName() string { return "mock" }
+
+func (m *mockMessenger) last(chatID int64) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msgs := m.messages[chatID]
+	if len(msgs) == 0 {
+		return ""
+	}
+	return msgs[len(msgs)-1]
+}
+
+func (m *mockMessenger) count(chatID int64) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.messages[chatID])
+}
+
+// mockAIClient returns a fixed, configurable result for every call and
+// counts how many times it was invoked — the key assertion for quota
+// gating is that a blocked request never reaches the AI client at all.
+type mockAIClient struct {
+	mu          sync.Mutex
+	calls       int
+	parseResult *ai.ParsedTransaction
+	parseErr    error
+}
+
+func (m *mockAIClient) call() (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	if m.parseErr != nil {
+		return nil, nil, m.parseErr
+	}
+	return m.parseResult, &ai.UsageMetadata{Model: "mock-model"}, nil
+}
+
+func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call()
+}
+
+func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call()
+}
+
+func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call()
+}
+
+func (m *mockAIClient) ProviderName() string { return "mock" }
+
+func (m *mockAIClient) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+// testEnv bundles everything an integration test needs against the real
+// dev Postgres/Redis (see docker-compose.yml), skipped automatically if
+// either is unreachable — matching the pattern already used by
+// internal/service/budget and internal/service/reconciliation.
+type testEnv struct {
+	db        *gorm.DB
+	redis     *redis.Client
+	messenger *mockMessenger
+	ai        *mockAIClient
+}
+
+func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
+	t.Helper()
+
+	appCfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(appCfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("%s:%s", appCfg.RedisHost, appCfg.RedisPort)})
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("skipping integration test, redis not reachable: %v", err)
+	}
+
+	messenger := newMockMessenger()
+	aiClient := &mockAIClient{}
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+	reconSvc := reconciliation.NewService(gormDB, txSvc)
+	usageSvc := usage.NewService(gormDB)
+
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, cfg)
+
+	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
+}
+
+// newChatID returns a unique chat ID per test so parallel/sequential test
+// runs never collide on the same User row or Redis quota/reward keys.
+func newChatID() int64 {
+	return time.Now().UnixNano()
+}
+
+func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
+	t.Helper()
+	ctx := context.Background()
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err == nil {
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.BalanceReconciliation{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Account{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.AIUsageLog{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.QuotaUsage{})
+		env.db.Unscoped().Delete(&user)
+	}
+
+	keys, _ := env.redis.Keys(ctx, fmt.Sprintf("aura:*:%d*", chatID)).Result()
+	if len(keys) > 0 {
+		env.redis.Del(ctx, keys...)
+	}
+}
+
+func TestHandleUpdate_Start(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/start"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyWelcome)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestHandleUpdate_Language(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// Invalid arg replies with usage instructions, in the user's current language.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/language", CommandArgs: "fr"})
+	wantUsage := i18n.T(models.LanguageID, i18n.KeyLanguageUsage)
+	if got := env.messenger.last(chatID); got != wantUsage {
+		t.Errorf("invalid language reply = %q, want %q", got, wantUsage)
+	}
+
+	// Valid arg switches language and confirms in the new language.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/language", CommandArgs: "en"})
+	wantSet := i18n.T(models.LanguageEN, i18n.KeyLanguageSet)
+	if got := env.messenger.last(chatID); got != wantSet {
+		t.Errorf("set language reply = %q, want %q", got, wantSet)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if user.Language != models.LanguageEN {
+		t.Errorf("user.Language = %q, want %q", user.Language, models.LanguageEN)
+	}
+}
+
+func TestHandleUpdate_UndoNone(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/undo"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyUndoNone)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestHandleUpdate_DashboardUnavailableWhenUnconfigured(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, DashboardBaseURL: ""})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/dashboard"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyDashboardUnavailable)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestHandleUpdate_DashboardIssuesLoginLink(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, DashboardBaseURL: "https://dash.example.com"})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/dashboard"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "https://dash.example.com/auth/verify?token=") {
+		t.Errorf("reply = %q, want it to contain the dashboard login link", got)
+	}
+}
+
+func TestHandleUpdate_ClaimInvalidCode(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, RewardMaxClaimsPerDay: 1, RewardBonusAmount: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	// No code was ever issued, so any code claimed is invalid.
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/claim", CommandArgs: "BOGUS123"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyClaimInvalidCode)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_Success covers the default (non-command)
+// routing path: unambiguous AI parse -> a real Transaction row is persisted
+// and the user gets a confirmation reply.
+func TestHandleUpdate_TransactionInput_Success(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type:         "expense",
+		Amount:       25000,
+		Currency:     "IDR",
+		CategoryName: "Food",
+		Description:  "Lunch",
+	}
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Text: "lunch 25000"})
+
+	if got := env.ai.callCount(); got != 1 {
+		t.Fatalf("AI client calls = %d, want 1", got)
+	}
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "25000") {
+		t.Errorf("reply = %q, want it to mention the amount", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 1 {
+		t.Errorf("transaction count = %d, want 1", count)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_Ambiguous covers the AI asking a
+// clarifying question instead of returning a parsed result: no transaction
+// should be created, and the clarification question is relayed verbatim.
+func TestHandleUpdate_TransactionInput_Ambiguous(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		IsAmbiguous:           true,
+		ClarificationQuestion: "How much did you spend?",
+	}
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Text: "i bought something"})
+
+	if got := env.messenger.last(chatID); got != "How much did you spend?" {
+		t.Errorf("reply = %q, want the clarification question verbatim", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("transaction count = %d, want 0 for an ambiguous parse", count)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_VoiceUnsupported covers a provider that
+// can't transcribe audio: the user gets a clear message, not a generic
+// "trouble" error.
+func TestHandleUpdate_TransactionInput_VoiceUnsupported(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseErr = apperror.ErrProviderAudioUnsupported
+	env.messenger.downloadData = []byte("fake audio")
+	env.messenger.downloadMime = "audio/ogg"
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsVoice: true, VoiceFileID: "file123"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyVoiceUnsupported, "mock")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_QuotaGating_BlocksWithoutReward is the core guardrail
+// this test suite exists to protect: once a free-tier user has used their
+// daily quota, the AI client must never be called again, and the user gets
+// the no-reward exceeded message when no affiliate link is configured.
+func TestHandleUpdate_QuotaGating_BlocksWithoutReward(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 1})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "Food", Description: "x"}
+
+	// First message consumes the only quota slot.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "coffee 1000"})
+	if got := env.ai.callCount(); got != 1 {
+		t.Fatalf("AI calls after 1st message = %d, want 1", got)
+	}
+
+	// Second message should be blocked before ever reaching the AI client.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "coffee 1000"})
+	if got := env.ai.callCount(); got != 1 {
+		t.Errorf("AI calls after quota exceeded = %d, want still 1 (blocked)", got)
+	}
+
+	want := i18n.T(models.LanguageID, i18n.KeyQuotaExceededNoReward, 1)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_QuotaGating_OffersRewardWhenConfigured mirrors the
+// blocked case above, but with an affiliate link configured: the user
+// should be offered a claimable bonus-quota code instead of a flat "no".
+func TestHandleUpdate_QuotaGating_OffersRewardWhenConfigured(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{
+		FreeTierDailyQuota:    1,
+		RewardAffiliateURL:    "https://example.com/aff",
+		RewardBonusAmount:     3,
+		RewardMaxClaimsPerDay: 1,
+	})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "Food", Description: "x"}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "coffee 1000"})
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "coffee 1000"})
+
+	if got := env.ai.callCount(); got != 1 {
+		t.Errorf("AI calls after quota exceeded = %d, want still 1 (blocked)", got)
+	}
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "https://example.com/aff") {
+		t.Errorf("reply = %q, want it to contain the affiliate link", got)
+	}
+
+	// The claim code offered in the reply should actually be claimable.
+	quotaCountBefore, err := quota.CountToday(ctx, env.redis, chatID)
+	if err != nil {
+		t.Fatalf("read quota count: %v", err)
+	}
+	if quotaCountBefore != 1 {
+		t.Fatalf("quota count = %d, want 1 (blocked message doesn't consume quota)", quotaCountBefore)
+	}
+}
+
+// TestHandleUpdate_QuotaGating_ProTierNeverBlocked confirms the Pro tier
+// bypasses the daily cap entirely, regardless of how many prompts were
+// already used today.
+func TestHandleUpdate_QuotaGating_ProTierNeverBlocked(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 1})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "Food", Description: "x"}
+
+	// Seed the user as Pro tier before sending anything (get-or-create then update).
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/start"})
+	if err := env.db.Model(&models.User{}).Where("telegram_chat_id = ?", chatID).Update("tier", models.TierPro).Error; err != nil {
+		t.Fatalf("upgrade user to pro: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "coffee 1000"})
+	}
+
+	if got := env.ai.callCount(); got != 3 {
+		t.Errorf("AI calls for pro-tier user = %d, want 3 (never blocked)", got)
+	}
+}
