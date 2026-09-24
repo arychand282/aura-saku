@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"aura-saku/internal/auth"
+	"aura-saku/internal/logger"
 	"aura-saku/internal/models"
 	"aura-saku/pkg/httpresponse"
 )
@@ -56,14 +58,32 @@ func RequireSession(redisClient *redis.Client, db *gorm.DB, jwtSecret string) fi
 			if err != nil {
 				return httpresponse.Error(c, fiber.StatusBadRequest, "invalid user_id")
 			}
+			if err := db.Select("id").First(&models.User{}, uint(parsed)).Error; err != nil {
+				return httpresponse.Error(c, fiber.StatusNotFound, "user not found")
+			}
 			c.Locals(LocalsEffectiveUserID, uint(parsed))
 			c.Locals(LocalsAdminID, claims.AdminID)
+
+			// Fire-and-forget: this is financial data and more than one admin
+			// can exist, so every cross-user access needs to be reconstructable
+			// later. Runs off the request goroutine with its own context (not
+			// c.Context(), which fasthttp recycles once the handler returns)
+			// so a slow/failed write never adds latency or fails the request.
+			path := strings.Clone(c.Path())
+			go writeAdminAuditLog(db, claims.AdminID, uint(parsed), path)
 		default: // RoleUser
 			c.Locals(LocalsEffectiveUserID, claims.UserID)
 		}
 
 		c.Locals(LocalsRole, claims.Role)
 		return c.Next()
+	}
+}
+
+func writeAdminAuditLog(db *gorm.DB, adminID, targetUserID uint, path string) {
+	entry := models.AdminAuditLog{AdminID: adminID, TargetUserID: targetUserID, Path: path}
+	if err := db.WithContext(context.Background()).Create(&entry).Error; err != nil {
+		logger.Error(logger.DBQueryFailed, "write admin audit log", err)
 	}
 }
 
