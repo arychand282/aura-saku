@@ -7,11 +7,12 @@ import (
 )
 
 // RunMigrations auto-migrates every domain model. Order matters for FK
-// creation: User must exist before anything referencing UserID, Category
-// before Transaction.
+// creation: User must exist before anything referencing UserID, Account and
+// Category before Transaction.
 func RunMigrations(gormDB *gorm.DB) error {
 	return gormDB.AutoMigrate(
 		&models.User{},
+		&models.Account{},
 		&models.Subscription{},
 		&models.Category{},
 		&models.Transaction{},

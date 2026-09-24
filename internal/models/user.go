@@ -26,6 +26,7 @@ type User struct {
 	UpdatedAt        time.Time
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
 
+	Accounts        []Account               `gorm:"foreignKey:UserID"`
 	Subscriptions   []Subscription          `gorm:"foreignKey:UserID"`
 	Transactions    []Transaction           `gorm:"foreignKey:UserID"`
 	Budgets         []Budget                `gorm:"foreignKey:UserID"`

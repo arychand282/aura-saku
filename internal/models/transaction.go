@@ -29,9 +29,22 @@ const (
 // historical exchange rate at the time of the transaction), so monthly
 // aggregation is always done in a single consistent currency without ever
 // mutating the original recorded values.
+// AccountID is nullable rather than required: it's always set by the
+// application (via internal/service/account.GetOrCreateDefault) going
+// forward, but nullable avoids a risky NOT NULL migration on a table that
+// may already have rows, mirroring the CategoryID pattern below.
+//
+// Future multi-account note: when a second account becomes
+// selectable, a "transfer" between two of the user's own accounts should be
+// recorded as two linked Transaction rows (an outflow from the source
+// account, an inflow to the destination) rather than adding a ToAccountID
+// column — at that point a LinkedTransactionID field will be needed so
+// /undo can revert both legs atomically. Not added yet since there's no
+// caller that can create a second account.
 type Transaction struct {
 	ID         uint  `gorm:"primaryKey"`
 	UserID     uint  `gorm:"not null;index"`
+	AccountID  *uint `gorm:"index"`
 	CategoryID *uint `gorm:"index"`
 
 	Type        TransactionType `gorm:"size:15;not null;index"`
@@ -51,5 +64,6 @@ type Transaction struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 
 	User     User      `gorm:"foreignKey:UserID"`
+	Account  *Account  `gorm:"foreignKey:AccountID"`
 	Category *Category `gorm:"foreignKey:CategoryID"`
 }

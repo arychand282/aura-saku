@@ -30,14 +30,27 @@ type Config struct {
 
 	AIProvider string
 
-	GeminiAPIKey string
-	GeminiModel  string
+	// *BaseURL fields override each provider's API endpoint (empty means the
+	// client uses its own built-in default) — useful for Azure OpenAI,
+	// Bedrock/Vertex-hosted Claude, self-hosted OpenAI-compatible gateways
+	// (LiteLLM/vLLM/Ollama), or a corporate proxy, without a code change.
+	GeminiAPIKey  string
+	GeminiModel   string
+	GeminiBaseURL string
 
-	OpenAIAPIKey string
-	OpenAIModel  string
+	OpenAIAPIKey  string
+	OpenAIModel   string
+	OpenAIBaseURL string
 
-	AnthropicAPIKey string
-	AnthropicModel  string
+	AnthropicAPIKey     string
+	AnthropicModel      string
+	AnthropicBaseURL    string
+	AnthropicAPIVersion string
+
+	// FXProviderBaseURL overrides the live exchange-rate provider's base
+	// URL (empty means fx.LiveService uses its own built-in default) — kept
+	// configurable because the provider has already changed domains once.
+	FXProviderBaseURL string
 
 	MaxInputChars          int
 	RateLimitWindowSeconds int
@@ -76,14 +89,20 @@ func Load() (*Config, error) {
 
 		AIProvider: getEnv("AI_PROVIDER", "gemini"),
 
-		GeminiAPIKey: getEnv("GEMINI_API_KEY", ""),
-		GeminiModel:  getEnv("GEMINI_MODEL", "gemini-2.0-flash"),
+		GeminiAPIKey:  getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:   getEnv("GEMINI_MODEL", "gemini-2.0-flash"),
+		GeminiBaseURL: getEnv("GEMINI_BASE_URL", ""),
 
-		OpenAIAPIKey: getEnv("OPENAI_API_KEY", ""),
-		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIAPIKey:  getEnv("OPENAI_API_KEY", ""),
+		OpenAIModel:   getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIBaseURL: getEnv("OPENAI_BASE_URL", ""),
 
-		AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
-		AnthropicModel:  getEnv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+		AnthropicAPIKey:     getEnv("ANTHROPIC_API_KEY", ""),
+		AnthropicModel:      getEnv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+		AnthropicBaseURL:    getEnv("ANTHROPIC_BASE_URL", ""),
+		AnthropicAPIVersion: getEnv("ANTHROPIC_API_VERSION", ""),
+
+		FXProviderBaseURL: getEnv("FX_PROVIDER_BASE_URL", ""),
 
 		MaxInputChars:          getEnvInt("MAX_INPUT_CHARS", 200),
 		RateLimitWindowSeconds: getEnvInt("RATE_LIMIT_WINDOW_SECONDS", 10),

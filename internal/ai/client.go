@@ -1,6 +1,10 @@
 package ai
 
-import "context"
+import (
+	"context"
+	"regexp"
+	"strings"
+)
 
 // ParsedTransaction is the structured-output contract every provider must
 // populate from free-form text or transcribed audio. See
@@ -44,4 +48,33 @@ type AIClient interface {
 	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string) (*ParsedTransaction, *UsageMetadata, error)
 
 	ProviderName() string
+}
+
+var jsonFenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
+
+// StripJSONFences removes a markdown code fence LLMs commonly wrap JSON
+// output in despite being told not to, shared by every provider's response
+// parser so this quirk is only handled in one place.
+func StripJSONFences(s string) string {
+	s = strings.TrimSpace(s)
+	if m := jsonFenceRe.FindStringSubmatch(s); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return s
+}
+
+// ValidateParsedTransaction is the shared schema-shape check every
+// provider's response must pass before it's trusted: a real, known
+// transaction type, and a positive amount unless the model flagged the
+// input as ambiguous.
+func ValidateParsedTransaction(pt *ParsedTransaction) bool {
+	switch pt.Type {
+	case "expense", "income", "investment", "transfer", "reward":
+	default:
+		return false
+	}
+	if !pt.IsAmbiguous && pt.Amount <= 0 {
+		return false
+	}
+	return true
 }

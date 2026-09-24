@@ -145,6 +145,14 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	if err != nil {
+		if errors.Is(err, apperror.ErrProviderAudioUnsupported) {
+			// Expected capability gap, not a failure — no error log.
+			s.reply(ctx, msg.ChatID, fmt.Sprintf(
+				"Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
+				s.aiClient.ProviderName(),
+			))
+			return
+		}
 		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d", user.ID), err)
 		s.reply(ctx, msg.ChatID, "Sorry, I had trouble processing that. Please try again in a moment.")
 		return

@@ -4,19 +4,20 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
-// Service resolves an exchange rate between two ISO 4217 currency codes.
+// Service resolves an exchange rate between two ISO 4217 currency codes, as
+// of a given point in time (the transaction's OccurredAt), so multi-currency
+// aggregation reflects the rate at the time money actually moved rather than
+// whatever the rate happens to be when the report is generated.
 type Service interface {
-	GetExchangeRate(ctx context.Context, from, to string) (float64, error)
+	GetExchangeRate(ctx context.Context, from, to string, at time.Time) (float64, error)
 }
 
-// StaticService is a fixed dummy-rate implementation so transaction
-// persistence has something real to call during scaffold/dev.
-//
-// TODO: replace with a real historical FX rate provider (e.g.
-// exchangerate.host or a paid provider) that returns the rate as of a given
-// transaction timestamp, not just the current rate.
+// StaticService is a fixed dummy-rate table, ignoring `at` since it has no
+// concept of history. Used as LiveService's fallback so a live-provider
+// outage never blocks recording a transaction.
 type StaticService struct {
 	ratesToUSD map[string]float64
 }
@@ -34,7 +35,7 @@ func NewStaticService() *StaticService {
 
 var _ Service = (*StaticService)(nil)
 
-func (s *StaticService) GetExchangeRate(ctx context.Context, from, to string) (float64, error) {
+func (s *StaticService) GetExchangeRate(ctx context.Context, from, to string, at time.Time) (float64, error) {
 	from = strings.ToUpper(from)
 	to = strings.ToUpper(to)
 	if from == to {

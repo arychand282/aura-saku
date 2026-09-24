@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"aura-saku/internal/models"
+	"aura-saku/internal/service/account"
 	"aura-saku/internal/service/transaction"
 )
 
@@ -34,7 +35,14 @@ func NewService(db *gorm.DB, txSvc *transaction.Service) *Service {
 // this bot, rather than a separate interactive confirmation step) so future
 // syncs reconcile cleanly.
 func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) (*models.BalanceReconciliation, error) {
-	calculated, err := s.calculatedBalance(ctx, userID)
+	// /sync has no account-selection UX yet, so it always targets the
+	// user's single default account (see internal/service/account).
+	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	calculated, err := s.calculatedBalance(ctx, acc.ID)
 	if err != nil {
 		return nil, fmt.Errorf("compute calculated balance: %w", err)
 	}
@@ -42,6 +50,7 @@ func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) 
 	discrepancy := actualBalance - calculated
 	rec := &models.BalanceReconciliation{
 		UserID:            userID,
+		AccountID:         &acc.ID,
 		ActualBalance:     actualBalance,
 		CalculatedBalance: calculated,
 		Discrepancy:       discrepancy,
@@ -76,7 +85,7 @@ func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) 
 	return rec, nil
 }
 
-func (s *Service) calculatedBalance(ctx context.Context, userID uint) (float64, error) {
+func (s *Service) calculatedBalance(ctx context.Context, accountID uint) (float64, error) {
 	type totalRow struct {
 		Type  string
 		Total float64
@@ -84,7 +93,7 @@ func (s *Service) calculatedBalance(ctx context.Context, userID uint) (float64, 
 	var rows []totalRow
 	err := s.db.WithContext(ctx).Model(&models.Transaction{}).
 		Select("type, COALESCE(SUM(converted_amount), 0) as total").
-		Where("user_id = ?", userID).
+		Where("account_id = ?", accountID).
 		Group("type").
 		Scan(&rows).Error
 	if err != nil {

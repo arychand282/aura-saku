@@ -106,5 +106,6 @@ func cleanupUser(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Transaction{})
+	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Account{})
 	gormDB.Unscoped().Where("id = ?", userID).Delete(&models.User{})
 }

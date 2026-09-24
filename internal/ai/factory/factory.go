@@ -19,11 +19,11 @@ import (
 func NewAIClient(cfg *config.Config) (ai.AIClient, error) {
 	switch strings.ToLower(cfg.AIProvider) {
 	case "gemini":
-		return gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel), nil
+		return gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiBaseURL), nil
 	case "openai":
-		return openai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel), nil
+		return openai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIBaseURL), nil
 	case "anthropic":
-		return anthropic.New(cfg.AnthropicAPIKey, cfg.AnthropicModel), nil
+		return anthropic.New(cfg.AnthropicAPIKey, cfg.AnthropicModel, cfg.AnthropicBaseURL, cfg.AnthropicAPIVersion), nil
 	default:
 		return nil, fmt.Errorf("unsupported AI_PROVIDER: %s", cfg.AIProvider)
 	}

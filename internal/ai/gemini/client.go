@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
 
 	"aura-saku/internal/ai"
 	"aura-saku/internal/ai/prompt"
 )
 
+// defaultBaseURL is used when baseURL isn't overridden via config
+// (GEMINI_BASE_URL) — override for a proxy, regional endpoint, or
+// Vertex AI-compatible gateway.
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 // Client implements ai.AIClient against the Gemini REST API directly
@@ -28,11 +29,15 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func New(apiKey, model string) *Client {
+// New builds a Client. An empty baseURL falls back to defaultBaseURL.
+func New(apiKey, model, baseURL string) *Client {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
 	return &Client{
 		apiKey:     apiKey,
 		model:      model,
-		baseURL:    defaultBaseURL,
+		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -73,28 +78,6 @@ type genResponse struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
 	} `json:"usageMetadata"`
-}
-
-var fenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
-
-func stripFences(s string) string {
-	s = strings.TrimSpace(s)
-	if m := fenceRe.FindStringSubmatch(s); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	return s
-}
-
-func validate(pt *ai.ParsedTransaction) bool {
-	switch pt.Type {
-	case "expense", "income", "investment", "transfer", "reward":
-	default:
-		return false
-	}
-	if !pt.IsAmbiguous && pt.Amount <= 0 {
-		return false
-	}
-	return true
 }
 
 // generate sends the given content parts to Gemini and parses the response
@@ -145,12 +128,12 @@ func (c *Client) tryParse(resp *genResponse) (*ai.ParsedTransaction, bool) {
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
 		return nil, false
 	}
-	raw := stripFences(resp.Candidates[0].Content.Parts[0].Text)
+	raw := ai.StripJSONFences(resp.Candidates[0].Content.Parts[0].Text)
 	var pt ai.ParsedTransaction
 	if err := json.Unmarshal([]byte(raw), &pt); err != nil {
 		return nil, false
 	}
-	if !validate(&pt) {
+	if !ai.ValidateParsedTransaction(&pt) {
 		return nil, false
 	}
 	return &pt, true
@@ -192,7 +175,7 @@ func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, 
 
 func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: fmt.Sprintf(prompt.TransactionSystemPrompt, defaultCurrency)},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
 		{Text: "User message: " + userText},
 	}
 	return c.generate(ctx, parts)
@@ -200,7 +183,7 @@ func (c *Client) ParseTransactionText(ctx context.Context, userText string, defa
 
 func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: fmt.Sprintf(prompt.TransactionSystemPrompt, defaultCurrency)},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
 		{Text: "Transcribe the following voice note and extract the transaction it describes."},
 		{InlineData: &inlineData{
 			MimeType: mimeType,
@@ -212,7 +195,7 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 
 func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	parts := []genPart{
-		{Text: fmt.Sprintf(prompt.TransactionSystemPrompt, defaultCurrency)},
+		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now())},
 		{Text: "Original user message: " + originalText},
 		{Text: "The user was asked to clarify and replied: " + clarificationReply},
 		{Text: "Combine both messages into a single transaction extraction."},

@@ -2,7 +2,7 @@
 
 Telegram-based AI expense tracker SaaS — Go backend (Fiber + GORM + PostgreSQL + Redis), with a pluggable AI client (Gemini by default) and a messaging layer abstracted for future WhatsApp support.
 
-This scaffold is a **runnable skeleton**: config, database, Redis, migrations, security middleware, the Telegram webhook, and the dashboard REST API are fully wired. The core NLP parsing (Gemini) is implemented; persistence of parsed transactions, budget math, and balance reconciliation are intentionally `TODO`-stubbed behind fixed interfaces for the next development pass — see `// TODO` comments in `internal/service/*`.
+All three AI providers (Gemini, OpenAI, Anthropic) are fully implemented against their REST APIs, transaction persistence, budgeting, and reconciliation are real (not stubbed), and every external service endpoint (AI providers, the FX rate provider) is configurable via `.env` rather than hardcoded — see [Configurable external endpoints](#configurable-external-endpoints) below.
 
 ## Prerequisites
 
@@ -82,11 +82,43 @@ Look up what a code means (and every code that exists) in `internal/logger/logge
 
 Backend and database are **UTC everywhere**, enforced at the connection level rather than by convention alone: `internal/db/postgres.go` sets `TimeZone=UTC` on the Postgres DSN and overrides GORM's `NowFunc` to `time.Now().UTC()` (GORM's default uses server-local time for every `CreatedAt`/`UpdatedAt`/`DeletedAt`, which would otherwise silently leak the host machine's timezone into storage). Docker containers also set `TZ=UTC` as defense-in-depth. When writing new code, always call `time.Now().UTC()` explicitly rather than relying on ambient config — never assume the process is running in a UTC-timezone environment. Convert to a user's local time only at the display layer (Telegram replies, dashboard UI, CSV exports), using `User.TimezoneOffset`.
 
-## What's implemented vs. TODO
+## Configurable external endpoints
 
-**Implemented:** config/DB/Redis wiring, all 9 GORM models + migrations, the full security middleware chain (length check → rate limit → daily quota, in that order, before any AI call), the Telegram webhook (fast-ack + async goroutine dispatch), Gemini text & voice-note parsing (structured JSON output with fence-stripping, validation, and one repair retry), transaction persistence with currency conversion + category resolution (`internal/service/transaction`), `/undo` (soft-delete + `UndoHistory` snapshot), 50/30/20 budget evaluation with over-allocation and spending-pace anomaly warnings + end-of-month rollover suggestions (`internal/service/budget`), `/sync` balance reconciliation that auto-records a blind-spot adjustment transaction on a discrepancy (`internal/service/reconciliation`), bot command routing (`/start`, `/undo`, `/sync`, free-text/voice) with instant post-entry budget feedback, error-code-tagged logging, UTC-everywhere timestamps, and dashboard endpoints (`/healthz`, `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`).
+Every external HTTP dependency's base URL is overridable via `.env` rather than hardcoded, because the FX provider has already changed domains once during development:
 
-**TODO (next session):** OpenAI/Anthropic provider implementations (currently `ErrNotImplemented` stubs), a real historical FX rate provider (currently a fixed dummy rate table in `internal/service/fx`), richer relative-date parsing in `resolveOccurredAt` ("3 days ago", weekday names), and multi-account support (reconciliation currently assumes a single tracked cash balance — see the `TODO` on `balanceSign` in `internal/service/reconciliation`).
+| Env var | Default | Purpose |
+|---|---|---|
+| `GEMINI_BASE_URL` | Google's Gemini API | Override for a proxy/regional endpoint |
+| `OPENAI_BASE_URL` | `api.openai.com/v1` | Override for Azure OpenAI, LiteLLM/vLLM/Ollama, or a corporate proxy |
+| `ANTHROPIC_BASE_URL` | `api.anthropic.com/v1` | Override for a Bedrock/Vertex-hosted Claude endpoint or a proxy |
+| `ANTHROPIC_API_VERSION` | `2023-06-01` | Anthropic's `anthropic-version` header. Only covers a version-header bump — a real response-schema change would still need a code update in `internal/ai/anthropic` |
+| `FX_PROVIDER_BASE_URL` | Frankfurter (`api.frankfurter.dev/v1`) | The live exchange-rate provider. Falls back to a static rate table on any failure regardless of which URL is configured |
+
+Leave any of these blank to use the built-in default.
+
+## What's implemented
+
+Config/DB/Redis wiring, all 10 GORM models (including `Account`) + migrations, the full security middleware chain (length check → rate limit → daily quota, in that order, before any AI call), the Telegram webhook (fast-ack + async goroutine dispatch), UTC-everywhere timestamps, error-code-tagged logging (`internal/logger`).
+
+**AI (`internal/ai`):** Gemini, OpenAI, and Anthropic all fully implemented against their REST APIs (no SDKs) — structured JSON output with fence-stripping, schema validation, and one repair retry, shared across all three providers (`ai.StripJSONFences`, `ai.ValidateParsedTransaction`). Gemini and OpenAI both support voice-note transcription (Gemini natively, OpenAI via Whisper); Anthropic has no native audio support and returns `apperror.ErrProviderAudioUnsupported`, which the bot surfaces as a clear message rather than a generic failure. The system prompt tells the model today's date and asks it to resolve relative time language ("yesterday", "3 days ago") into a strict ISO date itself, which `internal/service/transaction.resolveOccurredAt` then parses — offloading that reasoning to the model instead of pattern-matching natural language in Go.
+
+**Transactions (`internal/service/transaction`):** persistence with category resolution (seeded with a best-effort Needs/Wants/Savings bucket guess, self-healing categories created before the heuristic existed), historical currency conversion via `internal/service/fx`, and `/undo` (soft-delete + `UndoHistory` snapshot).
+
+**Budget (`internal/service/budget`):** 50/30/20 evaluation against this month's income and spend-by-bucket, over-allocation warnings, a spending-pace anomaly check for Wants, and end-of-month rollover suggestions.
+
+**Reconciliation (`internal/service/reconciliation`):** `/sync` computes the calculated balance and, on a discrepancy, auto-records a blind-spot adjustment transaction (same "commit immediately, `/undo` to revert" pattern used elsewhere).
+
+**FX (`internal/service/fx`):** `LiveService` fetches real historical rates from Frankfurter, falling back to a static rate table on any failure so a provider outage never blocks recording a transaction.
+
+**Accounts (`internal/models.Account`, `internal/service/account`):** schema groundwork for multi-account support — every user gets one auto-created "Default" account, and every transaction/reconciliation is attributed to it. No bot/dashboard UX to create or select additional accounts yet (intentionally deferred); see the code comments on `Transaction.AccountID` and `reconciliation.balanceSign` for how a second account and cross-account transfers are expected to be modeled when that UX is built.
+
+Dashboard endpoints: `/healthz`, `/api/v1/transactions`, `/api/v1/reports/summary`, `/api/v1/reports/top-categories`, `/api/v1/reports/budget-progress`, `/api/v1/export?format=csv|xlsx`.
+
+## TODO (next session)
+
+- Bot/dashboard UX to create and select additional accounts (schema is ready — see Accounts above)
+- CSV/Excel export pagination or streaming if transaction history grows past the current 5000-row safety cap
+- Dashboard auth (all endpoints currently trust a `user_id` query param — see `TODO(auth)` comments in `internal/api/handlers`)
 
 ## Commands
 

@@ -15,8 +15,9 @@ const (
 // recorded transactions. A Discrepancy triggers an AI-suggested "blind spot"
 // adjustment entry, tracked via SuggestedAdjustmentTxID once created.
 type BalanceReconciliation struct {
-	ID     uint `gorm:"primaryKey"`
-	UserID uint `gorm:"not null;index"`
+	ID        uint  `gorm:"primaryKey"`
+	UserID    uint  `gorm:"not null;index"`
+	AccountID *uint `gorm:"index"` // which tracked balance this sync applies to; nullable for the same reason as Transaction.AccountID
 
 	ActualBalance     float64              `gorm:"type:numeric(18,2);not null"`
 	CalculatedBalance float64              `gorm:"type:numeric(18,2);not null"`

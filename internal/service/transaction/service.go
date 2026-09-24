@@ -13,6 +13,7 @@ import (
 	"aura-saku/internal/ai"
 	"aura-saku/internal/apperror"
 	"aura-saku/internal/models"
+	"aura-saku/internal/service/account"
 	"aura-saku/internal/service/fx"
 )
 
@@ -37,13 +38,21 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 		return nil, fmt.Errorf("resolve category: %w", err)
 	}
 
-	rate, err := s.fxSvc.GetExchangeRate(ctx, parsed.Currency, defaultCurrency)
+	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	occurredAt := resolveOccurredAt(parsed.OccurredAtHint)
+
+	rate, err := s.fxSvc.GetExchangeRate(ctx, parsed.Currency, defaultCurrency, occurredAt)
 	if err != nil {
 		return nil, fmt.Errorf("resolve exchange rate: %w", err)
 	}
 
 	tx := &models.Transaction{
 		UserID:           userID,
+		AccountID:        &acc.ID,
 		CategoryID:       categoryID,
 		Type:             models.TransactionType(parsed.Type),
 		Description:      parsed.Description,
@@ -53,7 +62,7 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 		ConvertedAmount:  parsed.Amount * rate,
 		Source:           source,
 		RawInput:         rawInput,
-		OccurredAt:       resolveOccurredAt(parsed.OccurredAtHint),
+		OccurredAt:       occurredAt,
 	}
 
 	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
@@ -79,6 +88,11 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 // Positive amount records an income adjustment (unrecorded money in);
 // negative records an expense adjustment (unrecorded money out).
 func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount float64, currency, description string) (*models.Transaction, error) {
+	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
+	if err != nil {
+		return nil, err
+	}
+
 	txType := models.TxIncome
 	absAmount := amount
 	if amount < 0 {
@@ -88,6 +102,7 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 
 	tx := &models.Transaction{
 		UserID:           userID,
+		AccountID:        &acc.ID,
 		Type:             txType,
 		Description:      description,
 		OriginalAmount:   absAmount,
@@ -99,7 +114,7 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 		OccurredAt:       time.Now().UTC(),
 	}
 
-	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		if err := txDB.Omit("User").Create(tx).Error; err != nil {
 			return fmt.Errorf("insert adjustment transaction: %w", err)
 		}
@@ -209,21 +224,38 @@ func (s *Service) resolveCategory(ctx context.Context, categoryName string) (*ui
 	return &category.ID, nil
 }
 
-// resolveOccurredAt interprets the AI's relative-time hint into a concrete
-// timestamp.
-//
-// TODO: handle richer relative hints ("3 days ago", weekday names, explicit
-// dates) — anything unrecognized currently defaults to now.
+// resolveOccurredAt interprets the AI's occurred-at hint into a concrete
+// timestamp. The prompt (see internal/ai/prompt) tells the model today's
+// date and asks it to resolve any relative language ("yesterday", "last
+// monday", "3 days ago") into a strict ISO 8601 date itself — offloading
+// that reasoning to the model is far more robust than pattern-matching
+// arbitrary natural language in Go. The legacy word cases below remain as a
+// defensive fallback in case a model doesn't follow the ISO-date instruction.
 func resolveOccurredAt(hint string) time.Time {
 	now := time.Now().UTC()
-	switch strings.ToLower(strings.TrimSpace(hint)) {
+	hint = strings.ToLower(strings.TrimSpace(hint))
+
+	switch hint {
 	case "", "today", "now":
 		return now
 	case "yesterday":
 		return now.AddDate(0, 0, -1)
-	default:
-		return now
 	}
+
+	if parsed, err := time.Parse("2006-01-02", hint); err == nil {
+		if parsed.Year() == now.Year() && parsed.YearDay() == now.YearDay() {
+			// Same-day entry: preserve actual time-of-day rather than
+			// truncating to midnight, so ordering (e.g. /undo "most recent")
+			// stays accurate.
+			return now
+		}
+		return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC)
+	}
+
+	// Unrecognized hint (model didn't follow the ISO-date instruction) —
+	// default to now rather than failing the whole transaction over a
+	// cosmetic date-parsing miss.
+	return now
 }
 
 func writeUndoHistory(db *gorm.DB, userID uint, tx *models.Transaction, action string) error {

@@ -50,7 +50,7 @@ func main() {
 
 	telegramClient := telegram.New(cfg.TelegramBotToken)
 
-	fxSvc := fx.NewStaticService()
+	fxSvc := fx.NewLiveService(cfg.FXProviderBaseURL, fx.NewStaticService())
 	txSvc := transaction.NewService(gormDB, fxSvc)
 	budgetSvc := budget.NewService(gormDB)
 	reconSvc := reconciliation.NewService(gormDB, txSvc)
