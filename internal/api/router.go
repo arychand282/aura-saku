@@ -50,6 +50,6 @@ func Setup(app *fiber.App, deps Deps) {
 	v1.Get("/reports/top-categories", reportHandler.TopCategories)
 	v1.Get("/reports/budget-progress", reportHandler.BudgetProgress)
 
-	exportHandler := handlers.NewExportHandler()
+	exportHandler := handlers.NewExportHandler(deps.DB)
 	v1.Get("/export", exportHandler.Export)
 }
