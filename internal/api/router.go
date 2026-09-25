@@ -36,11 +36,12 @@ func Setup(app *fiber.App, deps Deps) {
 	healthHandler := handlers.NewHealthHandler(deps.DB, deps.Redis)
 	app.Get("/healthz", healthHandler.Check)
 
-	// Daily AI-prompt quota is enforced downstream in bot.Service (not here)
-	// so a blocked user gets an actual reply — including the earn-bonus-quota
-	// offer — rather than a silent webhook-level rejection.
+	// Daily AI-prompt quota and too-long-input are both enforced downstream
+	// in bot.Service (not here) so a blocked user gets an actual reply —
+	// including the earn-bonus-quota offer — rather than a silent
+	// webhook-level rejection.
 	app.Post("/webhook/telegram",
-		middleware.LimitInputLength(deps.TelegramClient, deps.Config.MaxInputChars),
+		middleware.ParseIncomingMessage(deps.TelegramClient),
 		middleware.RateLimiter(deps.Redis, deps.Config.RateLimitWindowSeconds, deps.Config.RateLimitMaxRequests),
 		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret, deps.Redis),
 	)

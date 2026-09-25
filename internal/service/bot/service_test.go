@@ -375,6 +375,46 @@ func TestHandleUpdate_TransactionInput_VoiceUnsupported(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_TransactionInput_TooLong covers the too-long-input
+// guardrail: an over-limit text message must never reach the AI client,
+// and the user must get an actual reply explaining why — this replaced a
+// silent HTTP-middleware-level rejection the user never saw at all.
+func TestHandleUpdate_TransactionInput_TooLong(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, MaxInputChars: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Text: "this message is way over the ten character limit"})
+
+	if got := env.ai.callCount(); got != 0 {
+		t.Errorf("AI calls for over-limit input = %d, want 0 (blocked)", got)
+	}
+
+	want := i18n.T(models.LanguageID, i18n.KeyInputTooLong, 10)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_VoiceBypassesLengthCheck confirms voice
+// messages are never subject to the text-length guardrail, since they have
+// no text to measure until after transcription.
+func TestHandleUpdate_TransactionInput_VoiceBypassesLengthCheck(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, MaxInputChars: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "Food", Description: "x"}
+	env.messenger.downloadData = []byte("fake audio")
+	env.messenger.downloadMime = "audio/ogg"
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsVoice: true, VoiceFileID: "file123"})
+
+	if got := env.ai.callCount(); got != 1 {
+		t.Errorf("AI calls for voice message = %d, want 1 (not blocked by text length)", got)
+	}
+}
+
 // TestHandleUpdate_QuotaGating_BlocksWithoutReward is the core guardrail
 // this test suite exists to protect: once a free-tier user has used their
 // daily quota, the AI client must never be called again, and the user gets

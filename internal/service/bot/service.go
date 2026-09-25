@@ -31,6 +31,12 @@ import (
 type Config struct {
 	FreeTierDailyQuota int
 
+	// MaxInputChars caps a text message's length before it's sent to the AI
+	// at all — a cost/abuse guardrail, not a product constraint. Enforced
+	// here (not in HTTP middleware) so a rejected message still gets a real
+	// reply instead of vanishing silently from the user's perspective.
+	MaxInputChars int
+
 	// RewardAffiliateURL enables the earn-bonus-quota flow when set; empty
 	// disables it (no reward is ever offered without a real link configured).
 	RewardAffiliateURL    string
@@ -217,6 +223,23 @@ func (s *Service) handleDashboard(ctx context.Context, user *models.User, msg *m
 	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardLink, link))
 }
 
+// enforceInputLength rejects a text message longer than MaxInputChars
+// before any AI call is made, replying (and returning true) if it's over
+// the limit. Voice messages have no text to check and always pass. A
+// non-positive MaxInputChars means the check is disabled (matching the
+// ProTierDailyQuota: -1 "unlimited" convention elsewhere in this config) —
+// treating an unset zero value as "reject everything" would be a silent
+// footgun. This used to be an HTTP-middleware-level rejection with no reply
+// at all — moved here so the user actually finds out why nothing happened,
+// the same fix already applied to daily-quota enforcement.
+func (s *Service) enforceInputLength(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) bool {
+	if msg.IsVoice || s.cfg.MaxInputChars <= 0 || len(msg.Text) <= s.cfg.MaxInputChars {
+		return false
+	}
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyInputTooLong, s.cfg.MaxInputChars))
+	return true
+}
+
 // enforceQuota checks the free-tier daily AI-prompt cap before any AI call
 // is made, replying (and returning true) if the user is blocked. Pro tier
 // always passes. Redis errors on the core count/bonus reads fail OPEN
@@ -263,6 +286,10 @@ func (s *Service) enforceQuota(ctx context.Context, user *models.User, msg *mess
 }
 
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if s.enforceInputLength(ctx, user, msg) {
+		return
+	}
+
 	if s.enforceQuota(ctx, user, msg) {
 		return
 	}

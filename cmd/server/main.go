@@ -58,6 +58,7 @@ func main() {
 	usageSvc := usage.NewService(gormDB)
 	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
+		MaxInputChars:         cfg.MaxInputChars,
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,
 		RewardBonusAmount:     cfg.RewardBonusAmount,
 		RewardMaxClaimsPerDay: cfg.RewardMaxClaimsPerDay,

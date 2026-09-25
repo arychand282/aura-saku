@@ -129,7 +129,7 @@ func Load() (*Config, error) {
 
 		FXProviderBaseURL: getEnv("FX_PROVIDER_BASE_URL", ""),
 
-		MaxInputChars:          getEnvInt("MAX_INPUT_CHARS", 200),
+		MaxInputChars:          getEnvInt("MAX_INPUT_CHARS", 500),
 		RateLimitWindowSeconds: getEnvInt("RATE_LIMIT_WINDOW_SECONDS", 10),
 		RateLimitMaxRequests:   getEnvInt("RATE_LIMIT_MAX_REQUESTS", 5),
 		FreeTierDailyQuota:     getEnvInt("FREE_TIER_DAILY_QUOTA", 3),

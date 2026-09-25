@@ -70,6 +70,7 @@ const (
 	KeyTransactionRecorded   = "transaction_recorded"
 	KeyLanguageUsage         = "language_usage"
 	KeyLanguageSet           = "language_set"
+	KeyInputTooLong          = "input_too_long"
 
 	KeyBudgetNoIncome      = "budget_no_income"
 	KeyBudgetNeedsExceeded = "budget_needs_exceeded"
@@ -105,6 +106,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyTransactionRecorded:   "Recorded: %s of %.2f %s for \"%s\".",
 		KeyLanguageUsage:         "Usage: /language <en|id>, e.g. /language id",
 		KeyLanguageSet:           "Language set to English.",
+		KeyInputTooLong:          "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
 
 		KeyBudgetNoIncome:      "No income recorded yet this period — log your income (e.g. \"salary 5000000\") to enable budget limit tracking.",
 		KeyBudgetNeedsExceeded: "Needs spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
@@ -138,6 +140,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyTransactionRecorded:   "Tercatat: %s sebesar %.2f %s untuk \"%s\".",
 		KeyLanguageUsage:         "Cara pakai: /language <en|id>, contoh: /language id",
 		KeyLanguageSet:           "Bahasa diatur ke Bahasa Indonesia.",
+		KeyInputTooLong:          "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",
 
 		KeyBudgetNoIncome:      "Belum ada pemasukan tercatat periode ini — catat pemasukanmu (misal \"gaji 5000000\") untuk mengaktifkan pelacakan batas anggaran.",
 		KeyBudgetNeedsExceeded: "Pengeluaran Needs sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
