@@ -20,6 +20,12 @@ Step 2 — for intent "record", fill in:
 - "amount" must be a positive number. Never guess a number that wasn't stated or clearly implied.
 - "currency" is an ISO 4217 code (e.g. IDR, USD, EUR, SGD). If not mentioned, use the user's default currency: %s.
 - "category_name" is a short free-text guess (e.g. "food", "transport", "salary") — ALWAYS write it in English regardless of what language the user's message was in, since it's used for internal budget categorization, not shown to the user directly.
+- "bucket" is which 50/30/20 budget category this specific transaction belongs to, based on the actual necessity described in THIS message — not a fixed rule for the category in general. Must be exactly one of: needs, wants, savings, none.
+  - "needs": non-negotiable/essential spending, OR a purchase the message frames as urgent/necessary even if the category is normally discretionary. Example: "abis ini beli sepatu baru soalnya yang lama udah jebol, kena 480 ribu" (buying new shoes because the old ones broke) is "needs" — it's an urgent replacement, not a discretionary "shopping" purchase — even though "shoes"/"shopping" would often be a want.
+  - "wants": discretionary/non-essential spending with no urgency signal in the message. Example: buying a shirt just because it looked nice, dining out for fun, entertainment.
+  - "savings": money set aside or invested (only relevant for income/investment/transfer types, rarely expense).
+  - "none": genuinely unclear, or a type where budget-bucketing doesn't apply.
+  - If you're not confident, leave this empty rather than guessing — an empty value is fine and falls back to a sensible default; do not set is_ambiguous just to ask about this.
 - "occurred_at_hint" is the ISO 8601 date (YYYY-MM-DD) the transaction actually happened on, computed from today's date above and any relative time language in the message (e.g. "yesterday", "last monday", "3 days ago", or Indonesian equivalents like "kemarin", "tadi pagi"). If no time is mentioned, leave it empty (assume today).
 - If the message is missing the amount, or is too vague to safely record (e.g. no discernible transaction), set "is_ambiguous" to true and write a short, polite "clarification_question" asking the user for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a false amount just to avoid asking.
 - Leave "query_period" and "query_category" empty.
@@ -27,7 +33,7 @@ Step 2 — for intent "record", fill in:
 Step 3 — for intent "query", fill in:
 - "query_period" must be exactly one of: daily, weekly, monthly, yearly — whichever the message states or implies (e.g. "this week" -> weekly, "bulan ini"/"this month" -> monthly, "this year" -> yearly, "today"/"hari ini" -> daily). If no period is stated or it's unclear, default to "monthly" — do NOT set is_ambiguous for a missing period, and do NOT ask a clarifying question about it, since there is no way for you to receive a follow-up answer to it.
 - "query_category" is an optional category filter, written in English (same convention as category_name), e.g. "berapa aku keluar buat makan bulan ini?" -> "food". Leave it empty if the message asks about spending in general with no specific category mentioned.
-- Leave "type", "amount", "currency", "category_name", "description", and "occurred_at_hint" at their zero values (false/0/"").
+- Leave "type", "amount", "currency", "category_name", "bucket", "description", and "occurred_at_hint" at their zero values (false/0/"").
 - "is_ambiguous" should only be true for a query if the message isn't actually answerable as a spending question at all (e.g. gibberish) — never just because the period or category is unstated.
 
 Return ONLY a JSON object with exactly this shape, no markdown code fences, no extra commentary:
@@ -39,6 +45,7 @@ Return ONLY a JSON object with exactly this shape, no markdown code fences, no e
   "amount": 0,
   "currency": "IDR",
   "category_name": "",
+  "bucket": "",
   "description": "",
   "occurred_at_hint": "",
   "query_period": "",
@@ -82,6 +89,7 @@ const TransactionJSONSchema = `{
   "amount": number,
   "currency": string (ISO 4217),
   "category_name": string,
+  "bucket": "" | "needs" | "wants" | "savings" | "none",
   "description": string,
   "occurred_at_hint": string (YYYY-MM-DD),
   "query_period": "" | "daily" | "weekly" | "monthly" | "yearly",

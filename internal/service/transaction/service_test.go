@@ -102,6 +102,101 @@ func TestCreateFromParsedAndUndoLast(t *testing.T) {
 	}
 }
 
+// TestCreateFromParsed_BucketOverride covers the AI's per-transaction
+// bucket classification taking precedence over the category's own static
+// default: "shopping" defaults to Wants (see defaultCategoryBuckets), but
+// an AI-classified "needs" override (e.g. an urgent replacement purchase)
+// must be persisted and honored, not silently discarded in favor of the
+// category default.
+func TestCreateFromParsed_BucketOverride(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	created, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 480_000, Currency: "IDR", CategoryName: "shopping", Bucket: "needs",
+	}, models.SourceText, "new shoes, old ones broke, 480rb")
+	if err != nil {
+		t.Fatalf("CreateFromParsed: %v", err)
+	}
+
+	if created.Bucket == nil {
+		t.Fatal("expected Bucket override to be persisted, got nil")
+	}
+	if *created.Bucket != models.BucketNeeds {
+		t.Errorf("Bucket = %q, want %q (the AI override, not shopping's own wants default)", *created.Bucket, models.BucketNeeds)
+	}
+
+	var category models.Category
+	if err := gormDB.First(&category, *created.CategoryID).Error; err != nil {
+		t.Fatalf("load category: %v", err)
+	}
+	if category.Bucket != models.BucketWants {
+		t.Fatalf("expected shopping's own default bucket to remain wants (unaffected by the transaction-level override), got %q", category.Bucket)
+	}
+}
+
+// TestCreateFromParsed_UnrecognizedBucketIsNoOverride covers the fallback
+// path: an empty or unrecognized Bucket from the AI must not fail the parse
+// or get force-cast into a bogus value — it's simply "no override".
+func TestCreateFromParsed_UnrecognizedBucketIsNoOverride(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	created, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 25_000, Currency: "IDR", CategoryName: "food", Bucket: "",
+	}, models.SourceText, "lunch 25000")
+	if err != nil {
+		t.Fatalf("CreateFromParsed: %v", err)
+	}
+	if created.Bucket != nil {
+		t.Errorf("Bucket = %v, want nil for an empty AI classification", *created.Bucket)
+	}
+}
+
 func cleanupUser(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})

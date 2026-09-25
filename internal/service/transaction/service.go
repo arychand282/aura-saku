@@ -56,6 +56,7 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 		CategoryID:       categoryID,
 		Type:             models.TransactionType(parsed.Type),
 		Description:      parsed.Description,
+		Bucket:           resolveBucket(parsed.Bucket),
 		OriginalAmount:   parsed.Amount,
 		OriginalCurrency: strings.ToUpper(parsed.Currency),
 		ExchangeRate:     rate,
@@ -222,6 +223,23 @@ func (s *Service) resolveCategory(ctx context.Context, categoryName string) (*ui
 	}
 
 	return &category.ID, nil
+}
+
+// resolveBucket converts the AI's raw bucket classification into a
+// validated pointer for Transaction.Bucket. Empty or unrecognized input
+// returns nil ("no override") rather than an error — same defensive
+// philosophy as resolveOccurredAt's unrecognized-hint fallback just below:
+// a cosmetic miss on a nice-to-have field shouldn't fail the whole
+// transaction. nil falls back to the category's own default bucket (see
+// budget.Service.sumSpendByBucket).
+func resolveBucket(raw string) *models.BudgetBucket {
+	b := models.BudgetBucket(strings.ToLower(strings.TrimSpace(raw)))
+	switch b {
+	case models.BucketNeeds, models.BucketWants, models.BucketSavings, models.BucketNone:
+		return &b
+	default:
+		return nil
+	}
 }
 
 // resolveOccurredAt interprets the AI's occurred-at hint into a concrete

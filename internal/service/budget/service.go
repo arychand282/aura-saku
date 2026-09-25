@@ -154,22 +154,28 @@ func (s *Service) sumByType(ctx context.Context, userID uint, txType models.Tran
 }
 
 // sumSpendByBucket buckets this period's spend for the 50/30/20 comparison:
-// Needs/Wants come from expense transactions whose category is tagged with
-// that bucket; Savings additionally includes the full amount of any
-// investment-type transaction regardless of category, since the transaction
-// Type itself already signals savings/investment intent.
+// Needs/Wants come from expense transactions, preferring each transaction's
+// own AI-classified Bucket override (see models.Transaction.Bucket) over its
+// category's static default bucket when set — e.g. a "shopping" purchase the
+// AI classified as needs (an urgent replacement) counts toward Needs even
+// though the shopping category itself defaults to Wants. Savings
+// additionally includes the full amount of any investment-type transaction
+// regardless of category, since the transaction Type itself already signals
+// savings/investment intent.
 func (s *Service) sumSpendByBucket(ctx context.Context, userID uint, start, end time.Time) (map[models.BudgetBucket]float64, error) {
+	const bucketExpr = "COALESCE(transactions.bucket, categories.bucket, 'none')"
+
 	type row struct {
 		Bucket string
 		Total  float64
 	}
 	var rows []row
 	err := s.db.WithContext(ctx).Table("transactions").
-		Select("COALESCE(categories.bucket, 'none') as bucket, COALESCE(SUM(transactions.converted_amount), 0) as total").
+		Select(bucketExpr + " as bucket, COALESCE(SUM(transactions.converted_amount), 0) as total").
 		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
 		Where("transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at BETWEEN ? AND ?",
 			userID, models.TxExpense, start, end).
-		Group("categories.bucket").
+		Group(bucketExpr).
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err

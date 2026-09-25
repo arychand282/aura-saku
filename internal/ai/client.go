@@ -48,6 +48,17 @@ type ParsedTransaction struct {
 	Description    string  `json:"description"`
 	OccurredAtHint string  `json:"occurred_at_hint,omitempty"`
 
+	// Bucket is the AI's per-transaction Needs/Wants/Savings classification
+	// from the actual message context (e.g. "replacing broken shoes" reads
+	// as needs even though the category is "shopping") — not a static
+	// category-name lookup. Only meaningful for IntentRecord. Empty or an
+	// unrecognized value means "no confident classification"; the caller
+	// (transaction.Service.CreateFromParsed) falls back to the category's
+	// own default bucket rather than rejecting the whole parse over this —
+	// same defensive philosophy as OccurredAtHint's fallback below, so
+	// ValidateParsedTransaction doesn't need a new failure mode for it.
+	Bucket string `json:"bucket,omitempty"`
+
 	// QueryPeriod/QueryCategory are only populated when Intent==IntentQuery.
 	// QueryPeriod is always one of the Period* constants above — the prompt
 	// instructs the model to default to "monthly" rather than leaving it

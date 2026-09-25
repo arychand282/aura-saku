@@ -101,6 +101,74 @@ func TestEvaluateBudget(t *testing.T) {
 	}
 }
 
+// TestEvaluateBudget_TransactionBucketOverridesCategory covers a
+// transaction-level Bucket override (set from the AI's per-message
+// classification) taking precedence over its category's static default
+// when computing Needs/Wants spend: two expenses in the same
+// Wants-default "shopping" category, one with a Needs override, must split
+// across NeedsSpent/WantsSpent accordingly rather than both landing in
+// Wants.
+func TestEvaluateBudget_TransactionBucketOverridesCategory(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "salary 5000000"); err != nil {
+		t.Fatalf("create income: %v", err)
+	}
+
+	// No override: "shopping" defaults to Wants.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "shopping",
+	}, models.SourceText, "new shirt 100000"); err != nil {
+		t.Fatalf("create wants-default expense: %v", err)
+	}
+
+	// Same category, but the AI classified this specific purchase as an
+	// urgent/necessary replacement -> Needs override.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 480_000, Currency: "IDR", CategoryName: "shopping", Bucket: "needs",
+	}, models.SourceText, "new shoes, old ones broke, 480rb"); err != nil {
+		t.Fatalf("create needs-override expense: %v", err)
+	}
+
+	status, err := budgetSvc.EvaluateBudget(ctx, user.ID, models.LanguageEN)
+	if err != nil {
+		t.Fatalf("EvaluateBudget: %v", err)
+	}
+
+	if status.WantsSpent != 100_000 {
+		t.Errorf("WantsSpent = %.2f, want 100000.00 (only the non-overridden shopping expense)", status.WantsSpent)
+	}
+	if status.NeedsSpent != 480_000 {
+		t.Errorf("NeedsSpent = %.2f, want 480000.00 (the Needs-overridden shopping expense)", status.NeedsSpent)
+	}
+}
+
 func cleanup(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})

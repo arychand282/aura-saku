@@ -50,6 +50,15 @@ type Transaction struct {
 	Type        TransactionType `gorm:"size:15;not null;index"`
 	Description string          `gorm:"size:500"`
 
+	// Bucket is a per-transaction Needs/Wants/Savings override, set from the
+	// AI's classification of this specific message's context (see
+	// ai.ParsedTransaction.Bucket) rather than Category.Bucket's static
+	// per-category default. nil means "no override" — every existing row
+	// and every non-AI-created transaction (e.g. reconciliation balance
+	// adjustments) naturally has this unset, falling back to the category's
+	// bucket; see budget.Service.sumSpendByBucket for the fallback order.
+	Bucket *BudgetBucket `gorm:"size:10;check:chk_transactions_bucket,bucket IS NULL OR bucket IN ('needs','wants','savings','none')"`
+
 	OriginalAmount   float64 `gorm:"type:numeric(18,2);not null"`
 	OriginalCurrency string  `gorm:"size:3;not null"`
 	ExchangeRate     float64 `gorm:"type:numeric(18,8);not null;default:1"`
