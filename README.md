@@ -25,7 +25,7 @@ All three AI providers (Gemini, OpenAI, Anthropic) are fully implemented against
    ```
    make docker-up
    ```
-   This builds the backend image and starts Postgres, Redis, and the backend together. Migrations run automatically on boot.
+   This builds the backend image and starts Postgres, Redis, and the backend together. Migrations run automatically on boot. Also starts the `aura-saku-web` dashboard (sibling repo, expected at `../aura-saku-web`) on `WEB_PORT` (default `3000`) — its production build talks to `backend` over the internal Docker network, not `localhost`. If that sibling directory doesn't exist, comment out or remove the `web` service in `docker-compose.yml` before running.
 
    **Option B — Native Go, against Dockerized Postgres/Redis:**
    ```

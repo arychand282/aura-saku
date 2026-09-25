@@ -49,6 +49,25 @@ services:
       redis:
         condition: service_healthy
 
+  # aura-saku-web is a sibling repo (../aura-saku-web relative to this file),
+  # never nested inside this one — see its own README for local (non-Docker)
+  # dev instructions. BACKEND_BASE_URL here intentionally overrides its
+  # .env.local's http://localhost:8081 (used for the "npm run dev outside
+  # Docker, backend running via docker-compose" workflow) with the internal
+  # Docker network address, since a container reaches another service by
+  # service name, not localhost.
+  web:
+    build:
+      context: ../aura-saku-web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_BASE_URL: http://backend:${APP_PORT:-8080}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - backend
+
 volumes:
   pgdata:
   redisdata:
