@@ -330,7 +330,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 			return
 		}
 		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble))
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
 		return
 	}
 

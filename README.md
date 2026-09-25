@@ -34,24 +34,55 @@ All three AI providers (Gemini, OpenAI, Anthropic) are fully implemented against
    make run
    ```
 
-3. Verify it's alive:
+3. Verify it's alive (port is `APP_PORT` in `.env`, default `8080`):
    ```
-   curl http://localhost:8080/healthz
+   curl http://localhost:${APP_PORT:-8080}/healthz
    ```
    Expect `{"status":"ok","db":"ok","redis":"ok"}`.
+
+## Setting or changing the AI provider API key
+
+Without a valid key for whichever `AI_PROVIDER` is configured, the bot still receives and parses messages fine but fails the moment it calls the AI — you'll see a generic "Sorry, I had trouble processing that" reply in Telegram, and in `make docker-logs` an `[AURA-AI-002]` line with a `403 PERMISSION_DENIED` / "unregistered callers" (Gemini) or similar auth error from whichever provider is set.
+
+To add or rotate a key:
+
+1. Get a key for your provider:
+   - Gemini (default): [Google AI Studio](https://aistudio.google.com/apikey) → "Create API key"
+   - OpenAI: [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+   - Anthropic: [console.anthropic.com](https://console.anthropic.com/settings/keys)
+2. Set it in `.env` under the matching variable — `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` — and make sure `AI_PROVIDER` in `.env` matches the provider you're setting a key for.
+3. Restart the backend so it picks up the new value:
+   ```
+   docker compose up -d --build backend
+   ```
+4. Send the bot a message again and confirm it gets a real reply instead of the generic error.
+
+Like the Telegram token, treat these as live credentials — don't paste a real key into a chat, ticket, or commit message.
 
 ## Registering the Telegram webhook
 
 Telegram needs a public HTTPS URL to POST updates to. For local dev, use a tunnel:
 ```
-ngrok http 8080
-# or: cloudflared tunnel --url http://localhost:8080
+ngrok http ${APP_PORT:-8080}
+# or: cloudflared tunnel --url http://localhost:${APP_PORT:-8080}
 ```
 Set `TELEGRAM_WEBHOOK_URL` in `.env` to the tunnel's HTTPS URL + `/webhook/telegram`, then register it with Telegram:
 ```
 curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${TELEGRAM_WEBHOOK_URL}&secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 Expect `{"ok":true,"result":true}`. Message your bot on Telegram and watch `make docker-logs` (or your terminal, if running natively) for the incoming update.
+
+> **Never paste the expanded curl command** (with the real token/secret filled in) into a chat, ticket, PR description, or AI assistant — a bot token is a live credential; anyone who gets it can read/send messages as your bot and repoint its webhook. Run the command with the env vars as shown above so they're only ever expanded locally, and if a real token or secret does end up somewhere it shouldn't, rotate it: regenerate the bot token via `@BotFather` → `/mytoken`, and pick a new random `TELEGRAM_WEBHOOK_SECRET` — then re-run `setWebhook` with the new values.
+
+### Moving to a VPS or other production host
+
+`setWebhook` doesn't append — calling it again simply replaces whichever URL Telegram currently has on file, so there's no need to unregister the ngrok tunnel first. When you're ready to deploy:
+
+1. Get the backend reachable over real HTTPS on the new host (a reverse proxy like Caddy or nginx with Let's Encrypt, or a CDN in front of it — Telegram refuses plain HTTP and self-signed certs).
+2. Update `TELEGRAM_WEBHOOK_URL` (and, if you're rotating it, `TELEGRAM_WEBHOOK_SECRET`) in that host's `.env`, then restart the backend so it picks up the new secret.
+3. Re-run the same `curl .../setWebhook?url=...&secret_token=...` call from above, pointed at the new domain instead of the tunnel.
+
+The `secret_token` you pass to `setWebhook` and the `TELEGRAM_WEBHOOK_SECRET` the backend checks incoming requests against (`internal/messaging/telegram/webhook_handler.go`) must always match — if you change one without the other, Telegram's webhook calls will start failing until they're back in sync.
 
 ## Project layout
 
