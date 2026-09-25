@@ -6,6 +6,8 @@ package i18n
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"aura-saku/internal/models"
@@ -99,7 +101,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyWelcome:                 "Welcome to Aura-Saku! Send me something like \"lunch 25000\" to record an expense, or a voice note. Use /language en or /language id to change my reply language anytime.",
 		KeyUndoNone:                "You don't have any transactions to undo yet.",
 		KeyUndoFailed:              "Something went wrong undoing your last transaction.",
-		KeyUndoSuccess:             "Undone: %s of %.2f %s.",
+		KeyUndoSuccess:             "Undone: %s of %s.",
 		KeySyncUsage:               "Usage: /sync <actual balance>, e.g. /sync 1500000",
 		KeySyncFailed:              "Something went wrong syncing your balance.",
 		KeySyncMatched:             "Balance synced — matches your recorded balance of %.2f.",
@@ -108,11 +110,11 @@ var catalog = map[models.Language]map[string]string{
 		KeyVoiceUnsupported:        "Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
 		KeyAITrouble:               "Sorry, I had trouble processing that. Please try again in a moment. If it keeps happening, report error code %s to the developer.",
 		KeyTransactionSaveFailed:   "Something went wrong saving your transaction.",
-		KeyTransactionRecorded:     "Recorded: %s of %.2f %s for \"%s\".",
-		KeyTransactionCorrected:    "Corrected: %s of %.2f %s for \"%s\" (previous entry undone).",
-		KeyBalance:                 "Your current balance is %.2f %s.",
-		KeyQuerySpendingTotal:      "You've spent %.2f %s %s.",
-		KeyQuerySpendingByCategory: "You've spent %.2f %s on %s %s.",
+		KeyTransactionRecorded:     "Recorded: %s of %s for \"%s\".",
+		KeyTransactionCorrected:    "Corrected: %s of %s for \"%s\" (previous entry undone).",
+		KeyBalance:                 "Your current balance is %s.",
+		KeyQuerySpendingTotal:      "You've spent %s %s.",
+		KeyQuerySpendingByCategory: "You've spent %s on %s %s.",
 		KeyQueryCategoryNotFound:   "I couldn't find a category matching \"%s\" — no spending recorded under that name %s.",
 		KeyLanguageUsage:           "Usage: /language <en|id>, e.g. /language id",
 		KeyLanguageSet:             "Language set to English.",
@@ -138,7 +140,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyWelcome:                 "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
 		KeyUndoNone:                "Kamu belum punya transaksi yang bisa dibatalkan.",
 		KeyUndoFailed:              "Terjadi kesalahan saat membatalkan transaksi terakhirmu.",
-		KeyUndoSuccess:             "Dibatalkan: %s sebesar %.2f %s.",
+		KeyUndoSuccess:             "Dibatalkan: %s sebesar %s.",
 		KeySyncUsage:               "Cara pakai: /sync <saldo sebenarnya>, contoh: /sync 1500000",
 		KeySyncFailed:              "Terjadi kesalahan saat menyinkronkan saldomu.",
 		KeySyncMatched:             "Saldo cocok — sesuai dengan catatan sebesar %.2f.",
@@ -147,11 +149,11 @@ var catalog = map[models.Language]map[string]string{
 		KeyVoiceUnsupported:        "Voice note tidak didukung oleh AI provider saat ini (%s). Silakan ketik transaksimu, atau minta admin mengganti AI_PROVIDER.",
 		KeyAITrouble:               "Maaf, aku kesulitan memproses pesan itu. Silakan coba lagi sebentar. Jika terus terjadi, laporkan kode error %s ke developer.",
 		KeyTransactionSaveFailed:   "Terjadi kesalahan saat menyimpan transaksimu.",
-		KeyTransactionRecorded:     "Tercatat: %s sebesar %.2f %s untuk \"%s\".",
-		KeyTransactionCorrected:    "Dikoreksi: %s sebesar %.2f %s untuk \"%s\" (entri sebelumnya dibatalkan).",
-		KeyBalance:                 "Saldo kamu saat ini adalah %.2f %s.",
-		KeyQuerySpendingTotal:      "Kamu sudah menghabiskan %.2f %s %s.",
-		KeyQuerySpendingByCategory: "Kamu sudah menghabiskan %.2f %s untuk %s %s.",
+		KeyTransactionRecorded:     "Tercatat: %s sebesar %s untuk \"%s\".",
+		KeyTransactionCorrected:    "Dikoreksi: %s sebesar %s untuk \"%s\" (entri sebelumnya dibatalkan).",
+		KeyBalance:                 "Saldo kamu saat ini adalah %s.",
+		KeyQuerySpendingTotal:      "Kamu sudah menghabiskan %s %s.",
+		KeyQuerySpendingByCategory: "Kamu sudah menghabiskan %s untuk %s %s.",
 		KeyQueryCategoryNotFound:   "Aku tidak menemukan kategori yang cocok dengan \"%s\" — tidak ada pengeluaran tercatat dengan nama itu %s.",
 		KeyLanguageUsage:           "Cara pakai: /language <en|id>, contoh: /language id",
 		KeyLanguageSet:             "Bahasa diatur ke Bahasa Indonesia.",
@@ -193,6 +195,53 @@ func PeriodLabel(lang models.Language, period string) string {
 		return label
 	}
 	return period
+}
+
+// FormatMoney renders a monetary amount for a reply, formatted per the
+// user's language: Indonesian readers get the conventional "Rp"-prefixed,
+// dot-thousands/comma-decimal style ("Rp2.950.000,00") instead of the
+// plain %.2f-plus-currency-code format everyone else gets
+// ("2950000.00 IDR"). Non-IDR currencies still get Indonesian-style digit
+// grouping when lang is Indonesian, just with the currency code kept as a
+// suffix rather than swapped for "Rp".
+func FormatMoney(lang models.Language, amount float64, currency string) string {
+	if lang != models.LanguageID {
+		return fmt.Sprintf("%.2f %s", amount, currency)
+	}
+
+	sign := ""
+	if amount < 0 {
+		sign = "-"
+		amount = -amount
+	}
+	grouped := groupIndonesian(amount)
+	if strings.EqualFold(currency, "IDR") {
+		return sign + "Rp" + grouped
+	}
+	return sign + grouped + " " + currency
+}
+
+// groupIndonesian formats a non-negative amount with "." as the thousands
+// separator and "," before the 2 decimal digits (e.g. 2950000 ->
+// "2.950.000,00") — the reverse of the English convention. Sign handling
+// lives in FormatMoney (so "-Rp25.000,00" puts the sign before "Rp", not
+// between it and the number) — built on integer cents rather than
+// string-splitting a %.2f result, so rounding matches FormatMoney's English
+// branch exactly.
+func groupIndonesian(amount float64) string {
+	cents := int64(math.Round(amount * 100))
+	whole := strconv.FormatInt(cents/100, 10)
+	frac := cents % 100
+
+	var grouped strings.Builder
+	for i, d := range whole {
+		if i > 0 && (len(whole)-i)%3 == 0 {
+			grouped.WriteByte('.')
+		}
+		grouped.WriteRune(d)
+	}
+
+	return fmt.Sprintf("%s,%02d", grouped.String(), frac)
 }
 
 // T renders a message in the given language, falling back to English if the

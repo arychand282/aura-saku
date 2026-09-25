@@ -312,7 +312,7 @@ func TestHandleUpdate_TransactionInput_Success(t *testing.T) {
 	}
 
 	got := env.messenger.last(chatID)
-	if !strings.Contains(got, "25000") {
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 25000, "IDR")) {
 		t.Errorf("reply = %q, want it to mention the amount", got)
 	}
 
@@ -440,8 +440,9 @@ func TestHandleUpdate_SpendingQuery_OverallTotal(t *testing.T) {
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa aku udah ngeluarin duit bulan ini?"})
 
 	got := env.messenger.last(chatID)
-	if !strings.Contains(got, "25000.00") {
-		t.Errorf("reply = %q, want it to contain the total 25000.00", got)
+	want := i18n.FormatMoney(models.LanguageID, 25000, "IDR")
+	if !strings.Contains(got, want) {
+		t.Errorf("reply = %q, want it to contain the total %s", got, want)
 	}
 
 	var user models.User
@@ -477,8 +478,9 @@ func TestHandleUpdate_SpendingQuery_CategoryTotal(t *testing.T) {
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa aku keluar buat makan bulan ini?"})
 
 	got := env.messenger.last(chatID)
-	if !strings.Contains(got, "40000.00") {
-		t.Errorf("reply = %q, want it to contain the total 40000.00", got)
+	want := i18n.FormatMoney(models.LanguageID, 40000, "IDR")
+	if !strings.Contains(got, want) {
+		t.Errorf("reply = %q, want it to contain the total %s", got, want)
 	}
 
 	var user models.User
@@ -530,7 +532,7 @@ func TestHandleUpdate_Sync_NoArgumentShowsBalance(t *testing.T) {
 
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/sync"})
 
-	want := i18n.T(models.LanguageID, i18n.KeyBalance, 500_000.0, "IDR")
+	want := i18n.T(models.LanguageID, i18n.KeyBalance, i18n.FormatMoney(models.LanguageID, 500_000, "IDR"))
 	if got := env.messenger.last(chatID); got != want {
 		t.Errorf("reply = %q, want %q", got, want)
 	}
@@ -570,7 +572,7 @@ func TestHandleUpdate_BalanceQuery_NaturalLanguage(t *testing.T) {
 	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBalance}
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa saldo aku sekarang?"})
 
-	want := i18n.T(models.LanguageID, i18n.KeyBalance, 300_000.0, "IDR")
+	want := i18n.T(models.LanguageID, i18n.KeyBalance, i18n.FormatMoney(models.LanguageID, 300_000, "IDR"))
 	if got := env.messenger.last(chatID); got != want {
 		t.Errorf("reply = %q, want %q", got, want)
 	}
@@ -609,8 +611,9 @@ func TestHandleUpdate_Correction_ReplacesLastTransaction(t *testing.T) {
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "eh maaf, harusnya 1jt deh untuk reksa dana kemarin, typo"})
 
 	got := env.messenger.last(chatID)
-	if !strings.Contains(got, "1000000.00") {
-		t.Errorf("reply = %q, want it to mention the corrected amount 1000000.00", got)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 1_000_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to mention the corrected amount %s", got, wantAmount)
 	}
 
 	var user models.User

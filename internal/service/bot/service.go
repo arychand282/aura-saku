@@ -159,7 +159,7 @@ func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messag
 		return
 	}
 	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoSuccess,
-		undoneTx.Type, undoneTx.OriginalAmount, undoneTx.OriginalCurrency))
+		undoneTx.Type, i18n.FormatMoney(user.Language, undoneTx.OriginalAmount, undoneTx.OriginalCurrency)))
 }
 
 func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -204,7 +204,7 @@ func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyBalance, balance, user.DefaultCurrency))
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
 }
 
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -396,7 +396,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	reply := i18n.T(user.Language, i18n.KeyTransactionRecorded,
-		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName)
+		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName)
 	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
 
 	s.reply(ctx, msg.ChatID, reply)
@@ -431,7 +431,7 @@ func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.
 	}
 
 	reply := i18n.T(user.Language, replyKey,
-		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName)
+		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName)
 	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
 
 	s.reply(ctx, msg.ChatID, reply)
@@ -479,7 +479,7 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
 			return
 		}
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, total, user.DefaultCurrency, parsed.QueryCategory, periodLabel))
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), parsed.QueryCategory, periodLabel))
 		return
 	}
 
@@ -489,7 +489,7 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, totals[string(models.TxExpense)], user.DefaultCurrency, periodLabel))
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
 }
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {

@@ -34,6 +34,31 @@ func TestT_FallsBackToEnglishForMissingKey(t *testing.T) {
 	}
 }
 
+func TestFormatMoney(t *testing.T) {
+	cases := []struct {
+		name     string
+		lang     models.Language
+		amount   float64
+		currency string
+		want     string
+	}{
+		{"ID IDR uses Rp prefix and dot/comma grouping", models.LanguageID, 2_950_000, "IDR", "Rp2.950.000,00"},
+		{"ID non-IDR keeps currency code but still ID-groups the number", models.LanguageID, 2_950_000, "USD", "2.950.000,00 USD"},
+		{"ID small amount under 1000 has no grouping separator", models.LanguageID, 500, "IDR", "Rp500,00"},
+		{"ID negative amount keeps the sign in front of Rp", models.LanguageID, -25_000, "IDR", "-Rp25.000,00"},
+		{"ID zero", models.LanguageID, 0, "IDR", "Rp0,00"},
+		{"ID rounds to 2 decimals", models.LanguageID, 1234.567, "IDR", "Rp1.234,57"},
+		{"EN keeps the original plain format, unaffected by this change", models.LanguageEN, 2_950_000, "IDR", "2950000.00 IDR"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := FormatMoney(c.lang, c.amount, c.currency); got != c.want {
+				t.Errorf("FormatMoney(%v, %v, %q) = %q, want %q", c.lang, c.amount, c.currency, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDetectFromTelegramCode(t *testing.T) {
 	cases := map[string]models.Language{
 		"":      models.LanguageID,
@@ -71,7 +96,8 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyWelcome, KeyUndoNone, KeyUndoFailed, KeyUndoSuccess,
 		KeySyncUsage, KeySyncFailed, KeySyncMatched, KeySyncDiscrepancy,
 		KeyVoiceDownloadFailed, KeyVoiceUnsupported, KeyAITrouble,
-		KeyTransactionSaveFailed, KeyTransactionRecorded,
+		KeyTransactionSaveFailed, KeyTransactionRecorded, KeyTransactionCorrected,
+		KeyBalance, KeyQuerySpendingTotal, KeyQuerySpendingByCategory, KeyQueryCategoryNotFound,
 		KeyLanguageUsage, KeyLanguageSet,
 		KeyBudgetNoIncome, KeyBudgetNeedsExceeded, KeyBudgetWantsExceeded,
 		KeyBudgetWantsPace, KeyBudgetRollover,
