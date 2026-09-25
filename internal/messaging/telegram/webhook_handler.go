@@ -2,11 +2,13 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/idempotency"
 	"aura-saku/internal/logger"
 	"aura-saku/internal/service/bot"
@@ -31,6 +33,15 @@ func NewWebhookHandler(client *Client, botSvc *bot.Service, secretToken string, 
 
 		msg, err := client.ParseWebhookPayload(c.Body())
 		if err != nil {
+			if errors.Is(err, apperror.ErrUnhandledUpdateType) {
+				// Expected: Telegram sends update types this bot doesn't act
+				// on (edited messages, callback queries, chat-member
+				// changes, ...) — not a failure, so no error log. Acking
+				// 200 here (instead of 400) matters: a 400 previously made
+				// Telegram retry the same update forever with exponential
+				// backoff, since it never got the 2xx it was waiting for.
+				return c.SendStatus(fiber.StatusOK)
+			}
 			logger.Error(logger.TelegramParseFailed, "telegram webhook parse payload", err)
 			return c.SendStatus(fiber.StatusBadRequest)
 		}

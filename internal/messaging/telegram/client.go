@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/messaging"
 )
 
@@ -36,13 +37,21 @@ func (c *Client) apiURL(method string) string {
 	return fmt.Sprintf("%s/bot%s/%s", apiRoot, c.botToken, method)
 }
 
+// ParseWebhookPayload normalizes a Telegram Update into an IncomingMessage.
+// A genuinely malformed body (not valid JSON at all) returns a real error.
+// A validly-parsed Update with no top-level "message" — an edited message,
+// a callback query, a chat-member change, etc. — returns
+// apperror.ErrUnhandledUpdateType rather than a generic error: it's an
+// expected event type this bot doesn't act on, not a failure, and the
+// caller (NewWebhookHandler) acks it 200 rather than 400 so Telegram
+// doesn't retry it forever with exponential backoff.
 func (c *Client) ParseWebhookPayload(body []byte) (*messaging.IncomingMessage, error) {
 	var upd Update
 	if err := json.Unmarshal(body, &upd); err != nil {
 		return nil, fmt.Errorf("unmarshal telegram update: %w", err)
 	}
 	if upd.Message == nil {
-		return nil, fmt.Errorf("telegram update has no message")
+		return nil, apperror.ErrUnhandledUpdateType
 	}
 
 	msg := upd.Message
