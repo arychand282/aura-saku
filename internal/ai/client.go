@@ -10,8 +10,10 @@ import (
 // same as IntentRecord, so every prompt/response that predates the "query"
 // intent (and any provider test fixture) keeps working unchanged.
 const (
-	IntentRecord = "record"
-	IntentQuery  = "query"
+	IntentRecord  = "record"
+	IntentQuery   = "query"
+	IntentBalance = "balance"
+	IntentCorrect = "correct"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -33,12 +35,15 @@ type ParsedTransaction struct {
 	IsAmbiguous           bool   `json:"is_ambiguous"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 
-	// Intent distinguishes "record a new transaction" from "answer a
-	// spending/income question" (added for the bot's natural-language
-	// reporting support). Empty/IntentRecord preserves the original
-	// record-only behavior; the Type/Amount/... fields below are only
-	// meaningful for that case. IntentQuery instead uses QueryPeriod/
-	// QueryCategory below and leaves Type/Amount/CategoryName zero-valued.
+	// Intent distinguishes what this message is asking for. Empty/IntentRecord
+	// preserves the original record-only behavior, populating Type/Amount/...
+	// below. IntentQuery instead uses QueryPeriod/QueryCategory and leaves
+	// Type/Amount/CategoryName zero-valued. IntentBalance needs nothing else
+	// at all — a balance question has no period or category. IntentCorrect
+	// populates the exact same fields as IntentRecord (it's "here's the
+	// corrected version of my last message," not a diff) — the caller
+	// (bot.Service) undoes the previous transaction and creates this one in
+	// its place instead of just creating a new one alongside it.
 	Intent string `json:"intent,omitempty"`
 
 	Type           string  `json:"type"`
@@ -116,17 +121,22 @@ func StripJSONFences(s string) string {
 
 // ValidateParsedTransaction is the shared schema-shape check every
 // provider's response must pass before it's trusted. Query-intent responses
-// only need a real period (the record-intent Type/Amount checks below don't
-// apply to them at all — those fields are left zero-valued by the prompt for
-// a query); everything else validates exactly as before.
+// only need a real period; balance-intent responses need nothing at all
+// (the record-intent Type/Amount checks below don't apply to either — those
+// fields are left zero-valued by the prompt). IntentCorrect isn't special-
+// cased here since it populates the exact same fields as IntentRecord, so
+// it naturally falls through to the same Type/Amount validation below.
 func ValidateParsedTransaction(pt *ParsedTransaction) bool {
-	if pt.Intent == IntentQuery {
+	switch pt.Intent {
+	case IntentQuery:
 		switch pt.QueryPeriod {
 		case PeriodDaily, PeriodWeekly, PeriodMonthly, PeriodYearly:
 			return true
 		default:
 			return false
 		}
+	case IntentBalance:
+		return true
 	}
 
 	switch pt.Type {

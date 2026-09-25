@@ -128,9 +128,12 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 	return tx, nil
 }
 
-// UndoLast soft-deletes the most recent transaction for a user and records
-// an UndoHistory("undone") snapshot in the same DB transaction.
-func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transaction, error) {
+// MostRecent returns the user's most recent transaction without modifying
+// it. Exported (rather than folded into UndoLast alone) so the correction
+// flow below can capture *which* transaction to revert before creating the
+// corrected replacement — calling UndoLast after that create would
+// otherwise resolve "most recent" to the new transaction itself.
+func (s *Service) MostRecent(ctx context.Context, userID uint) (*models.Transaction, error) {
 	var tx models.Transaction
 	err := s.db.WithContext(ctx).
 		Where("user_id = ?", userID).
@@ -142,18 +145,73 @@ func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transactio
 		}
 		return nil, fmt.Errorf("find last transaction: %w", err)
 	}
+	return &tx, nil
+}
 
-	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
-		if err := txDB.Delete(&tx).Error; err != nil {
+// UndoLast soft-deletes the most recent transaction for a user and records
+// an UndoHistory("undone") snapshot in the same DB transaction.
+func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transaction, error) {
+	tx, err := s.MostRecent(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.undoTransaction(ctx, userID, tx)
+}
+
+// CorrectLast replaces the user's most recent transaction with a corrected
+// one described by parsed (ai.IntentCorrect — "eh maaf, harusnya 1jt deh,
+// typo"): it creates the new transaction first and only reverts the
+// previous one on success. This ordering is deliberate — if creation fails,
+// the user's original (uncorrected but real) transaction is left intact
+// rather than silently deleted with nothing to replace it.
+//
+// Returns the newly created transaction and, separately, the transaction
+// that was reverted (nil if there was nothing to correct — e.g. this was
+// the user's very first message — which is not an error: recording it
+// fresh is still the right outcome). If creation itself fails, created is
+// nil and err explains why. If creation succeeds but the revert step fails,
+// created is still returned (the correction was recorded) alongside a
+// non-nil err describing the revert failure, so the caller can decide how
+// to report a partial outcome instead of discarding a real transaction.
+func (s *Service) CorrectLast(ctx context.Context, userID uint, defaultCurrency string, parsed *ai.ParsedTransaction, source models.TransactionSource, rawInput string) (created *models.Transaction, undone *models.Transaction, err error) {
+	previous, err := s.MostRecent(ctx, userID)
+	if err != nil && !errors.Is(err, apperror.ErrNoUndoableTransaction) {
+		return nil, nil, fmt.Errorf("find transaction to correct: %w", err)
+	}
+	// previous is nil here exactly when err is ErrNoUndoableTransaction —
+	// nothing to correct, but we still record the new transaction below.
+
+	created, err = s.CreateFromParsed(ctx, userID, defaultCurrency, parsed, source, rawInput)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if previous == nil {
+		return created, nil, nil
+	}
+
+	undone, err = s.undoTransaction(ctx, userID, previous)
+	if err != nil {
+		return created, nil, fmt.Errorf("undo previous transaction after correction: %w", err)
+	}
+	return created, undone, nil
+}
+
+// undoTransaction soft-deletes tx and records an UndoHistory("undone")
+// snapshot in the same DB transaction — shared by UndoLast (targets the
+// user's most recent transaction) and CorrectLast (targets a transaction
+// captured before a new one was created).
+func (s *Service) undoTransaction(ctx context.Context, userID uint, tx *models.Transaction) (*models.Transaction, error) {
+	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Delete(tx).Error; err != nil {
 			return fmt.Errorf("soft-delete transaction: %w", err)
 		}
-		return writeUndoHistory(txDB, userID, &tx, "undone")
+		return writeUndoHistory(txDB, userID, tx, "undone")
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	return &tx, nil
+	return tx, nil
 }
 
 // defaultCategoryBuckets seeds newly-created categories with a best-effort

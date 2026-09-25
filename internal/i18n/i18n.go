@@ -68,6 +68,8 @@ const (
 	KeyAITrouble               = "ai_trouble"
 	KeyTransactionSaveFailed   = "transaction_save_failed"
 	KeyTransactionRecorded     = "transaction_recorded"
+	KeyTransactionCorrected    = "transaction_corrected"
+	KeyBalance                 = "balance"
 	KeyQuerySpendingTotal      = "query_spending_total"
 	KeyQuerySpendingByCategory = "query_spending_by_category"
 	KeyQueryCategoryNotFound   = "query_category_not_found"
@@ -107,6 +109,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyAITrouble:               "Sorry, I had trouble processing that. Please try again in a moment. If it keeps happening, report error code %s to the developer.",
 		KeyTransactionSaveFailed:   "Something went wrong saving your transaction.",
 		KeyTransactionRecorded:     "Recorded: %s of %.2f %s for \"%s\".",
+		KeyTransactionCorrected:    "Corrected: %s of %.2f %s for \"%s\" (previous entry undone).",
+		KeyBalance:                 "Your current balance is %.2f %s.",
 		KeyQuerySpendingTotal:      "You've spent %.2f %s %s.",
 		KeyQuerySpendingByCategory: "You've spent %.2f %s on %s %s.",
 		KeyQueryCategoryNotFound:   "I couldn't find a category matching \"%s\" — no spending recorded under that name %s.",
@@ -144,6 +148,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyAITrouble:               "Maaf, aku kesulitan memproses pesan itu. Silakan coba lagi sebentar. Jika terus terjadi, laporkan kode error %s ke developer.",
 		KeyTransactionSaveFailed:   "Terjadi kesalahan saat menyimpan transaksimu.",
 		KeyTransactionRecorded:     "Tercatat: %s sebesar %.2f %s untuk \"%s\".",
+		KeyTransactionCorrected:    "Dikoreksi: %s sebesar %.2f %s untuk \"%s\" (entri sebelumnya dibatalkan).",
+		KeyBalance:                 "Saldo kamu saat ini adalah %.2f %s.",
 		KeyQuerySpendingTotal:      "Kamu sudah menghabiskan %.2f %s %s.",
 		KeyQuerySpendingByCategory: "Kamu sudah menghabiskan %.2f %s untuk %s %s.",
 		KeyQueryCategoryNotFound:   "Aku tidak menemukan kategori yang cocok dengan \"%s\" — tidak ada pengeluaran tercatat dengan nama itu %s.",

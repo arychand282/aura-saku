@@ -106,6 +106,63 @@ func TestSync(t *testing.T) {
 	}
 }
 
+// TestBalance covers the side-effect-free balance check used by the bot's
+// "/sync" with no argument and natural-language "what's my balance" paths
+// — as distinct from Sync above, it must not create any
+// BalanceReconciliation row or adjustment transaction.
+func TestBalance(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	reconSvc := reconciliation.NewService(gormDB, txSvc)
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "salary 1000000"); err != nil {
+		t.Fatalf("create income: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 200_000, Currency: "IDR", CategoryName: "food",
+	}, models.SourceText, "food 200000"); err != nil {
+		t.Fatalf("create expense: %v", err)
+	}
+
+	balance, err := reconSvc.Balance(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != 800_000 {
+		t.Errorf("Balance = %.2f, want 800000.00", balance)
+	}
+
+	var reconCount int64
+	gormDB.Model(&models.BalanceReconciliation{}).Where("user_id = ?", user.ID).Count(&reconCount)
+	if reconCount != 0 {
+		t.Errorf("BalanceReconciliation count = %d, want 0 (Balance must have no side effects)", reconCount)
+	}
+}
+
 func cleanup(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})

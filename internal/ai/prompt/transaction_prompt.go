@@ -12,10 +12,12 @@ Given a user's message (or a transcription of their voice note), first decide th
 Today's date is %s (YYYY-MM-DD).
 
 Step 1 — decide "intent":
-- "record": the message reports a transaction that happened (e.g. "lunch 25000", "gaji 5000000", "makan siang tadi 30rb"). This is the default for anything that isn't clearly a question about past activity.
-- "query": the message is a QUESTION about past spending/income/investment, not a new transaction (e.g. "how much have I spent this month?", "dalam satu bulan ini aku udah ngeluarin duit berapa?", "berapa aku keluar buat makan minggu ini?"). Nothing should be recorded for a query.
+- "record": the message reports a transaction that happened (e.g. "lunch 25000", "gaji 5000000", "makan siang tadi 30rb"). This is the default for anything that isn't clearly one of the other intents below.
+- "query": the message is a QUESTION about past spending/income/investment over some time period, not a new transaction (e.g. "how much have I spent this month?", "dalam satu bulan ini aku udah ngeluarin duit berapa?", "berapa aku keluar buat makan minggu ini?"). Nothing should be recorded for a query.
+- "balance": the message is a QUESTION about the user's current total balance/how much money they have right now — not scoped to a time period or category (e.g. "what's my balance?", "berapa saldo aku sekarang?", "sisa uang aku berapa?"). Nothing should be recorded.
+- "correct": the message is fixing a mistake in the user's own immediately preceding message — typo/wrong-value language like "typo", "salah", "harusnya", "maksudnya", "koreksi" (Indonesian) or "sorry I meant", "should be", "correction", "my bad", "oops" (English) — e.g. "eh maaf, harusnya 1jt deh untuk reksa dana kemarin, typo". This describes the CORRECTED transaction in full (not a diff), so fill it in exactly like "record" would — the caller replaces the previous entry with this one instead of adding a second one.
 
-Step 2 — for intent "record", fill in:
+Step 2 — for intent "record" OR "correct", fill in:
 - "type" must be exactly one of: expense, income, investment, transfer, reward.
 - "amount" must be a positive number. Never guess a number that wasn't stated or clearly implied.
 - "currency" is an ISO 4217 code (e.g. IDR, USD, EUR, SGD). If not mentioned, use the user's default currency: %s.
@@ -35,6 +37,8 @@ Step 3 — for intent "query", fill in:
 - "query_category" is an optional category filter, written in English (same convention as category_name), e.g. "berapa aku keluar buat makan bulan ini?" -> "food". Leave it empty if the message asks about spending in general with no specific category mentioned.
 - Leave "type", "amount", "currency", "category_name", "bucket", "description", and "occurred_at_hint" at their zero values (false/0/"").
 - "is_ambiguous" should only be true for a query if the message isn't actually answerable as a spending question at all (e.g. gibberish) — never just because the period or category is unstated.
+
+Step 4 — for intent "balance": leave every other field at its zero value (false/0/""). There's nothing else to extract — a balance question has no period, category, or amount.
 
 Return ONLY a JSON object with exactly this shape, no markdown code fences, no extra commentary:
 {
@@ -84,7 +88,7 @@ func languageName(code string) string {
 const TransactionJSONSchema = `{
   "is_ambiguous": boolean,
   "clarification_question": string,
-  "intent": "record" | "query",
+  "intent": "record" | "query" | "balance" | "correct",
   "type": "expense" | "income" | "investment" | "transfer" | "reward",
   "amount": number,
   "currency": string (ISO 4217),

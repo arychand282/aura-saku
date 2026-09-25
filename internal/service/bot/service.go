@@ -163,6 +163,14 @@ func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messag
 }
 
 func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if strings.TrimSpace(msg.CommandArgs) == "" {
+		// No actual balance to reconcile against — just report the
+		// calculated balance, same as the natural-language "what's my
+		// balance" path (see handleBalanceQuery).
+		s.handleBalanceQuery(ctx, user, msg)
+		return
+	}
+
 	amount, err := strconv.ParseFloat(msg.CommandArgs, 64)
 	if err != nil {
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncUsage))
@@ -183,6 +191,20 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 
 	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncDiscrepancy,
 		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance))
+}
+
+// handleBalanceQuery answers "what's my balance" with no reconciliation
+// side effects (no BalanceReconciliation row, no adjustment) — shared by
+// /sync with no argument and the natural-language ai.IntentBalance path, so
+// both report the exact same number via the same reply text.
+func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	balance, err := s.reconSvc.Balance(ctx, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("compute balance for user %d", user.ID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncFailed))
+		return
+	}
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyBalance, balance, user.DefaultCurrency))
 }
 
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -356,6 +378,16 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
+	if parsed.Intent == ai.IntentBalance {
+		s.handleBalanceQuery(ctx, user, msg)
+		return
+	}
+
+	if parsed.Intent == ai.IntentCorrect {
+		s.handleTransactionCorrection(ctx, user, msg, parsed, source, raw)
+		return
+	}
+
 	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if err != nil {
 		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
@@ -365,20 +397,63 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	reply := i18n.T(user.Language, i18n.KeyTransactionRecorded,
 		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName)
-
-	// Instant budget feedback: only expenses can trip a Needs/Wants
-	// guardrail, so skip the lookup entirely for other transaction types.
-	if createdTx.Type == models.TxExpense {
-		if status, budgetErr := s.budgetSvc.EvaluateBudget(ctx, user.ID, user.Language); budgetErr != nil {
-			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("evaluate budget for user %d", user.ID), budgetErr)
-		} else {
-			for _, warning := range status.Warnings {
-				reply += "\n⚠️ " + warning
-			}
-		}
-	}
+	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
 
 	s.reply(ctx, msg.ChatID, reply)
+}
+
+// handleTransactionCorrection replaces the user's most recent transaction
+// with the corrected one described by parsed (ai.IntentCorrect — e.g. "eh
+// maaf, harusnya 1jt deh untuk reksa dana kemarin, typo") instead of adding
+// a second transaction alongside the wrong one. See
+// transaction.Service.CorrectLast for the create-before-undo safety
+// ordering.
+func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction, source models.TransactionSource, raw string) {
+	createdTx, undoneTx, err := s.txSvc.CorrectLast(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
+	if createdTx == nil {
+		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create corrected transaction for user %d", user.ID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
+		return
+	}
+	if err != nil {
+		// The correction itself was recorded (createdTx is real); only
+		// reverting the old entry failed. Log it, but don't tell the user
+		// their correction failed — from their view it succeeded.
+		logger.Error(logger.SvcUndoFailed, fmt.Sprintf("undo previous transaction during correction for user %d", user.ID), err)
+	}
+
+	// Nothing existed to correct (e.g. this was the user's very first
+	// message) — recording it fresh is still the right outcome, so reply
+	// as a normal record rather than claiming a correction happened.
+	replyKey := i18n.KeyTransactionRecorded
+	if undoneTx != nil {
+		replyKey = i18n.KeyTransactionCorrected
+	}
+
+	reply := i18n.T(user.Language, replyKey,
+		createdTx.Type, createdTx.OriginalAmount, createdTx.OriginalCurrency, parsed.CategoryName)
+	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
+
+	s.reply(ctx, msg.ChatID, reply)
+}
+
+// appendBudgetWarnings appends any Needs/Wants budget warnings triggered by
+// tx to reply — shared by the normal record-success reply and the
+// correction-success reply. Only expenses can trip a Needs/Wants guardrail,
+// so non-expense types are a no-op.
+func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, tx *models.Transaction, reply string) string {
+	if tx.Type != models.TxExpense {
+		return reply
+	}
+	status, err := s.budgetSvc.EvaluateBudget(ctx, user.ID, user.Language)
+	if err != nil {
+		logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("evaluate budget for user %d", user.ID), err)
+		return reply
+	}
+	for _, warning := range status.Warnings {
+		reply += "\n⚠️ " + warning
+	}
+	return reply
 }
 
 // handleSpendingQuery answers a "how much have I spent" style question

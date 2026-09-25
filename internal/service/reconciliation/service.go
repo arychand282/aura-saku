@@ -85,6 +85,19 @@ func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) 
 	return rec, nil
 }
 
+// Balance returns the user's current calculated balance with no side
+// effects — no BalanceReconciliation row, no adjustment transaction, just
+// the number. Used by the bot's /sync-with-no-argument and "what's my
+// balance" natural-language paths, as distinct from Sync's full
+// reconcile-against-a-self-reported-actual-balance flow above.
+func (s *Service) Balance(ctx context.Context, userID uint) (float64, error) {
+	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
+	if err != nil {
+		return 0, err
+	}
+	return s.calculatedBalance(ctx, acc.ID)
+}
+
 func (s *Service) calculatedBalance(ctx context.Context, accountID uint) (float64, error) {
 	type totalRow struct {
 		Type  string

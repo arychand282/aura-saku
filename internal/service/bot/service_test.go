@@ -514,6 +514,137 @@ func TestHandleUpdate_SpendingQuery_CategoryNotFound(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_Sync_NoArgumentShowsBalance covers /sync with no
+// argument reporting the calculated balance directly, instead of falling
+// into the usage-instructions reply.
+func TestHandleUpdate_Sync_NoArgumentShowsBalance(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 500_000, Currency: "IDR", CategoryName: "salary",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 500000"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/sync"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBalance, 500_000.0, "IDR")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_Sync_InvalidArgumentStillShowsUsage guards against the
+// no-argument check above accidentally swallowing a genuinely invalid
+// (non-numeric, non-empty) argument — that case must still show usage
+// instructions, not silently fall back to a balance reply.
+func TestHandleUpdate_Sync_InvalidArgumentStillShowsUsage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Command: "/sync", CommandArgs: "notanumber"})
+
+	want := i18n.T(models.LanguageID, i18n.KeySyncUsage)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_BalanceQuery_NaturalLanguage covers the AI recognizing a
+// balance question (ai.IntentBalance) and answering with the same message
+// the /sync-with-no-argument path uses.
+func TestHandleUpdate_BalanceQuery_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 300_000, Currency: "IDR", CategoryName: "salary",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 300000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBalance}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa saldo aku sekarang?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBalance, 300_000.0, "IDR")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 1 {
+		t.Errorf("transaction count = %d, want 1 (the balance query itself must not record anything)", count)
+	}
+}
+
+// TestHandleUpdate_Correction_ReplacesLastTransaction reproduces the
+// reported bug: a correction message ("eh maaf, harusnya 1jt deh...typo")
+// must replace the previous wrong transaction, not add a second one
+// alongside it — exactly one non-deleted transaction should remain, at the
+// corrected amount, with the original soft-deleted via the same
+// UndoHistory("undone") mechanism /undo already uses.
+func TestHandleUpdate_Correction_ReplacesLastTransaction(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "investment", Amount: 2_000_000, Currency: "IDR", CategoryName: "mutual fund",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "masukin ke reksa dana lusa kemarin 2jut"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentCorrect, Type: "investment", Amount: 1_000_000, Currency: "IDR", CategoryName: "mutual fund",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "eh maaf, harusnya 1jt deh untuk reksa dana kemarin, typo"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "1000000.00") {
+		t.Errorf("reply = %q, want it to mention the corrected amount 1000000.00", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+
+	var activeCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&activeCount)
+	if activeCount != 1 {
+		t.Fatalf("active transaction count = %d, want 1 (the correction must replace, not add)", activeCount)
+	}
+
+	var activeTx models.Transaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&activeTx).Error; err != nil {
+		t.Fatalf("load active transaction: %v", err)
+	}
+	if activeTx.ConvertedAmount != 1_000_000 {
+		t.Errorf("active transaction amount = %.2f, want 1000000.00", activeTx.ConvertedAmount)
+	}
+
+	var deletedCount int64
+	env.db.Unscoped().Model(&models.Transaction{}).Where("user_id = ? AND deleted_at IS NOT NULL", user.ID).Count(&deletedCount)
+	if deletedCount != 1 {
+		t.Errorf("soft-deleted transaction count = %d, want 1 (the original 2,000,000 entry)", deletedCount)
+	}
+
+	var undoneCount int64
+	env.db.Model(&models.UndoHistory{}).Where("user_id = ? AND action = ?", user.ID, "undone").Count(&undoneCount)
+	if undoneCount != 1 {
+		t.Errorf("UndoHistory(undone) count = %d, want 1", undoneCount)
+	}
+}
+
 // TestHandleUpdate_QuotaGating_BlocksWithoutReward is the core guardrail
 // this test suite exists to protect: once a free-tier user has used their
 // daily quota, the AI client must never be called again, and the user gets
