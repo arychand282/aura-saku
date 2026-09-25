@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"errors"
+
 	"github.com/gofiber/fiber/v2"
 
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/messaging"
 )
 
@@ -22,6 +25,15 @@ func ParseIncomingMessage(messenger messaging.Messenger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		msg, err := messenger.ParseWebhookPayload(c.Body())
 		if err != nil {
+			if errors.Is(err, apperror.ErrUnhandledUpdateType) {
+				// This middleware runs before telegram.NewWebhookHandler,
+				// so it must handle the same "expected update type this
+				// bot doesn't act on" case, or it 400s the request before
+				// the handler's own check ever runs. Ack 200 — not a
+				// failure, and a 400 here made Telegram retry the same
+				// update forever with exponential backoff.
+				return c.SendStatus(fiber.StatusOK)
+			}
 			return c.SendStatus(fiber.StatusBadRequest)
 		}
 		c.Locals(IncomingMessageLocalsKey, msg)
