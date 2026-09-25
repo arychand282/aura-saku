@@ -21,6 +21,7 @@ import (
 	"aura-saku/internal/reward"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
@@ -61,10 +62,11 @@ type Service struct {
 	budgetSvc   *budget.Service
 	reconSvc    *reconciliation.Service
 	usageSvc    *usage.Service
+	reportSvc   *report.Service
 	cfg         Config
 }
 
-func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, cfg Config) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, cfg Config) *Service {
 	return &Service{
 		db:          db,
 		redisClient: redisClient,
@@ -74,6 +76,7 @@ func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Mess
 		budgetSvc:   budgetSvc,
 		reconSvc:    reconSvc,
 		usageSvc:    usageSvc,
+		reportSvc:   reportSvc,
 		cfg:         cfg,
 	}
 }
@@ -348,6 +351,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
+	if parsed.Intent == ai.IntentQuery {
+		s.handleSpendingQuery(ctx, user, msg, parsed)
+		return
+	}
+
 	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if err != nil {
 		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
@@ -371,6 +379,42 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	s.reply(ctx, msg.ChatID, reply)
+}
+
+// handleSpendingQuery answers a "how much have I spent" style question
+// (ai.IntentQuery) via report.Service instead of recording anything — no
+// Transaction row is created. Quota/usage tracking already happened in the
+// caller before this branch runs, same as for a recorded transaction, since
+// the AI call itself was the cost regardless of which intent it returned.
+//
+// Only expense totals are reported ("how much did I spend"), not income/
+// investment/transfer — matches the question this intent was built to
+// answer; a broader "how much did I earn" query is out of scope for now.
+func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction) {
+	periodLabel := i18n.PeriodLabel(user.Language, parsed.QueryPeriod)
+
+	if parsed.QueryCategory != "" {
+		total, matched, err := s.reportSvc.CategoryTotal(ctx, user.ID, parsed.QueryPeriod, parsed.QueryCategory)
+		if err != nil {
+			logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("category spending query for user %d", user.ID), err)
+			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+			return
+		}
+		if !matched {
+			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
+			return
+		}
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, total, user.DefaultCurrency, parsed.QueryCategory, periodLabel))
+		return
+	}
+
+	totals, _, _, err := s.reportSvc.Summary(ctx, user.ID, parsed.QueryPeriod)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("summary spending query for user %d", user.ID), err)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, totals[string(models.TxExpense)], user.DefaultCurrency, periodLabel))
 }
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {

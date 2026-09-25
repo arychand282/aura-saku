@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
@@ -158,8 +159,9 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	budgetSvc := budget.NewService(gormDB)
 	reconSvc := reconciliation.NewService(gormDB, txSvc)
 	usageSvc := usage.NewService(gormDB)
+	reportSvc := report.NewService(gormDB)
 
-	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, cfg)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, cfg)
 
 	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
 }
@@ -412,6 +414,103 @@ func TestHandleUpdate_TransactionInput_VoiceBypassesLengthCheck(t *testing.T) {
 
 	if got := env.ai.callCount(); got != 1 {
 		t.Errorf("AI calls for voice message = %d, want 1 (not blocked by text length)", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_OverallTotal covers the "how much have I
+// spent" query intent with no category filter: the AI's query-intent parse
+// must never create a Transaction row, and the reply must total only the
+// expense(s) seeded beforehand.
+func TestHandleUpdate_SpendingQuery_OverallTotal(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// Seed one real expense to query against.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 25000, Currency: "IDR", CategoryName: "Food", Description: "Lunch",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "lunch 25000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:      ai.IntentQuery,
+		QueryPeriod: ai.PeriodMonthly,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa aku udah ngeluarin duit bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "25000.00") {
+		t.Errorf("reply = %q, want it to contain the total 25000.00", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 1 {
+		t.Errorf("transaction count = %d, want 1 (only the seeded one — the query itself must not record anything)", count)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_CategoryTotal covers the optional category
+// filter, including that the match is case-insensitive against the stored
+// category name.
+func TestHandleUpdate_SpendingQuery_CategoryTotal(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 40000, Currency: "IDR", CategoryName: "Food", Description: "Dinner",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "dinner 40000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:        ai.IntentQuery,
+		QueryPeriod:   ai.PeriodMonthly,
+		QueryCategory: "food", // lowercase — stored category is "Food"
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa aku keluar buat makan bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "40000.00") {
+		t.Errorf("reply = %q, want it to contain the total 40000.00", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 1 {
+		t.Errorf("transaction count = %d, want 1 (only the seeded one)", count)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_CategoryNotFound covers a category filter
+// that matches nothing: the bot must say so explicitly rather than silently
+// reporting a misleading zero (which would look identical to "you spent
+// nothing in a real category").
+func TestHandleUpdate_SpendingQuery_CategoryNotFound(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:        ai.IntentQuery,
+		QueryPeriod:   ai.PeriodMonthly,
+		QueryCategory: "zzz-not-a-real-category-zzz",
+	}
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, Text: "berapa aku keluar buat zzz bulan ini?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyQueryCategoryNotFound, "zzz-not-a-real-category-zzz", i18n.PeriodLabel(models.LanguageID, ai.PeriodMonthly))
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
 	}
 }
 

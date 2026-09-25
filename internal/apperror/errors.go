@@ -13,4 +13,5 @@ var (
 	ErrProviderAudioUnsupported = errors.New("this AI provider does not support audio transcription")
 	ErrInvalidSession           = errors.New("invalid or expired session")
 	ErrInvalidLoginToken        = errors.New("invalid or expired login token")
+	ErrInvalidPeriod            = errors.New("invalid period, must be one of: daily, weekly, monthly, yearly")
 )

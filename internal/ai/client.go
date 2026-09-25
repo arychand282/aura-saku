@@ -6,6 +6,25 @@ import (
 	"strings"
 )
 
+// Intent values for ParsedTransaction.Intent. Empty string is treated the
+// same as IntentRecord, so every prompt/response that predates the "query"
+// intent (and any provider test fixture) keeps working unchanged.
+const (
+	IntentRecord = "record"
+	IntentQuery  = "query"
+)
+
+// Valid values for ParsedTransaction.QueryPeriod — matches the period
+// vocabulary already used by ReportHandler/report.Service and the dashboard's
+// PeriodSelector, so a query-intent parse plugs straight into that existing
+// period logic.
+const (
+	PeriodDaily   = "daily"
+	PeriodWeekly  = "weekly"
+	PeriodMonthly = "monthly"
+	PeriodYearly  = "yearly"
+)
+
 // ParsedTransaction is the structured-output contract every provider must
 // populate from free-form text or transcribed audio. See
 // internal/ai/prompt/transaction_prompt.go for the exact JSON shape the
@@ -14,12 +33,30 @@ type ParsedTransaction struct {
 	IsAmbiguous           bool   `json:"is_ambiguous"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
 
+	// Intent distinguishes "record a new transaction" from "answer a
+	// spending/income question" (added for the bot's natural-language
+	// reporting support). Empty/IntentRecord preserves the original
+	// record-only behavior; the Type/Amount/... fields below are only
+	// meaningful for that case. IntentQuery instead uses QueryPeriod/
+	// QueryCategory below and leaves Type/Amount/CategoryName zero-valued.
+	Intent string `json:"intent,omitempty"`
+
 	Type           string  `json:"type"`
 	Amount         float64 `json:"amount"`
 	Currency       string  `json:"currency"`
 	CategoryName   string  `json:"category_name"`
 	Description    string  `json:"description"`
 	OccurredAtHint string  `json:"occurred_at_hint,omitempty"`
+
+	// QueryPeriod/QueryCategory are only populated when Intent==IntentQuery.
+	// QueryPeriod is always one of the Period* constants above — the prompt
+	// instructs the model to default to "monthly" rather than leaving it
+	// empty, since the bot has no way to ask a clarifying follow-up and
+	// actually continue this same query (see internal/service/bot).
+	// QueryCategory is English free text, same convention as CategoryName;
+	// empty means "no category filter, total everything".
+	QueryPeriod   string `json:"query_period,omitempty"`
+	QueryCategory string `json:"query_category,omitempty"`
 }
 
 type UsageMetadata struct {
@@ -67,10 +104,20 @@ func StripJSONFences(s string) string {
 }
 
 // ValidateParsedTransaction is the shared schema-shape check every
-// provider's response must pass before it's trusted: a real, known
-// transaction type, and a positive amount unless the model flagged the
-// input as ambiguous.
+// provider's response must pass before it's trusted. Query-intent responses
+// only need a real period (the record-intent Type/Amount checks below don't
+// apply to them at all — those fields are left zero-valued by the prompt for
+// a query); everything else validates exactly as before.
 func ValidateParsedTransaction(pt *ParsedTransaction) bool {
+	if pt.Intent == IntentQuery {
+		switch pt.QueryPeriod {
+		case PeriodDaily, PeriodWeekly, PeriodMonthly, PeriodYearly:
+			return true
+		default:
+			return false
+		}
+	}
+
 	switch pt.Type {
 	case "expense", "income", "investment", "transfer", "reward":
 	default:

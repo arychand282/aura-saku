@@ -13,6 +13,7 @@ import (
 	"aura-saku/internal/middleware"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
+	"aura-saku/internal/service/report"
 )
 
 // Deps bundles everything the router needs to wire up routes and their
@@ -24,6 +25,7 @@ type Deps struct {
 	TelegramClient *telegram.Client
 	BotService     *bot.Service
 	BudgetService  *budget.Service
+	ReportService  *report.Service
 }
 
 // Setup mounts every route: health check, the Telegram webhook (behind the
@@ -68,7 +70,7 @@ func Setup(app *fiber.App, deps Deps) {
 	txHandler := handlers.NewTransactionHandler(deps.DB)
 	v1.Get("/transactions", txHandler.List)
 
-	reportHandler := handlers.NewReportHandler(deps.DB, deps.BudgetService)
+	reportHandler := handlers.NewReportHandler(deps.DB, deps.BudgetService, deps.ReportService)
 	v1.Get("/reports/summary", reportHandler.Summary)
 	v1.Get("/reports/top-categories", reportHandler.TopCategories)
 	v1.Get("/reports/budget-progress", reportHandler.BudgetProgress)
