@@ -47,9 +47,24 @@ var _ ai.AIClient = (*Client)(nil)
 func (c *Client) ProviderName() string { return "gemini" }
 
 type genPart struct {
-	Text         string        `json:"text,omitempty"`
-	InlineData   *inlineData   `json:"inline_data,omitempty"`
-	FunctionCall *functionCall `json:"functionCall,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	InlineData       *inlineData       `json:"inline_data,omitempty"`
+	FunctionCall     *functionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *functionResponse `json:"functionResponse,omitempty"`
+	// ThoughtSignature must be echoed back verbatim on any functionCall part
+	// replayed into history (see chain.go) — "thinking" models like
+	// gemini-3.5-flash-lite reject a functionCall turn missing it with a
+	// 400, discovered live rather than documented anywhere obvious.
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+}
+
+// functionResponse is how a tool's real result gets fed back to the model
+// on the next round of a chained tool-calling loop — see chain.go. Only
+// used by ParseCorrectionChained; the single-round-trip methods
+// (ParseTransactionText etc.) never produce one of these.
+type functionResponse struct {
+	Name     string                 `json:"name"`
+	Response map[string]interface{} `json:"response"`
 }
 
 type inlineData struct {
