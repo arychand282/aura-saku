@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"aura-saku/internal/ai"
@@ -65,17 +66,48 @@ type message struct {
 	Content string `json:"content"`
 }
 
+// toolDef/inputSchema/propertySchema mirror the subset of Anthropic's
+// function-calling request schema this client uses — see
+// internal/ai/anthropic/tools.go for the actual tool declarations, adapted
+// from the same prompt.TransactionTools() the gemini and openai providers
+// also use. Anthropic declares tools at the top level (name/description/
+// input_schema), unlike OpenAI's nested {type, function: {...}}.
+type toolDef struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema inputSchema `json:"input_schema"`
+}
+
+type inputSchema struct {
+	Type       string                    `json:"type"`
+	Properties map[string]propertySchema `json:"properties"`
+	Required   []string                  `json:"required,omitempty"`
+}
+
+type propertySchema struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
 type messagesRequest struct {
 	Model     string    `json:"model"`
 	MaxTokens int       `json:"max_tokens"`
 	System    string    `json:"system"`
 	Messages  []message `json:"messages"`
+	Tools     []toolDef `json:"tools,omitempty"`
 }
 
+// A content block is either type "text" (plain reply) or type "tool_use"
+// (the model invoking one of the declared tools) — Input is already a
+// decoded object on this one, same as Gemini's args and unlike OpenAI's
+// JSON-encoded-string arguments.
 type messagesResponse struct {
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string                 `json:"type"`
+		Text  string                 `json:"text,omitempty"`
+		Name  string                 `json:"name,omitempty"`
+		Input map[string]interface{} `json:"input,omitempty"`
 	} `json:"content"`
 	Usage struct {
 		InputTokens  int `json:"input_tokens"`
@@ -83,16 +115,21 @@ type messagesResponse struct {
 	} `json:"usage"`
 }
 
-// converse sends the system prompt plus conversation messages and parses
-// the response, retrying once with a repair instruction if the model's
-// output isn't valid JSON or fails schema validation — same pattern as the
-// Gemini and OpenAI clients.
+// converse sends the system prompt plus conversation messages plus the
+// declared transaction tools and derives a ParsedTransaction from whichever
+// tool (if any) the model decided to call. No repair-retry loop: a
+// tool_use block's Input is schema-guaranteed by Anthropic to match the
+// declared input_schema, and content with no tool_use block is the model
+// choosing to reply in plain text instead (this provider's "ambiguous"
+// case) — there's no third case of "text that was supposed to be JSON but
+// isn't quite."
 func (c *Client) converse(ctx context.Context, systemPrompt string, messages []message) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := messagesRequest{
 		Model:     c.model,
 		MaxTokens: 1024,
 		System:    systemPrompt,
 		Messages:  messages,
+		Tools:     transactionTools(),
 	}
 
 	start := time.Now()
@@ -101,23 +138,12 @@ func (c *Client) converse(ctx context.Context, systemPrompt string, messages []m
 		return nil, nil, err
 	}
 
-	parsed, ok := tryParseMessages(resp)
+	parsed, ok := tryParseToolUse(resp)
 	if !ok {
-		reqBody.Messages = append(append([]message{}, messages...), message{
-			Role:    "user",
-			Content: "Your previous response was not valid JSON matching the required schema. Return ONLY the JSON object, no other text.",
-		})
-		resp, err = c.doRequest(ctx, reqBody)
-		if err != nil {
-			return nil, nil, err
-		}
-		parsed, ok = tryParseMessages(resp)
-		if !ok {
-			return &ai.ParsedTransaction{
-				IsAmbiguous:           true,
-				ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-			}, nil, nil
-		}
+		return &ai.ParsedTransaction{
+			IsAmbiguous:           true,
+			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
+		}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -129,19 +155,29 @@ func (c *Client) converse(ctx context.Context, systemPrompt string, messages []m
 	return parsed, usage, nil
 }
 
-func tryParseMessages(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
+func tryParseToolUse(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
 	if len(resp.Content) == 0 {
 		return nil, false
 	}
-	raw := ai.StripJSONFences(resp.Content[0].Text)
-	var pt ai.ParsedTransaction
-	if err := json.Unmarshal([]byte(raw), &pt); err != nil {
+
+	for _, block := range resp.Content {
+		if block.Type != "tool_use" {
+			continue
+		}
+		pt := ai.ParsedTransactionFromToolCall(block.Name, block.Input)
+		if pt == nil || !ai.ValidateParsedTransaction(pt) {
+			return nil, false
+		}
+		return pt, true
+	}
+
+	// No tool_use block in this response — the model chose to reply in
+	// plain text instead.
+	text := resp.Content[0].Text
+	if strings.TrimSpace(text) == "" {
 		return nil, false
 	}
-	if !ai.ValidateParsedTransaction(&pt) {
-		return nil, false
-	}
-	return &pt, true
+	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
 }
 
 func (c *Client) doRequest(ctx context.Context, body messagesRequest) (*messagesResponse, error) {
@@ -180,12 +216,12 @@ func (c *Client) doRequest(ctx context.Context, body messagesRequest) (*messages
 }
 
 func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: "User message: " + userText}})
 }
 
 func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	content := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
 		originalText, clarificationReply,

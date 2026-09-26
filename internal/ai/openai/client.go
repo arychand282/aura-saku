@@ -52,18 +52,59 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// toolDef/functionDef/functionParameters/propertySchema mirror the subset
+// of OpenAI's function-calling request schema this client uses — see
+// internal/ai/openai/tools.go for the actual tool declarations, adapted
+// from the same prompt.TransactionTools() the gemini and anthropic
+// providers also use.
+type toolDef struct {
+	Type     string      `json:"type"`
+	Function functionDef `json:"function"`
+}
+
+type functionDef struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Parameters  functionParameters `json:"parameters"`
+}
+
+type functionParameters struct {
+	Type       string                    `json:"type"`
+	Properties map[string]propertySchema `json:"properties"`
+	Required   []string                  `json:"required,omitempty"`
+}
+
+type propertySchema struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
+// toolCall is what a choice's message carries instead of (or alongside)
+// Content when the model decides to invoke one of the declared tools.
+// Unlike Gemini's args (already a decoded map) or Anthropic's input (same),
+// OpenAI's Arguments comes back as a JSON-encoded STRING that still needs
+// one json.Unmarshal — but that string is schema-guaranteed to parse and
+// match the declared shape, unlike the old approach's "hope the whole
+// message body happens to be valid JSON."
+type toolCall struct {
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
 type chatRequest struct {
-	Model          string        `json:"model"`
-	Messages       []chatMessage `json:"messages"`
-	ResponseFormat struct {
-		Type string `json:"type"`
-	} `json:"response_format"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Tools    []toolDef     `json:"tools,omitempty"`
 }
 
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string     `json:"content"`
+			ToolCalls []toolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
@@ -72,9 +113,13 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-// chat sends a system+user message pair and parses the response, retrying
-// once with a repair instruction if the model's output isn't valid JSON or
-// fails schema validation — same pattern as the Gemini client.
+// chat sends a system+user message pair plus the declared transaction
+// tools and derives a ParsedTransaction from whichever tool (if any) the
+// model decided to call. No repair-retry loop: a tool_call's Arguments are
+// schema-guaranteed by OpenAI to match the declared parameters, and a
+// message with no tool_calls is the model choosing to reply in plain text
+// instead (this provider's "ambiguous" case) — there's no third case of
+// "text that was supposed to be JSON but isn't quite."
 func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := chatRequest{
 		Model: c.model,
@@ -82,8 +127,8 @@ func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*a
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},
 		},
+		Tools: transactionTools(),
 	}
-	reqBody.ResponseFormat.Type = "json_object"
 
 	start := time.Now()
 	resp, err := c.doChatRequest(ctx, reqBody)
@@ -91,23 +136,12 @@ func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*a
 		return nil, nil, err
 	}
 
-	parsed, ok := tryParseChat(resp)
+	parsed, ok := tryParseToolCall(resp)
 	if !ok {
-		reqBody.Messages = append(reqBody.Messages, chatMessage{
-			Role:    "user",
-			Content: "Your previous response was not valid JSON matching the required schema. Return ONLY the JSON object, no other text.",
-		})
-		resp, err = c.doChatRequest(ctx, reqBody)
-		if err != nil {
-			return nil, nil, err
-		}
-		parsed, ok = tryParseChat(resp)
-		if !ok {
-			return &ai.ParsedTransaction{
-				IsAmbiguous:           true,
-				ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-			}, nil, nil
-		}
+		return &ai.ParsedTransaction{
+			IsAmbiguous:           true,
+			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
+		}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -119,19 +153,29 @@ func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*a
 	return parsed, usage, nil
 }
 
-func tryParseChat(resp *chatResponse) (*ai.ParsedTransaction, bool) {
+func tryParseToolCall(resp *chatResponse) (*ai.ParsedTransaction, bool) {
 	if len(resp.Choices) == 0 {
 		return nil, false
 	}
-	raw := ai.StripJSONFences(resp.Choices[0].Message.Content)
-	var pt ai.ParsedTransaction
-	if err := json.Unmarshal([]byte(raw), &pt); err != nil {
+	msg := resp.Choices[0].Message
+
+	if len(msg.ToolCalls) > 0 {
+		tc := msg.ToolCalls[0]
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return nil, false
+		}
+		pt := ai.ParsedTransactionFromToolCall(tc.Function.Name, args)
+		if pt == nil || !ai.ValidateParsedTransaction(pt) {
+			return nil, false
+		}
+		return pt, true
+	}
+
+	if msg.Content == "" {
 		return nil, false
 	}
-	if !ai.ValidateParsedTransaction(&pt) {
-		return nil, false
-	}
-	return &pt, true
+	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: msg.Content}, true
 }
 
 func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResponse, error) {
@@ -169,12 +213,12 @@ func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResp
 }
 
 func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	return c.chat(ctx, systemPrompt, "User message: "+userText)
 }
 
 func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	systemPrompt := prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	userContent := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
 		originalText, clarificationReply,

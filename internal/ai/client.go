@@ -2,8 +2,6 @@ package ai
 
 import (
 	"context"
-	"regexp"
-	"strings"
 )
 
 // Intent values for ParsedTransaction.Intent. Empty string is treated the
@@ -29,8 +27,9 @@ const (
 
 // ParsedTransaction is the structured-output contract every provider must
 // populate from free-form text or transcribed audio. See
-// internal/ai/prompt/transaction_prompt.go for the exact JSON shape the
-// model is instructed to return.
+// internal/ai/prompt/tool_schema.go for the declared tool/parameter shapes
+// the model is offered, and ParsedTransactionFromToolCall (toolcall.go) for
+// how a tool call maps back onto this struct.
 type ParsedTransaction struct {
 	IsAmbiguous           bool   `json:"is_ambiguous"`
 	ClarificationQuestion string `json:"clarification_question,omitempty"`
@@ -104,19 +103,6 @@ type AIClient interface {
 	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
 
 	ProviderName() string
-}
-
-var jsonFenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
-
-// StripJSONFences removes a markdown code fence LLMs commonly wrap JSON
-// output in despite being told not to, shared by every provider's response
-// parser so this quirk is only handled in one place.
-func StripJSONFences(s string) string {
-	s = strings.TrimSpace(s)
-	if m := jsonFenceRe.FindStringSubmatch(s); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	return s
 }
 
 // ValidateParsedTransaction is the shared schema-shape check every

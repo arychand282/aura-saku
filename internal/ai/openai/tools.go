@@ -1,0 +1,38 @@
+package openai
+
+import "aura-saku/internal/ai/prompt"
+
+// transactionTools adapts the shared prompt.TransactionTools() declarations
+// (also used by the gemini and anthropic providers — see their own
+// tools.go) into OpenAI's Chat Completions request wire shape
+// (tools: [{type: "function", function: {...}}]). Unlike Gemini's adapter,
+// no type-name translation is needed — OpenAI's JSON Schema already uses
+// the lowercase "object"/"string"/"number" convention prompt.ToolProperty
+// stores natively.
+func transactionTools() []toolDef {
+	tools := prompt.TransactionTools()
+	defs := make([]toolDef, len(tools))
+	for i, t := range tools {
+		props := make(map[string]propertySchema, len(t.Properties))
+		for name, p := range t.Properties {
+			props[name] = propertySchema{
+				Type:        p.Type,
+				Description: p.Description,
+				Enum:        p.Enum,
+			}
+		}
+		defs[i] = toolDef{
+			Type: "function",
+			Function: functionDef{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters: functionParameters{
+					Type:       "object",
+					Properties: props,
+					Required:   t.Required,
+				},
+			},
+		}
+	}
+	return defs
+}

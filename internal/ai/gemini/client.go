@@ -173,7 +173,7 @@ func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, boo
 		if part.FunctionCall == nil {
 			continue
 		}
-		pt := functionCallToParsedTransaction(part.FunctionCall)
+		pt := ai.ParsedTransactionFromToolCall(part.FunctionCall.Name, part.FunctionCall.Args)
 		if pt == nil || !ai.ValidateParsedTransaction(pt) {
 			return nil, false
 		}
@@ -188,51 +188,6 @@ func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, boo
 		return nil, false
 	}
 	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
-}
-
-func functionCallToParsedTransaction(fc *functionCall) *ai.ParsedTransaction {
-	switch fc.Name {
-	case toolRecordTransaction:
-		pt := transactionFromArgs(fc.Args)
-		pt.Intent = ai.IntentRecord
-		return pt
-	case toolCorrectTransaction:
-		pt := transactionFromArgs(fc.Args)
-		pt.Intent = ai.IntentCorrect
-		return pt
-	case toolQuerySpending:
-		return &ai.ParsedTransaction{
-			Intent:        ai.IntentQuery,
-			QueryPeriod:   argString(fc.Args, "query_period"),
-			QueryCategory: argString(fc.Args, "query_category"),
-		}
-	case toolGetBalance:
-		return &ai.ParsedTransaction{Intent: ai.IntentBalance}
-	default:
-		return nil
-	}
-}
-
-func transactionFromArgs(args map[string]interface{}) *ai.ParsedTransaction {
-	return &ai.ParsedTransaction{
-		Type:           argString(args, "type"),
-		Amount:         argFloat(args, "amount"),
-		Currency:       argString(args, "currency"),
-		CategoryName:   argString(args, "category_name"),
-		Bucket:         argString(args, "bucket"),
-		Description:    argString(args, "description"),
-		OccurredAtHint: argString(args, "occurred_at_hint"),
-	}
-}
-
-func argString(args map[string]interface{}, key string) string {
-	s, _ := args[key].(string)
-	return s
-}
-
-func argFloat(args map[string]interface{}, key string) float64 {
-	f, _ := args[key].(float64)
-	return f
 }
 
 func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, error) {
