@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"aura-saku/internal/ai"
-	"aura-saku/internal/ai/prompt"
 )
 
 // defaultBaseURL is used when baseURL isn't overridden via config
@@ -47,8 +47,9 @@ var _ ai.AIClient = (*Client)(nil)
 func (c *Client) ProviderName() string { return "gemini" }
 
 type genPart struct {
-	Text       string      `json:"text,omitempty"`
-	InlineData *inlineData `json:"inline_data,omitempty"`
+	Text         string        `json:"text,omitempty"`
+	InlineData   *inlineData   `json:"inline_data,omitempty"`
+	FunctionCall *functionCall `json:"functionCall,omitempty"`
 }
 
 type inlineData struct {
@@ -56,11 +57,51 @@ type inlineData struct {
 	Data     string `json:"data"`
 }
 
+// genTool/functionDeclaration/functionSchema/propertySchema mirror the
+// subset of Gemini's function-calling request schema this client uses —
+// see internal/ai/gemini/tools.go for the actual tool declarations. This is
+// the structured counterpart to the old approach's "describe the exact
+// JSON shape in prose inside the prompt" — the schema is a real typed
+// field on the request instead of a string the model has to reproduce
+// faithfully.
+type genTool struct {
+	FunctionDeclarations []functionDeclaration `json:"functionDeclarations"`
+}
+
+type functionDeclaration struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  functionSchema `json:"parameters"`
+}
+
+type functionSchema struct {
+	Type       string                    `json:"type"`
+	Properties map[string]propertySchema `json:"properties"`
+	Required   []string                  `json:"required,omitempty"`
+}
+
+type propertySchema struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
+// functionCall is what the model sends back instead of text when it
+// decides to invoke one of the declared tools — Args is already a decoded
+// key/value map (Gemini parses it against the declared schema on its
+// side), not a string this client has to json.Unmarshal itself.
+type functionCall struct {
+	Name string                 `json:"name"`
+	Args map[string]interface{} `json:"args"`
+}
+
 type genRequest struct {
-	Contents         []genContent `json:"contents"`
-	GenerationConfig struct {
-		ResponseMimeType string `json:"responseMimeType"`
-	} `json:"generationConfig"`
+	Contents          []genContent `json:"contents"`
+	SystemInstruction *genContent  `json:"systemInstruction,omitempty"`
+	Tools             []genTool    `json:"tools,omitempty"`
+	GenerationConfig  struct {
+		ResponseMimeType string `json:"responseMimeType,omitempty"`
+	} `json:"generationConfig,omitempty"`
 }
 
 type genContent struct {
@@ -80,14 +121,19 @@ type genResponse struct {
 	} `json:"usageMetadata"`
 }
 
-// generate sends the given content parts to Gemini and parses the response
-// into a ParsedTransaction, retrying once with a repair instruction if the
-// model's output isn't valid JSON or fails schema validation.
-func (c *Client) generate(ctx context.Context, parts []genPart) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// generate sends the given content parts plus the declared transaction
+// tools to Gemini and derives a ParsedTransaction from whichever tool (if
+// any) the model decided to call. Unlike the old prompt-engineered-JSON
+// approach, there's no repair-retry loop here: the model either emits a
+// functionCall whose args are already guaranteed by Gemini to match the
+// declared schema, or it emits plain text — there's no third case of
+// "text that was supposed to be JSON but isn't quite."
+func (c *Client) generate(ctx context.Context, systemInstruction string, parts []genPart) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := genRequest{
-		Contents: []genContent{{Role: "user", Parts: parts}},
+		Contents:          []genContent{{Role: "user", Parts: parts}},
+		SystemInstruction: &genContent{Parts: []genPart{{Text: systemInstruction}}},
+		Tools:             transactionTools(),
 	}
-	reqBody.GenerationConfig.ResponseMimeType = "application/json"
 
 	start := time.Now()
 	resp, err := c.doRequest(ctx, reqBody)
@@ -95,24 +141,12 @@ func (c *Client) generate(ctx context.Context, parts []genPart) (*ai.ParsedTrans
 		return nil, nil, err
 	}
 
-	parsed, ok := c.tryParse(resp)
+	parsed, ok := c.tryParseToolCall(resp)
 	if !ok {
-		// Repair attempt: ask the model again with an explicit correction instruction.
-		repairParts := append(append([]genPart{}, parts...), genPart{
-			Text: "Your previous response was not valid JSON matching the required schema. Return ONLY the JSON object, no other text.",
-		})
-		reqBody.Contents = []genContent{{Role: "user", Parts: repairParts}}
-		resp, err = c.doRequest(ctx, reqBody)
-		if err != nil {
-			return nil, nil, err
-		}
-		parsed, ok = c.tryParse(resp)
-		if !ok {
-			return &ai.ParsedTransaction{
-				IsAmbiguous:           true,
-				ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-			}, nil, nil
-		}
+		return &ai.ParsedTransaction{
+			IsAmbiguous:           true,
+			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
+		}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -124,19 +158,81 @@ func (c *Client) generate(ctx context.Context, parts []genPart) (*ai.ParsedTrans
 	return parsed, usage, nil
 }
 
-func (c *Client) tryParse(resp *genResponse) (*ai.ParsedTransaction, bool) {
+// tryParseToolCall maps whichever tool the model called (if any) onto the
+// shared ai.ParsedTransaction shape, so the rest of the app — bot.Service's
+// intent switch, ai.ValidateParsedTransaction — is completely unaware this
+// provider stopped hand-parsing JSON text. A plain-text part with no
+// functionCall is the model choosing not to call any tool (see
+// toolCallingSystemInstruction) — that's this provider's "ambiguous" case.
+func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, bool) {
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
 		return nil, false
 	}
-	raw := ai.StripJSONFences(resp.Candidates[0].Content.Parts[0].Text)
-	var pt ai.ParsedTransaction
-	if err := json.Unmarshal([]byte(raw), &pt); err != nil {
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.FunctionCall == nil {
+			continue
+		}
+		pt := functionCallToParsedTransaction(part.FunctionCall)
+		if pt == nil || !ai.ValidateParsedTransaction(pt) {
+			return nil, false
+		}
+		return pt, true
+	}
+
+	// No tool call in this response — the model chose to reply in plain
+	// text instead (see toolCallingSystemInstruction's clarifying-question
+	// instruction).
+	text := resp.Candidates[0].Content.Parts[0].Text
+	if strings.TrimSpace(text) == "" {
 		return nil, false
 	}
-	if !ai.ValidateParsedTransaction(&pt) {
-		return nil, false
+	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
+}
+
+func functionCallToParsedTransaction(fc *functionCall) *ai.ParsedTransaction {
+	switch fc.Name {
+	case toolRecordTransaction:
+		pt := transactionFromArgs(fc.Args)
+		pt.Intent = ai.IntentRecord
+		return pt
+	case toolCorrectTransaction:
+		pt := transactionFromArgs(fc.Args)
+		pt.Intent = ai.IntentCorrect
+		return pt
+	case toolQuerySpending:
+		return &ai.ParsedTransaction{
+			Intent:        ai.IntentQuery,
+			QueryPeriod:   argString(fc.Args, "query_period"),
+			QueryCategory: argString(fc.Args, "query_category"),
+		}
+	case toolGetBalance:
+		return &ai.ParsedTransaction{Intent: ai.IntentBalance}
+	default:
+		return nil
 	}
-	return &pt, true
+}
+
+func transactionFromArgs(args map[string]interface{}) *ai.ParsedTransaction {
+	return &ai.ParsedTransaction{
+		Type:           argString(args, "type"),
+		Amount:         argFloat(args, "amount"),
+		Currency:       argString(args, "currency"),
+		CategoryName:   argString(args, "category_name"),
+		Bucket:         argString(args, "bucket"),
+		Description:    argString(args, "description"),
+		OccurredAtHint: argString(args, "occurred_at_hint"),
+	}
+}
+
+func argString(args map[string]interface{}, key string) string {
+	s, _ := args[key].(string)
+	return s
+}
+
+func argFloat(args map[string]interface{}, key string) float64 {
+	f, _ := args[key].(float64)
+	return f
 }
 
 func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, error) {
@@ -174,31 +270,29 @@ func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, 
 }
 
 func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
-		{Text: "User message: " + userText},
-	}
-	return c.generate(ctx, parts)
+	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+	parts := []genPart{{Text: "User message: " + userText}}
+	return c.generate(ctx, instruction, parts)
 }
 
 func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
 		{Text: "Transcribe the following voice note and extract the transaction it describes."},
 		{InlineData: &inlineData{
 			MimeType: mimeType,
 			Data:     base64.StdEncoding.EncodeToString(audioBytes),
 		}},
 	}
-	return c.generate(ctx, parts)
+	return c.generate(ctx, instruction, parts)
 }
 
 func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
-		{Text: prompt.BuildTransactionSystemPrompt(defaultCurrency, time.Now(), preferredLanguage)},
 		{Text: "Original user message: " + originalText},
 		{Text: "The user was asked to clarify and replied: " + clarificationReply},
 		{Text: "Combine both messages into a single transaction extraction."},
 	}
-	return c.generate(ctx, parts)
+	return c.generate(ctx, instruction, parts)
 }
