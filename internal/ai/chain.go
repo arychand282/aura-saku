@@ -34,6 +34,27 @@ type ChainStep struct {
 	Result     *LastTransaction
 }
 
+// LastTransactionToMap converts a LastTransaction into the plain
+// map[string]interface{} shape every provider feeds back to the model as
+// its tool result (Gemini's functionResponse, OpenAI's tool message
+// content, Anthropic's tool_result block) — shared so this mapping only
+// exists once instead of three times.
+func LastTransactionToMap(lt *LastTransaction) map[string]interface{} {
+	if lt == nil || !lt.Found {
+		return map[string]interface{}{"found": false}
+	}
+	return map[string]interface{}{
+		"found":         true,
+		"type":          lt.Type,
+		"amount":        lt.Amount,
+		"currency":      lt.Currency,
+		"category_name": lt.CategoryName,
+		"bucket":        lt.Bucket,
+		"description":   lt.Description,
+		"occurred_at":   lt.OccurredAt,
+	}
+}
+
 // ChainedCorrector is an optional capability some AIClient implementations
 // support: multi-step tool calling for corrections that don't restate
 // every field of the transaction being corrected. Providers without a

@@ -44,12 +44,20 @@ func New(apiKey, model, baseURL string) *Client {
 }
 
 var _ ai.AIClient = (*Client)(nil)
+var _ ai.ChainedCorrector = (*Client)(nil)
 
 func (c *Client) ProviderName() string { return "openai" }
 
+// chatMessage covers every role this client sends: system/user (Role +
+// Content), an assistant turn replaying a prior tool call (Role +
+// ToolCalls, no Content), and a tool-result turn (Role: "tool" +
+// ToolCallID + Content) — see chain.go for the only place that last shape
+// is used.
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // toolDef/functionDef/functionParameters/propertySchema mirror the subset
@@ -88,6 +96,8 @@ type propertySchema struct {
 // match the declared shape, unlike the old approach's "hope the whole
 // message body happens to be valid JSON."
 type toolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
 	Function struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`

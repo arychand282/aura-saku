@@ -34,22 +34,6 @@ func correctionChainTools() []genTool {
 	return tools
 }
 
-func lastTransactionToResponseMap(lt *ai.LastTransaction) map[string]interface{} {
-	if lt == nil || !lt.Found {
-		return map[string]interface{}{"found": false}
-	}
-	return map[string]interface{}{
-		"found":         true,
-		"type":          lt.Type,
-		"amount":        lt.Amount,
-		"currency":      lt.Currency,
-		"category_name": lt.CategoryName,
-		"bucket":        lt.Bucket,
-		"description":   lt.Description,
-		"occurred_at":   lt.OccurredAt,
-	}
-}
-
 // ParseCorrectionChained demonstrates real multi-step tool calling, unlike
 // every other method on this client (all single round trip): the model is
 // offered a second tool, get_last_transaction, that it can call BEFORE
@@ -114,7 +98,7 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 				genContent{Role: "model", Parts: []genPart{*callPart}},
 				genContent{Role: "user", Parts: []genPart{{FunctionResponse: &functionResponse{
 					Name:     fc.Name,
-					Response: lastTransactionToResponseMap(result),
+					Response: ai.LastTransactionToMap(result),
 				}}}},
 			)
 			continue

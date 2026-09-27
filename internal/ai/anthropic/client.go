@@ -58,6 +58,7 @@ func New(apiKey, model, baseURL, apiVersion string) *Client {
 }
 
 var _ ai.AIClient = (*Client)(nil)
+var _ ai.ChainedCorrector = (*Client)(nil)
 
 func (c *Client) ProviderName() string { return "anthropic" }
 
@@ -101,15 +102,19 @@ type messagesRequest struct {
 // A content block is either type "text" (plain reply) or type "tool_use"
 // (the model invoking one of the declared tools) — Input is already a
 // decoded object on this one, same as Gemini's args and unlike OpenAI's
-// JSON-encoded-string arguments.
+// JSON-encoded-string arguments. Named (rather than anonymous) so chain.go
+// can build a []responseContentBlock replaying a tool_use block verbatim.
+type responseContentBlock struct {
+	Type  string                 `json:"type"`
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty"`
+}
+
 type messagesResponse struct {
-	Content []struct {
-		Type  string                 `json:"type"`
-		Text  string                 `json:"text,omitempty"`
-		Name  string                 `json:"name,omitempty"`
-		Input map[string]interface{} `json:"input,omitempty"`
-	} `json:"content"`
-	Usage struct {
+	Content []responseContentBlock `json:"content"`
+	Usage   struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -180,7 +185,11 @@ func tryParseToolUse(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
 	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
 }
 
-func (c *Client) doRequest(ctx context.Context, body messagesRequest) (*messagesResponse, error) {
+// doRequest accepts any (both messagesRequest and chain.go's chainRequest —
+// same "/messages" endpoint, different message-array element shape)
+// rather than being generic-typed, since only json.Marshal ever touches
+// body here.
+func (c *Client) doRequest(ctx context.Context, body any) (*messagesResponse, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
