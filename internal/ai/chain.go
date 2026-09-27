@@ -63,5 +63,9 @@ func LastTransactionToMap(lt *LastTransaction) map[string]interface{} {
 // and fall back to ParseTransactionText when they don't, exactly as
 // bot.Service does.
 type ChainedCorrector interface {
-	ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup LastTransactionLookup) (*ParsedTransaction, *UsageMetadata, []ChainStep, error)
+	// Same one-or-more-results contract as AIClient's parsing methods — the
+	// terminal round can still yield several ParsedTransaction results
+	// (e.g. a message with both a correction and, unusually, a separate new
+	// transaction), not just corrections.
+	ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup LastTransactionLookup) ([]*ParsedTransaction, *UsageMetadata, []ChainStep, error)
 }

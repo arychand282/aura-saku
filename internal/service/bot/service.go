@@ -320,7 +320,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	var (
-		parsed      *ai.ParsedTransaction
+		parsedList  []*ai.ParsedTransaction
 		usageMeta   *ai.UsageMetadata
 		err         error
 		source      models.TransactionSource
@@ -340,7 +340,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 			return
 		}
 		raw = "[voice note]"
-		parsed, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
+		parsedList, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
 	} else {
 		source = models.SourceText
 		requestType = "text_parse"
@@ -354,9 +354,9 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 			// how to fill in the correction. Falls back to
 			// ParseTransactionText below for providers (openai, anthropic
 			// today) that don't implement this optional capability.
-			parsed, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID))
+			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID))
 		} else {
-			parsed, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
+			parsedList, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
 		}
 	}
 
@@ -370,46 +370,101 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
 		return
 	}
+	if len(parsedList) == 0 {
+		// Every provider guarantees at least one result on a nil error (see
+		// ai.AIClient's doc comment) — this is a defensive fallback, not an
+		// expected path.
+		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d returned zero results", user.ID), nil)
+		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
+		return
+	}
 
 	// A successful AI call counts against today's quota regardless of tier
 	// (Redis is only ever checked for free-tier users, but recording it for
 	// everyone gives complete audit data) and regardless of whether the
-	// result was ambiguous — the API cost was already incurred either way.
+	// result was ambiguous — the API cost was already incurred either way,
+	// once, even when the result batches several transactions.
 	if qErr := quota.Increment(ctx, s.redisClient, msg.ChatID); qErr != nil {
 		logger.Error(logger.RedisOpFailed, fmt.Sprintf("increment quota for chat %d", msg.ChatID), qErr)
 	}
 	go s.usageSvc.RecordAICall(context.Background(), user.ID, models.AIProvider(s.aiClient.ProviderName()), requestType, usageMeta)
 
-	if parsed.IsAmbiguous {
-		s.reply(ctx, msg.ChatID, parsed.ClarificationQuestion)
+	// Every intent other than "record" is guaranteed singular (see
+	// ai.AIClient's doc comment and the "at most once per message"
+	// instruction in internal/ai/prompt/tool_schema.go) — only the first
+	// result needs inspecting to route non-record intents.
+	first := parsedList[0]
+
+	if first.IsAmbiguous {
+		s.reply(ctx, msg.ChatID, first.ClarificationQuestion)
 		return
 	}
 
-	if parsed.Intent == ai.IntentQuery {
-		s.handleSpendingQuery(ctx, user, msg, parsed)
+	if first.Intent == ai.IntentQuery {
+		s.handleSpendingQuery(ctx, user, msg, first)
 		return
 	}
 
-	if parsed.Intent == ai.IntentBalance {
+	if first.Intent == ai.IntentBalance {
 		s.handleBalanceQuery(ctx, user, msg)
 		return
 	}
 
-	if parsed.Intent == ai.IntentCorrect {
-		s.handleTransactionCorrection(ctx, user, msg, parsed, source, raw)
+	if first.Intent == ai.IntentCorrect {
+		s.handleTransactionCorrection(ctx, user, msg, first, source, raw)
 		return
 	}
 
-	createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
-	if err != nil {
-		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
+	s.handleTransactionRecordBatch(ctx, user, msg, parsedList, source, raw)
+}
+
+// handleTransactionRecordBatch persists one or more record-intent
+// transactions parsed from a single message (e.g. an itemized list: "bensin
+// 300k, makan siang 300k, makan malam 100k" yields three) and replies with
+// one confirmation line per transaction, followed by budget warnings
+// evaluated once for the whole batch rather than once per line — the
+// warning reflects the user's post-batch spending total either way, so
+// repeating it per line would just be noise. A stray non-record item
+// (the model violating the "only record_transaction repeats" instruction)
+// is skipped rather than mis-recorded.
+func (s *Service) handleTransactionRecordBatch(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsedList []*ai.ParsedTransaction, source models.TransactionSource, raw string) {
+	var (
+		lines      []string
+		anyExpense *models.Transaction
+	)
+
+	for _, parsed := range parsedList {
+		// Empty Intent means IntentRecord (see ai.ParsedTransaction.Intent's
+		// doc comment) — every provider test fixture and pre-intent
+		// prompt/response relies on this, so it must be treated as record
+		// here too, not just at the top-level fallthrough.
+		if parsed.Intent != "" && parsed.Intent != ai.IntentRecord {
+			logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("unexpected intent %q in a record batch for user %d, skipping", parsed.Intent, user.ID), nil)
+			continue
+		}
+
+		createdTx, err := s.txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
+		if err != nil {
+			logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create transaction for user %d", user.ID), err)
+			continue
+		}
+
+		lines = append(lines, i18n.T(user.Language, i18n.KeyTransactionRecorded,
+			createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName))
+		if anyExpense == nil && createdTx.Type == models.TxExpense {
+			anyExpense = createdTx
+		}
+	}
+
+	if len(lines) == 0 {
 		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
 		return
 	}
 
-	reply := i18n.T(user.Language, i18n.KeyTransactionRecorded,
-		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName)
-	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
+	reply := strings.Join(lines, "\n")
+	if anyExpense != nil {
+		reply = s.appendBudgetWarnings(ctx, user, anyExpense, reply)
+	}
 
 	s.reply(ctx, msg.ChatID, reply)
 }

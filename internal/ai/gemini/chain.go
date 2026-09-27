@@ -40,13 +40,19 @@ func correctionChainTools() []genTool {
 // deciding how to fill in correct_last_transaction. Whether it actually
 // chains is still the model's own judgement call each time — a correction
 // that restates every field needs no lookup at all; a partial one does.
+// Like every other method, the terminal round can yield more than one
+// ParsedTransaction — record_transaction may be called several times for a
+// message listing several distinct transactions (see
+// internal/ai/prompt/tool_schema.go); get_last_transaction never mixes with
+// that, so a chaining round is detected as "any get_last_transaction call
+// present" and everything else in that round is deferred to the next.
 //
 // The mechanism is exactly what it looks like at the wire level: there is
 // no special "continue" API. Each round re-sends the growing conversation
 // — the model's own tool-call turn plus the tool's real result appended as
 // a new turn — and the model decides fresh, every round, whether it has
 // enough now or needs to call something else.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) (*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	tools := correctionChainTools()
 
@@ -71,19 +77,19 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 		if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
 			break
 		}
+		callParts := findFunctionCallParts(resp.Candidates[0].Content.Parts)
 
-		callPart := findFunctionCallPart(resp.Candidates[0].Content.Parts)
-		if callPart == nil {
+		if len(callParts) == 0 {
 			// No tool call in this round — the model replied in plain text
 			// instead (this chain's "ambiguous" case, same convention as
 			// every other method on this client).
 			text := resp.Candidates[0].Content.Parts[0].Text
 			usage.LatencyMs = int(time.Since(start).Milliseconds())
-			return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, usage, steps, nil
+			return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, usage, steps, nil
 		}
-		fc := callPart.FunctionCall
 
-		if fc.Name == toolGetLastTransaction {
+		if lookupCall := findByName(callParts, toolGetLastTransaction); lookupCall != nil {
+			fc := lookupCall.FunctionCall
 			result, lookupErr := lookup(ctx)
 			if lookupErr != nil {
 				return nil, nil, steps, fmt.Errorf("get_last_transaction lookup: %w", lookupErr)
@@ -95,7 +101,7 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			// a bare {FunctionCall: fc} here is what triggered the 400
 			// above; Gemini demands the signature back verbatim.
 			contents = append(contents,
-				genContent{Role: "model", Parts: []genPart{*callPart}},
+				genContent{Role: "model", Parts: []genPart{*lookupCall}},
 				genContent{Role: "user", Parts: []genPart{{FunctionResponse: &functionResponse{
 					Name:     fc.Name,
 					Response: ai.LastTransactionToMap(result),
@@ -104,24 +110,40 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			continue
 		}
 
-		// A terminal tool — same mapping every other method on this client
-		// uses once it has a functionCall in hand.
-		steps = append(steps, ai.ChainStep{ToolCalled: fc.Name, Args: fc.Args})
-		pt := ai.ParsedTransactionFromToolCall(fc.Name, fc.Args)
-		if pt == nil || !ai.ValidateParsedTransaction(pt) {
-			return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", fc.Name)
+		// Terminal round — one or more non-lookup tool calls, same mapping
+		// every other method on this client uses once it has functionCalls
+		// in hand.
+		results := make([]*ai.ParsedTransaction, 0, len(callParts))
+		for _, part := range callParts {
+			fc := part.FunctionCall
+			steps = append(steps, ai.ChainStep{ToolCalled: fc.Name, Args: fc.Args})
+			pt := ai.ParsedTransactionFromToolCall(fc.Name, fc.Args)
+			if pt == nil || !ai.ValidateParsedTransaction(pt) {
+				return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", fc.Name)
+			}
+			results = append(results, pt)
 		}
 		usage.LatencyMs = int(time.Since(start).Milliseconds())
-		return pt, usage, steps, nil
+		return results, usage, steps, nil
 	}
 
 	return nil, nil, steps, fmt.Errorf("tool-calling chain exceeded %d rounds without a final answer", maxChainRounds)
 }
 
-func findFunctionCallPart(parts []genPart) *genPart {
+func findFunctionCallParts(parts []genPart) []*genPart {
+	var found []*genPart
 	for i := range parts {
 		if parts[i].FunctionCall != nil {
-			return &parts[i]
+			found = append(found, &parts[i])
+		}
+	}
+	return found
+}
+
+func findByName(parts []*genPart, name string) *genPart {
+	for _, p := range parts {
+		if p.FunctionCall.Name == name {
+			return p
 		}
 	}
 	return nil

@@ -92,7 +92,7 @@ func TransactionTools() []Tool {
 	return []Tool{
 		{
 			Name:        ToolRecordTransaction,
-			Description: "Call this when the message reports a transaction that already happened — money spent, earned, invested, transferred, or received as a reward (e.g. \"lunch 25000\", \"gaji 5000000\", \"makan siang tadi 30rb\"). This is the default for anything describing something that happened.",
+			Description: "Call this when the message reports a transaction that already happened — money spent, earned, invested, transferred, or received as a reward (e.g. \"lunch 25000\", \"gaji 5000000\", \"makan siang tadi 30rb\"). This is the default for anything describing something that happened. If the message lists SEVERAL separate transactions (e.g. an itemized list: \"bensin 300k, makan siang 300k, makan malam 100k\"), call this tool ONCE PER TRANSACTION, in the order mentioned — do not merge them into a single total, and do not drop any of them.",
 			Properties:  transactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name"},
 		},
@@ -141,7 +141,7 @@ func ToolCallingSystemInstruction(defaultCurrency string, today time.Time, prefe
 		`You are a financial transaction parser and spending-report assistant for an expense-tracking bot.
 Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
-Decide which tool (if any) matches the user's message and call exactly one. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.`,
+Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_last_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.`,
 		today.UTC().Format("2006-01-02"),
 		defaultCurrency,
 		toolCallingLanguageName(preferredLanguage),

@@ -121,14 +121,16 @@ type messagesResponse struct {
 }
 
 // converse sends the system prompt plus conversation messages plus the
-// declared transaction tools and derives a ParsedTransaction from whichever
-// tool (if any) the model decided to call. No repair-retry loop: a
-// tool_use block's Input is schema-guaranteed by Anthropic to match the
-// declared input_schema, and content with no tool_use block is the model
-// choosing to reply in plain text instead (this provider's "ambiguous"
-// case) — there's no third case of "text that was supposed to be JSON but
-// isn't quite."
-func (c *Client) converse(ctx context.Context, systemPrompt string, messages []message) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// declared transaction tools and derives one ParsedTransaction per tool
+// call the model decided to make — almost always one, but record_transaction
+// may be called several times in a single turn for a message listing
+// several distinct transactions (see internal/ai/prompt/tool_schema.go).
+// No repair-retry loop: a tool_use block's Input is schema-guaranteed by
+// Anthropic to match the declared input_schema, and content with no
+// tool_use block is the model choosing to reply in plain text instead
+// (this provider's "ambiguous" case) — there's no third case of "text that
+// was supposed to be JSON but isn't quite."
+func (c *Client) converse(ctx context.Context, systemPrompt string, messages []message) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := messagesRequest{
 		Model:     c.model,
 		MaxTokens: 1024,
@@ -143,12 +145,12 @@ func (c *Client) converse(ctx context.Context, systemPrompt string, messages []m
 		return nil, nil, err
 	}
 
-	parsed, ok := tryParseToolUse(resp)
+	parsed, ok := tryParseToolUses(resp)
 	if !ok {
-		return &ai.ParsedTransaction{
+		return []*ai.ParsedTransaction{{
 			IsAmbiguous:           true,
 			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-		}, nil, nil
+		}}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -160,11 +162,12 @@ func (c *Client) converse(ctx context.Context, systemPrompt string, messages []m
 	return parsed, usage, nil
 }
 
-func tryParseToolUse(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
+func tryParseToolUses(resp *messagesResponse) ([]*ai.ParsedTransaction, bool) {
 	if len(resp.Content) == 0 {
 		return nil, false
 	}
 
+	var results []*ai.ParsedTransaction
 	for _, block := range resp.Content {
 		if block.Type != "tool_use" {
 			continue
@@ -173,7 +176,10 @@ func tryParseToolUse(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
 		if pt == nil || !ai.ValidateParsedTransaction(pt) {
 			return nil, false
 		}
-		return pt, true
+		results = append(results, pt)
+	}
+	if len(results) > 0 {
+		return results, true
 	}
 
 	// No tool_use block in this response — the model chose to reply in
@@ -182,7 +188,7 @@ func tryParseToolUse(resp *messagesResponse) (*ai.ParsedTransaction, bool) {
 	if strings.TrimSpace(text) == "" {
 		return nil, false
 	}
-	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
+	return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, true
 }
 
 // doRequest accepts any (both messagesRequest and chain.go's chainRequest —
@@ -224,12 +230,12 @@ func (c *Client) doRequest(ctx context.Context, body any) (*messagesResponse, er
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: "User message: " + userText}})
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	content := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
@@ -238,6 +244,6 @@ func (c *Client) AnswerClarification(ctx context.Context, originalText string, c
 	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: content}})
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return nil, nil, apperror.ErrProviderAudioUnsupported
 }

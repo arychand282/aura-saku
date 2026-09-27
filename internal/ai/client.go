@@ -86,21 +86,32 @@ type UsageMetadata struct {
 // Swapping providers is a config-only change (see factory.go) — no caller
 // outside this package ever imports a vendor SDK directly.
 type AIClient interface {
-	// ParseTransactionText sends raw user text and expects back structured
-	// JSON conforming to ParsedTransaction. preferredLanguage ("id"/"en")
-	// controls what language ClarificationQuestion comes back in —
-	// category_name is always English regardless (see internal/ai/prompt),
-	// since it feeds internal budget categorization.
-	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
+	// ParseTransactionText sends raw user text and expects back one or more
+	// ParsedTransaction results — almost always exactly one, but a message
+	// listing several distinct transactions (e.g. an itemized "bensin 300k,
+	// makan siang 300k, makan malam 100k") yields one entry per transaction,
+	// in the order mentioned, from a single AI call (see
+	// internal/ai/prompt/tool_schema.go: record_transaction is the only tool
+	// a provider may call more than once per turn). Always non-empty on a
+	// nil error — even the ambiguous case is a single-element slice.
+	// preferredLanguage ("id"/"en") controls what language
+	// ClarificationQuestion comes back in — category_name is always English
+	// regardless (see internal/ai/prompt), since it feeds internal budget
+	// categorization.
+	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
 
 	// TranscribeAndParseAudio handles voice notes. Providers with native
 	// audio support (Gemini) transcribe+parse in one round trip; providers
 	// without it would transcribe then internally call ParseTransactionText.
-	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
+	// Same one-or-more-results contract as ParseTransactionText.
+	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
 
 	// AnswerClarification re-parses given the original ambiguous context
-	// plus the user's clarifying reply.
-	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ParsedTransaction, *UsageMetadata, error)
+	// plus the user's clarifying reply. Same one-or-more-results contract as
+	// ParseTransactionText, though a clarification reply is answering one
+	// specific ambiguous transaction and so realistically always yields
+	// exactly one result.
+	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
 
 	ProviderName() string
 }

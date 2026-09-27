@@ -124,13 +124,16 @@ type chatResponse struct {
 }
 
 // chat sends a system+user message pair plus the declared transaction
-// tools and derives a ParsedTransaction from whichever tool (if any) the
-// model decided to call. No repair-retry loop: a tool_call's Arguments are
-// schema-guaranteed by OpenAI to match the declared parameters, and a
-// message with no tool_calls is the model choosing to reply in plain text
-// instead (this provider's "ambiguous" case) — there's no third case of
-// "text that was supposed to be JSON but isn't quite."
-func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// tools and derives one ParsedTransaction per tool call the model decided
+// to make — almost always one, but record_transaction may be called
+// several times in a single turn for a message listing several distinct
+// transactions (see internal/ai/prompt/tool_schema.go). No repair-retry
+// loop: a tool_call's Arguments are schema-guaranteed by OpenAI to match
+// the declared parameters, and a message with no tool_calls is the model
+// choosing to reply in plain text instead (this provider's "ambiguous"
+// case) — there's no third case of "text that was supposed to be JSON but
+// isn't quite."
+func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := chatRequest{
 		Model: c.model,
 		Messages: []chatMessage{
@@ -146,12 +149,12 @@ func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*a
 		return nil, nil, err
 	}
 
-	parsed, ok := tryParseToolCall(resp)
+	parsed, ok := tryParseToolCalls(resp)
 	if !ok {
-		return &ai.ParsedTransaction{
+		return []*ai.ParsedTransaction{{
 			IsAmbiguous:           true,
 			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-		}, nil, nil
+		}}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -163,29 +166,32 @@ func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) (*a
 	return parsed, usage, nil
 }
 
-func tryParseToolCall(resp *chatResponse) (*ai.ParsedTransaction, bool) {
+func tryParseToolCalls(resp *chatResponse) ([]*ai.ParsedTransaction, bool) {
 	if len(resp.Choices) == 0 {
 		return nil, false
 	}
 	msg := resp.Choices[0].Message
 
 	if len(msg.ToolCalls) > 0 {
-		tc := msg.ToolCalls[0]
-		var args map[string]interface{}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return nil, false
+		results := make([]*ai.ParsedTransaction, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				return nil, false
+			}
+			pt := ai.ParsedTransactionFromToolCall(tc.Function.Name, args)
+			if pt == nil || !ai.ValidateParsedTransaction(pt) {
+				return nil, false
+			}
+			results = append(results, pt)
 		}
-		pt := ai.ParsedTransactionFromToolCall(tc.Function.Name, args)
-		if pt == nil || !ai.ValidateParsedTransaction(pt) {
-			return nil, false
-		}
-		return pt, true
+		return results, true
 	}
 
 	if msg.Content == "" {
 		return nil, false
 	}
-	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: msg.Content}, true
+	return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: msg.Content}}, true
 }
 
 func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResponse, error) {
@@ -222,12 +228,12 @@ func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResp
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	return c.chat(ctx, systemPrompt, "User message: "+userText)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	userContent := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
@@ -236,7 +242,7 @@ func (c *Client) AnswerClarification(ctx context.Context, originalText string, c
 	return c.chat(ctx, systemPrompt, userContent)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	transcript, err := c.transcribe(ctx, audioBytes, mimeType)
 	if err != nil {
 		return nil, nil, fmt.Errorf("transcribe audio: %w", err)

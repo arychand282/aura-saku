@@ -39,8 +39,14 @@ func correctionChainTools() []toolDef {
 // shape: the model's tool-call turn is replayed back as an assistant
 // message carrying ToolCalls, and the tool's result is a "tool"-role
 // message keyed by ToolCallID rather than a name-keyed functionResponse
-// part like Gemini's.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) (*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+// part like Gemini's. Like every other method, the terminal round can
+// yield more than one ParsedTransaction — record_transaction may be called
+// several times for a message listing several distinct transactions (see
+// internal/ai/prompt/tool_schema.go), which OpenAI represents as several
+// entries in the same msg.ToolCalls; get_last_transaction never mixes with
+// that, so a chaining round is detected as "any get_last_transaction call
+// present" and everything else in that round is deferred to the next.
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	tools := correctionChainTools()
 
@@ -70,21 +76,19 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			if msg.Content == "" {
 				return nil, nil, steps, fmt.Errorf("empty response with no tool call")
 			}
-			return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: msg.Content}, usage, steps, nil
+			return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: msg.Content}}, usage, steps, nil
 		}
 
-		tc := msg.ToolCalls[0]
-		var args map[string]interface{}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return nil, nil, steps, fmt.Errorf("unmarshal tool call arguments: %w", err)
-		}
-
-		if tc.Function.Name == toolGetLastTransaction {
+		if lookupTC := findToolCallByName(msg.ToolCalls, toolGetLastTransaction); lookupTC != nil {
+			var lookupArgs map[string]interface{}
+			if err := json.Unmarshal([]byte(lookupTC.Function.Arguments), &lookupArgs); err != nil {
+				return nil, nil, steps, fmt.Errorf("unmarshal tool call arguments: %w", err)
+			}
 			result, lookupErr := lookup(ctx)
 			if lookupErr != nil {
 				return nil, nil, steps, fmt.Errorf("get_last_transaction lookup: %w", lookupErr)
 			}
-			steps = append(steps, ai.ChainStep{ToolCalled: tc.Function.Name, Args: args, Result: result})
+			steps = append(steps, ai.ChainStep{ToolCalled: lookupTC.Function.Name, Args: lookupArgs, Result: result})
 
 			resultJSON, jsonErr := json.Marshal(ai.LastTransactionToMap(result))
 			if jsonErr != nil {
@@ -95,19 +99,37 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			// a tool message to its call by this ID, not by name/position.
 			messages = append(messages,
 				chatMessage{Role: "assistant", ToolCalls: msg.ToolCalls},
-				chatMessage{Role: "tool", ToolCallID: tc.ID, Content: string(resultJSON)},
+				chatMessage{Role: "tool", ToolCallID: lookupTC.ID, Content: string(resultJSON)},
 			)
 			continue
 		}
 
-		steps = append(steps, ai.ChainStep{ToolCalled: tc.Function.Name, Args: args})
-		pt := ai.ParsedTransactionFromToolCall(tc.Function.Name, args)
-		if pt == nil || !ai.ValidateParsedTransaction(pt) {
-			return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", tc.Function.Name)
+		// Terminal round — one or more non-lookup tool calls.
+		results := make([]*ai.ParsedTransaction, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				return nil, nil, steps, fmt.Errorf("unmarshal tool call arguments: %w", err)
+			}
+			steps = append(steps, ai.ChainStep{ToolCalled: tc.Function.Name, Args: args})
+			pt := ai.ParsedTransactionFromToolCall(tc.Function.Name, args)
+			if pt == nil || !ai.ValidateParsedTransaction(pt) {
+				return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", tc.Function.Name)
+			}
+			results = append(results, pt)
 		}
 		usage.LatencyMs = int(time.Since(start).Milliseconds())
-		return pt, usage, steps, nil
+		return results, usage, steps, nil
 	}
 
 	return nil, nil, steps, fmt.Errorf("tool-calling chain exceeded %d rounds without a final answer", maxChainRounds)
+}
+
+func findToolCallByName(calls []toolCall, name string) *toolCall {
+	for i := range calls {
+		if calls[i].Function.Name == name {
+			return &calls[i]
+		}
+	}
+	return nil
 }

@@ -78,8 +78,15 @@ type chainRequest struct {
 // shape: the model's tool-call turn is replayed back as an assistant
 // message with a tool_use content block, and the tool's result comes back
 // as a user message with a tool_result block correlated by ToolUseID
-// (Anthropic's equivalent of OpenAI's tool_call_id).
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) (*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+// (Anthropic's equivalent of OpenAI's tool_call_id). Like every other
+// method, the terminal round can yield more than one ParsedTransaction —
+// record_transaction may be called several times for a message listing
+// several distinct transactions (see internal/ai/prompt/tool_schema.go),
+// which Anthropic represents as several tool_use blocks in the same
+// response; get_last_transaction never mixes with that, so a chaining
+// round is detected as "any get_last_transaction block present" and
+// everything else in that round is deferred to the next.
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	tools := correctionChainTools()
 
@@ -109,58 +116,73 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			break
 		}
 
-		toolBlock := findToolUseBlock(resp.Content)
-		if toolBlock == nil {
+		toolBlocks := findToolUseBlocks(resp.Content)
+		if len(toolBlocks) == 0 {
 			text := resp.Content[0].Text
 			usage.LatencyMs = int(time.Since(start).Milliseconds())
 			if strings.TrimSpace(text) == "" {
 				return nil, nil, steps, fmt.Errorf("empty response with no tool_use block")
 			}
-			return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, usage, steps, nil
+			return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, usage, steps, nil
 		}
 
-		if toolBlock.Name == toolGetLastTransaction {
+		if lookupBlock := findBlockByName(toolBlocks, toolGetLastTransaction); lookupBlock != nil {
 			result, lookupErr := lookup(ctx)
 			if lookupErr != nil {
 				return nil, nil, steps, fmt.Errorf("get_last_transaction lookup: %w", lookupErr)
 			}
-			steps = append(steps, ai.ChainStep{ToolCalled: toolBlock.Name, Args: toolBlock.Input, Result: result})
+			steps = append(steps, ai.ChainStep{ToolCalled: lookupBlock.Name, Args: lookupBlock.Input, Result: result})
 
 			resultJSON, jsonErr := json.Marshal(ai.LastTransactionToMap(result))
 			if jsonErr != nil {
 				return nil, nil, steps, fmt.Errorf("marshal tool result: %w", jsonErr)
 			}
-			input := toolBlock.Input
+			input := lookupBlock.Input
 			if input == nil {
 				input = map[string]interface{}{}
 			}
 			messages = append(messages,
 				chainMessage{Role: "assistant", Content: []toolUseBlock{
-					{Type: "tool_use", ID: toolBlock.ID, Name: toolBlock.Name, Input: input},
+					{Type: "tool_use", ID: lookupBlock.ID, Name: lookupBlock.Name, Input: input},
 				}},
 				chainMessage{Role: "user", Content: []toolResultBlock{
-					{Type: "tool_result", ToolUseID: toolBlock.ID, Content: string(resultJSON)},
+					{Type: "tool_result", ToolUseID: lookupBlock.ID, Content: string(resultJSON)},
 				}},
 			)
 			continue
 		}
 
-		steps = append(steps, ai.ChainStep{ToolCalled: toolBlock.Name, Args: toolBlock.Input})
-		pt := ai.ParsedTransactionFromToolCall(toolBlock.Name, toolBlock.Input)
-		if pt == nil || !ai.ValidateParsedTransaction(pt) {
-			return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", toolBlock.Name)
+		// Terminal round — one or more non-lookup tool_use blocks.
+		results := make([]*ai.ParsedTransaction, 0, len(toolBlocks))
+		for _, block := range toolBlocks {
+			steps = append(steps, ai.ChainStep{ToolCalled: block.Name, Args: block.Input})
+			pt := ai.ParsedTransactionFromToolCall(block.Name, block.Input)
+			if pt == nil || !ai.ValidateParsedTransaction(pt) {
+				return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", block.Name)
+			}
+			results = append(results, pt)
 		}
 		usage.LatencyMs = int(time.Since(start).Milliseconds())
-		return pt, usage, steps, nil
+		return results, usage, steps, nil
 	}
 
 	return nil, nil, steps, fmt.Errorf("tool-calling chain exceeded %d rounds without a final answer", maxChainRounds)
 }
 
-func findToolUseBlock(blocks []responseContentBlock) *responseContentBlock {
+func findToolUseBlocks(blocks []responseContentBlock) []*responseContentBlock {
+	var found []*responseContentBlock
 	for i := range blocks {
 		if blocks[i].Type == "tool_use" {
-			return &blocks[i]
+			found = append(found, &blocks[i])
+		}
+	}
+	return found
+}
+
+func findBlockByName(blocks []*responseContentBlock, name string) *responseContentBlock {
+	for _, b := range blocks {
+		if b.Name == name {
+			return b
 		}
 	}
 	return nil

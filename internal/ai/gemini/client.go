@@ -138,13 +138,15 @@ type genResponse struct {
 }
 
 // generate sends the given content parts plus the declared transaction
-// tools to Gemini and derives a ParsedTransaction from whichever tool (if
-// any) the model decided to call. Unlike the old prompt-engineered-JSON
-// approach, there's no repair-retry loop here: the model either emits a
-// functionCall whose args are already guaranteed by Gemini to match the
-// declared schema, or it emits plain text — there's no third case of
-// "text that was supposed to be JSON but isn't quite."
-func (c *Client) generate(ctx context.Context, systemInstruction string, parts []genPart) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// tools to Gemini and derives one ParsedTransaction per tool call the model
+// decided to make — almost always one, but record_transaction may be
+// called several times in a single turn for a message listing several
+// distinct transactions (see internal/ai/prompt/tool_schema.go). Unlike the
+// old prompt-engineered-JSON approach, there's no repair-retry loop here:
+// the model either emits functionCalls whose args are already guaranteed by
+// Gemini to match the declared schema, or it emits plain text — there's no
+// third case of "text that was supposed to be JSON but isn't quite."
+func (c *Client) generate(ctx context.Context, systemInstruction string, parts []genPart) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	reqBody := genRequest{
 		Contents:          []genContent{{Role: "user", Parts: parts}},
 		SystemInstruction: &genContent{Parts: []genPart{{Text: systemInstruction}}},
@@ -157,12 +159,12 @@ func (c *Client) generate(ctx context.Context, systemInstruction string, parts [
 		return nil, nil, err
 	}
 
-	parsed, ok := c.tryParseToolCall(resp)
+	parsed, ok := c.tryParseToolCalls(resp)
 	if !ok {
-		return &ai.ParsedTransaction{
+		return []*ai.ParsedTransaction{{
 			IsAmbiguous:           true,
 			ClarificationQuestion: "Sorry, I couldn't quite understand that. Could you tell me the amount and what it was for?",
-		}, nil, nil
+		}}, nil, nil
 	}
 
 	usage := &ai.UsageMetadata{
@@ -174,17 +176,19 @@ func (c *Client) generate(ctx context.Context, systemInstruction string, parts [
 	return parsed, usage, nil
 }
 
-// tryParseToolCall maps whichever tool the model called (if any) onto the
+// tryParseToolCalls maps every tool call the model made (if any) onto the
 // shared ai.ParsedTransaction shape, so the rest of the app — bot.Service's
 // intent switch, ai.ValidateParsedTransaction — is completely unaware this
-// provider stopped hand-parsing JSON text. A plain-text part with no
-// functionCall is the model choosing not to call any tool (see
-// toolCallingSystemInstruction) — that's this provider's "ambiguous" case.
-func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, bool) {
+// provider stopped hand-parsing JSON text. A response with no functionCall
+// parts at all is the model choosing to reply in plain text instead (see
+// toolCallingSystemInstruction) — that's this provider's "ambiguous" case,
+// always a single-element result.
+func (c *Client) tryParseToolCalls(resp *genResponse) ([]*ai.ParsedTransaction, bool) {
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
 		return nil, false
 	}
 
+	var results []*ai.ParsedTransaction
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if part.FunctionCall == nil {
 			continue
@@ -193,7 +197,10 @@ func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, boo
 		if pt == nil || !ai.ValidateParsedTransaction(pt) {
 			return nil, false
 		}
-		return pt, true
+		results = append(results, pt)
+	}
+	if len(results) > 0 {
+		return results, true
 	}
 
 	// No tool call in this response — the model chose to reply in plain
@@ -203,7 +210,7 @@ func (c *Client) tryParseToolCall(resp *genResponse) (*ai.ParsedTransaction, boo
 	if strings.TrimSpace(text) == "" {
 		return nil, false
 	}
-	return &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: text}, true
+	return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, true
 }
 
 func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, error) {
@@ -240,13 +247,13 @@ func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, 
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{{Text: "User message: " + userText}}
 	return c.generate(ctx, instruction, parts)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
 		{Text: "Transcribe the following voice note and extract the transaction it describes."},
@@ -258,7 +265,7 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 	return c.generate(ctx, instruction, parts)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
 		{Text: "Original user message: " + originalText},

@@ -85,32 +85,39 @@ func (m *mockMessenger) count(chatID int64) int {
 // mockAIClient returns a fixed, configurable result for every call and
 // counts how many times it was invoked — the key assertion for quota
 // gating is that a blocked request never reaches the AI client at all.
+// parseResult covers the common single-transaction case without touching
+// every existing test; parseResults overrides it for the batch case (a
+// message describing several transactions in one AI call).
 type mockAIClient struct {
-	mu          sync.Mutex
-	calls       int
-	parseResult *ai.ParsedTransaction
-	parseErr    error
+	mu           sync.Mutex
+	calls        int
+	parseResult  *ai.ParsedTransaction
+	parseResults []*ai.ParsedTransaction
+	parseErr     error
 }
 
-func (m *mockAIClient) call() (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (m *mockAIClient) call() ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	m.mu.Lock()
 	m.calls++
 	m.mu.Unlock()
 	if m.parseErr != nil {
 		return nil, nil, m.parseErr
 	}
-	return m.parseResult, &ai.UsageMetadata{Model: "mock-model"}, nil
+	if len(m.parseResults) > 0 {
+		return m.parseResults, &ai.UsageMetadata{Model: "mock-model"}, nil
+	}
+	return []*ai.ParsedTransaction{m.parseResult}, &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
-func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return m.call()
 }
 
-func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return m.call()
 }
 
-func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string) (*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return m.call()
 }
 
@@ -324,6 +331,63 @@ func TestHandleUpdate_TransactionInput_Success(t *testing.T) {
 	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
 	if count != 1 {
 		t.Errorf("transaction count = %d, want 1", count)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_MultipleRecordsInOneMessage reproduces
+// the reported bug: a single message listing several distinct transactions
+// ("pengeluaran tadi: bensin mobil 300k, makan siang 300k, makan malam
+// 100k") must record all of them from one AI call, not just the first —
+// exactly the scenario ai.AIClient's ParseTransactionText now returns a
+// slice for (see internal/ai/prompt/tool_schema.go's "call record_transaction
+// once per transaction" instruction).
+func TestHandleUpdate_TransactionInput_MultipleRecordsInOneMessage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResults = []*ai.ParsedTransaction{
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "transport", Description: "bensin mobil"},
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food", Description: "makan siang"},
+		{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "makan malam"},
+	}
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{
+		ChatID: chatID,
+		Text:   "pengeluaran tadi:\nbensin mobile 300k\nmakan siang 300k\nmakan malam 100k",
+	})
+
+	// The whole batch must come from a single AI call — that's the entire
+	// point (previously this took 3 separate messages/calls, or silently
+	// dropped 2 of the 3 with only one round trip).
+	if got := env.ai.callCount(); got != 1 {
+		t.Fatalf("AI client calls = %d, want 1", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 3 {
+		t.Errorf("transaction count = %d, want 3 (one per line item, not just the first)", count)
+	}
+
+	var total float64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Select("COALESCE(SUM(original_amount), 0)").Scan(&total)
+	if total != 700_000 {
+		t.Errorf("sum of recorded amounts = %.2f, want 700000.00", total)
+	}
+
+	got := env.messenger.last(chatID)
+	for _, want := range []string{
+		i18n.FormatMoney(models.LanguageID, 300_000, "IDR"),
+		i18n.FormatMoney(models.LanguageID, 100_000, "IDR"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reply = %q, want it to mention %s", got, want)
+		}
 	}
 }
 
