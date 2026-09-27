@@ -345,7 +345,19 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		source = models.SourceText
 		requestType = "text_parse"
 		raw = msg.Text
-		parsed, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
+		if chained, ok := s.aiClient.(ai.ChainedCorrector); ok {
+			// See internal/ai/chain.go: a correction that doesn't restate
+			// every field ("eh salah, harusnya 1 juta aja") can't be safely
+			// filled in from the message alone, so a chained-tool-calling
+			// provider can call get_last_transaction first — backed here
+			// by the real transaction.Service.MostRecent — before deciding
+			// how to fill in the correction. Falls back to
+			// ParseTransactionText below for providers (openai, anthropic
+			// today) that don't implement this optional capability.
+			parsed, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID))
+		} else {
+			parsed, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
+		}
 	}
 
 	if err != nil {
@@ -490,6 +502,45 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
+}
+
+// lastTransactionLookup backs a chained-tool-calling AIClient's
+// get_last_transaction tool (see ai.ChainedCorrector) with the real
+// transaction.Service.MostRecent, mapped onto the provider-agnostic
+// ai.LastTransaction shape. "No transaction to correct" is a valid,
+// expected answer (e.g. this is the user's very first message) — not an
+// error — so ErrNoUndoableTransaction maps to Found: false rather than
+// propagating a failure the model has no use for.
+func (s *Service) lastTransactionLookup(userID uint) ai.LastTransactionLookup {
+	return func(ctx context.Context) (*ai.LastTransaction, error) {
+		tx, err := s.txSvc.MostRecent(ctx, userID)
+		if err != nil {
+			if errors.Is(err, apperror.ErrNoUndoableTransaction) {
+				return &ai.LastTransaction{Found: false}, nil
+			}
+			return nil, err
+		}
+
+		categoryName, bucket := "", ""
+		if tx.Category != nil {
+			categoryName = tx.Category.Name
+			bucket = string(tx.Category.Bucket)
+		}
+		if tx.Bucket != nil {
+			bucket = string(*tx.Bucket)
+		}
+
+		return &ai.LastTransaction{
+			Found:        true,
+			Type:         string(tx.Type),
+			Amount:       tx.OriginalAmount,
+			Currency:     tx.OriginalCurrency,
+			CategoryName: categoryName,
+			Bucket:       bucket,
+			Description:  tx.Description,
+			OccurredAt:   tx.OccurredAt.Format("2006-01-02"),
+		}, nil
+	}
 }
 
 func (s *Service) reply(ctx context.Context, chatID int64, text string) {

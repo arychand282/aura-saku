@@ -18,39 +18,6 @@ const toolGetLastTransaction = "get_last_transaction"
 // without being effectively unbounded.
 const maxChainRounds = 4
 
-// LastTransaction is what get_last_transaction hands back to the model —
-// mirrors the fields transaction.Service.MostRecent's result exposes,
-// without this package importing that DB-facing service directly (this
-// package stays a leaf dependency, same as every other provider client —
-// see ai.AIClient's own doc comment).
-type LastTransaction struct {
-	Found        bool
-	Type         string
-	Amount       float64
-	Currency     string
-	CategoryName string
-	Bucket       string
-	Description  string
-	OccurredAt   string // YYYY-MM-DD
-}
-
-// LastTransactionLookup executes the real get_last_transaction tool — wire
-// in transaction.Service.MostRecent here in production. Called for real,
-// but only when (and only when) the model actually asks for it; a
-// correction message that already restates every field never triggers it.
-type LastTransactionLookup func(ctx context.Context) (*LastTransaction, error)
-
-// ChainStep records one round of a chained call — which tool the model
-// asked for, with what arguments, and (for get_last_transaction) what real
-// result it got back — so a caller can inspect or print exactly what
-// happened. See cmd/agenticdemo for a runnable example against the real
-// API.
-type ChainStep struct {
-	ToolCalled string
-	Args       map[string]interface{}
-	Result     *LastTransaction
-}
-
 // correctionChainTools is the shared 4 tools (transactionTools) plus a 5th
 // one only this method offers: get_last_transaction. Deliberately NOT
 // added to the shared prompt.TransactionTools() list every provider uses —
@@ -67,7 +34,7 @@ func correctionChainTools() []genTool {
 	return tools
 }
 
-func lastTransactionToResponseMap(lt *LastTransaction) map[string]interface{} {
+func lastTransactionToResponseMap(lt *ai.LastTransaction) map[string]interface{} {
 	if lt == nil || !lt.Found {
 		return map[string]interface{}{"found": false}
 	}
@@ -95,13 +62,13 @@ func lastTransactionToResponseMap(lt *LastTransaction) map[string]interface{} {
 // — the model's own tool-call turn plus the tool's real result appended as
 // a new turn — and the model decides fresh, every round, whether it has
 // enough now or needs to call something else.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup LastTransactionLookup) (*ai.ParsedTransaction, *ai.UsageMetadata, []ChainStep, error) {
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) (*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	tools := correctionChainTools()
 
 	contents := []genContent{{Role: "user", Parts: []genPart{{Text: "User message: " + userText}}}}
 
-	var steps []ChainStep
+	var steps []ai.ChainStep
 	usage := &ai.UsageMetadata{Model: c.model}
 	start := time.Now()
 
@@ -137,7 +104,7 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			if lookupErr != nil {
 				return nil, nil, steps, fmt.Errorf("get_last_transaction lookup: %w", lookupErr)
 			}
-			steps = append(steps, ChainStep{ToolCalled: fc.Name, Args: fc.Args, Result: result})
+			steps = append(steps, ai.ChainStep{ToolCalled: fc.Name, Args: fc.Args, Result: result})
 
 			// Replay the model's turn EXACTLY as received (including
 			// ThoughtSignature, not just the FunctionCall) — reconstructing
@@ -155,7 +122,7 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 
 		// A terminal tool — same mapping every other method on this client
 		// uses once it has a functionCall in hand.
-		steps = append(steps, ChainStep{ToolCalled: fc.Name, Args: fc.Args})
+		steps = append(steps, ai.ChainStep{ToolCalled: fc.Name, Args: fc.Args})
 		pt := ai.ParsedTransactionFromToolCall(fc.Name, fc.Args)
 		if pt == nil || !ai.ValidateParsedTransaction(pt) {
 			return nil, nil, steps, fmt.Errorf("model called unrecognized/invalid tool %q", fc.Name)

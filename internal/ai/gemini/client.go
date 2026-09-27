@@ -43,6 +43,7 @@ func New(apiKey, model, baseURL string) *Client {
 }
 
 var _ ai.AIClient = (*Client)(nil)
+var _ ai.ChainedCorrector = (*Client)(nil)
 
 func (c *Client) ProviderName() string { return "gemini" }
 

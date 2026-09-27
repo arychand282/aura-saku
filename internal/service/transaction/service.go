@@ -132,10 +132,15 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 // it. Exported (rather than folded into UndoLast alone) so the correction
 // flow below can capture *which* transaction to revert before creating the
 // corrected replacement — calling UndoLast after that create would
-// otherwise resolve "most recent" to the new transaction itself.
+// otherwise resolve "most recent" to the new transaction itself. Also used
+// by bot.Service to back the get_last_transaction tool a chained-tool-
+// calling AIClient (see ai.ChainedCorrector) can call when a correction
+// message doesn't restate every field — Category is preloaded so that path
+// can report the real category name/bucket, not just IDs.
 func (s *Service) MostRecent(ctx context.Context, userID uint) (*models.Transaction, error) {
 	var tx models.Transaction
 	err := s.db.WithContext(ctx).
+		Preload("Category").
 		Where("user_id = ?", userID).
 		Order("created_at DESC").
 		First(&tx).Error

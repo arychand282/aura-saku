@@ -6,12 +6,13 @@ import (
 	"os"
 	"time"
 
+	"aura-saku/internal/ai"
 	"aura-saku/internal/ai/gemini"
 )
 
-func fakeLastTransaction(ctx context.Context) (*gemini.LastTransaction, error) {
-	fmt.Println("  [lookup fired: querying transaction.Service.MostRecent for real, in production]")
-	return &gemini.LastTransaction{
+func fakeLastTransaction(ctx context.Context) (*ai.LastTransaction, error) {
+	fmt.Println("  [lookup fired: this demo fakes it; bot.Service wires the real transaction.Service.MostRecent instead]")
+	return &ai.LastTransaction{
 		Found:        true,
 		Type:         "investment",
 		Amount:       2000000,
