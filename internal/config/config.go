@@ -83,6 +83,13 @@ type Config struct {
 	DashboardRateLimitWindowSeconds int
 	DashboardRateLimitMaxRequests   int
 
+	// ConversationRecentLimit/SummarizeThreshold bound how much conversation
+	// history is sent to the AI on every call (and therefore its token
+	// cost) — see internal/service/conversation.Config's own doc comments
+	// for the exact roles of each.
+	ConversationRecentLimit        int
+	ConversationSummarizeThreshold int
+
 	LogLevel string
 }
 
@@ -149,6 +156,9 @@ func Load() (*Config, error) {
 
 		DashboardRateLimitWindowSeconds: getEnvInt("DASHBOARD_RATE_LIMIT_WINDOW_SECONDS", 60),
 		DashboardRateLimitMaxRequests:   getEnvInt("DASHBOARD_RATE_LIMIT_MAX_REQUESTS", 120),
+
+		ConversationRecentLimit:        getEnvInt("CONVERSATION_RECENT_LIMIT", 10),
+		ConversationSummarizeThreshold: getEnvInt("CONVERSATION_SUMMARIZE_THRESHOLD", 20),
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
 	}

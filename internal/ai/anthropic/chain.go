@@ -86,13 +86,15 @@ type chainRequest struct {
 // response; get_last_transaction never mixes with that, so a chaining
 // round is detected as "any get_last_transaction block present" and
 // everything else in that round is deferred to the next.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
-	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage) + prompt.ConversationSummaryPreamble(history.Summary)
 	tools := correctionChainTools()
 
-	messages := []chainMessage{
-		{Role: "user", Content: "User message: " + userText},
+	messages := make([]chainMessage, 0, len(history.Recent)+1)
+	for _, t := range history.Recent {
+		messages = append(messages, chainMessage{Role: t.Role, Content: t.Content})
 	}
+	messages = append(messages, chainMessage{Role: "user", Content: "User message: " + userText})
 
 	var steps []ai.ChainStep
 	usage := &ai.UsageMetadata{Model: c.model}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"aura-saku/internal/ai"
+	"aura-saku/internal/ai/prompt"
 )
 
 // defaultBaseURL is used when baseURL isn't overridden via config
@@ -137,6 +138,22 @@ type genResponse struct {
 	} `json:"usageMetadata"`
 }
 
+// historyToContents converts prior conversation turns into leading Gemini
+// contents entries, prepended before the current message — "assistant"
+// turns map to Gemini's "model" role, everything else (only ever "user" in
+// practice) passes through as "user".
+func historyToContents(turns []ai.ConversationTurn) []genContent {
+	contents := make([]genContent, 0, len(turns))
+	for _, t := range turns {
+		role := "user"
+		if t.Role == "assistant" {
+			role = "model"
+		}
+		contents = append(contents, genContent{Role: role, Parts: []genPart{{Text: t.Content}}})
+	}
+	return contents
+}
+
 // generate sends the given content parts plus the declared transaction
 // tools to Gemini and derives one ParsedTransaction per tool call the model
 // decided to make — almost always one, but record_transaction may be
@@ -146,10 +163,18 @@ type genResponse struct {
 // the model either emits functionCalls whose args are already guaranteed by
 // Gemini to match the declared schema, or it emits plain text — there's no
 // third case of "text that was supposed to be JSON but isn't quite."
-func (c *Client) generate(ctx context.Context, systemInstruction string, parts []genPart) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+//
+// history prepends prior conversation turns before parts and folds
+// history.Summary into the system instruction, so a follow-up message
+// (e.g. "totalnya 150rb" after "abis makan di restoran mahal tadi") is
+// understood in context instead of parsed as if it were the first message
+// ever sent. The zero value ConversationContext{} behaves exactly as this
+// method did before history existed.
+func (c *Client) generate(ctx context.Context, systemInstruction string, parts []genPart, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	contents := append(historyToContents(history.Recent), genContent{Role: "user", Parts: parts})
 	reqBody := genRequest{
-		Contents:          []genContent{{Role: "user", Parts: parts}},
-		SystemInstruction: &genContent{Parts: []genPart{{Text: systemInstruction}}},
+		Contents:          contents,
+		SystemInstruction: &genContent{Parts: []genPart{{Text: systemInstruction + prompt.ConversationSummaryPreamble(history.Summary)}}},
 		Tools:             transactionTools(),
 	}
 
@@ -247,13 +272,13 @@ func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, 
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{{Text: "User message: " + userText}}
-	return c.generate(ctx, instruction, parts)
+	return c.generate(ctx, instruction, parts, history)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
 		{Text: "Transcribe the following voice note and extract the transaction it describes."},
@@ -262,15 +287,51 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 			Data:     base64.StdEncoding.EncodeToString(audioBytes),
 		}},
 	}
-	return c.generate(ctx, instruction, parts)
+	return c.generate(ctx, instruction, parts, history)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{
 		{Text: "Original user message: " + originalText},
 		{Text: "The user was asked to clarify and replied: " + clarificationReply},
 		{Text: "Combine both messages into a single transaction extraction."},
 	}
-	return c.generate(ctx, instruction, parts)
+	return c.generate(ctx, instruction, parts, history)
+}
+
+// Summarize sends priorSummary plus turns as a plain text-in/text-out
+// completion (no tools declared — there's nothing to extract, only
+// condense) and returns the model's updated summary text verbatim.
+func (c *Client) Summarize(ctx context.Context, priorSummary string, turns []ai.ConversationTurn, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	lead := "Conversation so far (write a summary of it):"
+	if priorSummary != "" {
+		lead = "Prior summary: " + priorSummary + "\n\nNew messages since that summary (merge them into one updated summary):"
+	}
+	// lead must be the LAST content, not the first: Gemini rejects a
+	// request ending on a "model" turn ("Requests ending with a model turn
+	// are not supported"), and turns normally ends with the assistant's
+	// reply to the most recent message — found live, not documented
+	// anywhere obvious.
+	contents := append(historyToContents(turns), genContent{Role: "user", Parts: []genPart{{Text: lead}}})
+
+	start := time.Now()
+	resp, err := c.doRequest(ctx, genRequest{
+		Contents:          contents,
+		SystemInstruction: &genContent{Parts: []genPart{{Text: prompt.SummarizationSystemInstruction(preferredLanguage)}}},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", nil, fmt.Errorf("empty summarization response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.UsageMetadata.PromptTokenCount,
+		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Candidates[0].Content.Parts[0].Text), usage, nil
 }

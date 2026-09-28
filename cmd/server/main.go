@@ -18,6 +18,7 @@ import (
 	"aura-saku/internal/messaging/telegram"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
+	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/report"
@@ -58,7 +59,11 @@ func main() {
 	reconSvc := reconciliation.NewService(gormDB, txSvc)
 	usageSvc := usage.NewService(gormDB)
 	reportSvc := report.NewService(gormDB)
-	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, bot.Config{
+	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{
+		RecentLimit:        cfg.ConversationRecentLimit,
+		SummarizeThreshold: cfg.ConversationSummarizeThreshold,
+	})
+	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
 		MaxInputChars:         cfg.MaxInputChars,
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,

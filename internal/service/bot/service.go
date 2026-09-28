@@ -20,6 +20,7 @@ import (
 	"aura-saku/internal/quota"
 	"aura-saku/internal/reward"
 	"aura-saku/internal/service/budget"
+	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
@@ -63,10 +64,11 @@ type Service struct {
 	reconSvc    *reconciliation.Service
 	usageSvc    *usage.Service
 	reportSvc   *report.Service
+	convSvc     *conversation.Service
 	cfg         Config
 }
 
-func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, cfg Config) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, cfg Config) *Service {
 	return &Service{
 		db:          db,
 		redisClient: redisClient,
@@ -77,6 +79,7 @@ func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Mess
 		reconSvc:    reconSvc,
 		usageSvc:    usageSvc,
 		reportSvc:   reportSvc,
+		convSvc:     convSvc,
 		cfg:         cfg,
 	}
 }
@@ -90,13 +93,30 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		return
 	}
 
+	// Log the user's side of this turn before doing anything else — msg.Text
+	// carries the full raw text even for a command (see
+	// telegram.Client.ParseWebhookPayload), so a complete transcript,
+	// commands included, falls out of this one call. Logged for every
+	// message type uniformly; only handleTransactionInput's natural-language
+	// path actually reads this back as AI context (see BuildContext), but a
+	// complete history is the point of storing it at all.
+	content := msg.Text
+	if msg.IsVoice {
+		content = "[voice note]"
+	}
+	if conv, convErr := s.convSvc.GetOrCreate(ctx, user.ID); convErr != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("get or create conversation for user %d", user.ID), convErr)
+	} else if appendErr := s.convSvc.AppendMessage(ctx, conv.ID, models.MessageRoleUser, content); appendErr != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("log user message for user %d", user.ID), appendErr)
+	}
+
 	if err := s.messenger.SendTypingIndicator(ctx, msg.ChatID); err != nil {
 		logger.Error(logger.TelegramSendFailed, fmt.Sprintf("send typing indicator to chat %d", msg.ChatID), err)
 	}
 
 	switch msg.Command {
 	case "/start":
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyWelcome))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyWelcome))
 	case "/undo":
 		s.handleUndo(ctx, user, msg)
 	case "/sync":
@@ -134,31 +154,31 @@ func (s *Service) getOrCreateUser(msg *messaging.IncomingMessage) (*models.User,
 func (s *Service) handleLanguage(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	lang, ok := i18n.ParseCommandInput(msg.CommandArgs)
 	if !ok {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyLanguageUsage))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyLanguageUsage))
 		return
 	}
 
 	if err := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", user.ID).Update("language", lang).Error; err != nil {
 		logger.Error(logger.SvcUserResolveFailed, fmt.Sprintf("update language for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyLanguageUsage))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyLanguageUsage))
 		return
 	}
 
-	s.reply(ctx, msg.ChatID, i18n.T(lang, i18n.KeyLanguageSet))
+	s.reply(ctx, user, i18n.T(lang, i18n.KeyLanguageSet))
 }
 
 func (s *Service) handleUndo(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	undoneTx, err := s.txSvc.UndoLast(ctx, user.ID)
 	if err != nil {
 		if errors.Is(err, apperror.ErrNoUndoableTransaction) {
-			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoNone))
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoNone))
 			return
 		}
 		logger.Error(logger.SvcUndoFailed, fmt.Sprintf("undo last transaction for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyUndoSuccess,
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoSuccess,
 		undoneTx.Type, i18n.FormatMoney(user.Language, undoneTx.OriginalAmount, undoneTx.OriginalCurrency)))
 }
 
@@ -173,23 +193,23 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 
 	amount, err := strconv.ParseFloat(msg.CommandArgs, 64)
 	if err != nil {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncUsage))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncUsage))
 		return
 	}
 
 	rec, err := s.reconSvc.Sync(ctx, user.ID, amount)
 	if err != nil {
 		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("sync balance for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
 		return
 	}
 
 	if rec.Status == models.ReconMatched {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncMatched, rec.CalculatedBalance))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncMatched, rec.CalculatedBalance))
 		return
 	}
 
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncDiscrepancy,
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncDiscrepancy,
 		rec.Discrepancy, rec.ActualBalance, rec.CalculatedBalance))
 }
 
@@ -201,51 +221,51 @@ func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg
 	balance, err := s.reconSvc.Balance(ctx, user.ID)
 	if err != nil {
 		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("compute balance for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeySyncFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
 }
 
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	code := strings.TrimSpace(msg.CommandArgs)
 	if code == "" {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimUsage))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyClaimUsage))
 		return
 	}
 
 	result, err := reward.Claim(ctx, s.redisClient, msg.ChatID, code, s.cfg.RewardBonusAmount, s.cfg.RewardMaxClaimsPerDay)
 	if err != nil {
 		logger.Error(logger.RedisOpFailed, fmt.Sprintf("claim reward for chat %d", msg.ChatID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
 		return
 	}
 
 	switch result {
 	case reward.ClaimGranted:
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimSuccess, s.cfg.RewardBonusAmount))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyClaimSuccess, s.cfg.RewardBonusAmount))
 	case reward.ClaimLimitReached:
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimLimitReached))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyClaimLimitReached))
 	default:
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyClaimInvalidCode))
 	}
 }
 
 func (s *Service) handleDashboard(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	if s.cfg.DashboardBaseURL == "" {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
 		return
 	}
 
 	token, err := auth.IssueLoginToken(ctx, s.redisClient, user.ID)
 	if err != nil {
 		logger.Error(logger.RedisOpFailed, fmt.Sprintf("issue dashboard login token for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDashboardUnavailable))
 		return
 	}
 
 	link := fmt.Sprintf("%s/auth/verify?token=%s", strings.TrimRight(s.cfg.DashboardBaseURL, "/"), token)
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyDashboardLink, link))
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDashboardLink, link))
 }
 
 // enforceInputLength rejects a text message longer than MaxInputChars
@@ -261,7 +281,7 @@ func (s *Service) enforceInputLength(ctx context.Context, user *models.User, msg
 	if msg.IsVoice || s.cfg.MaxInputChars <= 0 || len(msg.Text) <= s.cfg.MaxInputChars {
 		return false
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyInputTooLong, s.cfg.MaxInputChars))
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyInputTooLong, s.cfg.MaxInputChars))
 	return true
 }
 
@@ -297,7 +317,7 @@ func (s *Service) enforceQuota(ctx context.Context, user *models.User, msg *mess
 			logger.Error(logger.RedisOpFailed, fmt.Sprintf("read reward claims for chat %d", msg.ChatID), cErr)
 		} else if claims < s.cfg.RewardMaxClaimsPerDay {
 			if code, iErr := reward.IssueCode(ctx, s.redisClient, msg.ChatID); iErr == nil {
-				s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuotaExceededWithReward,
+				s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuotaExceededWithReward,
 					s.cfg.FreeTierDailyQuota, s.cfg.RewardBonusAmount, s.cfg.RewardAffiliateURL, code))
 				return true
 			} else {
@@ -306,7 +326,7 @@ func (s *Service) enforceQuota(ctx context.Context, user *models.User, msg *mess
 		}
 	}
 
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuotaExceededNoReward, s.cfg.FreeTierDailyQuota))
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuotaExceededNoReward, s.cfg.FreeTierDailyQuota))
 	return true
 }
 
@@ -330,17 +350,35 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	preferredLanguage := string(user.Language)
 
+	// history lets a follow-up message ("totalnya 150rb") be understood in
+	// context of what was just said ("abis makan di restoran mahal tadi")
+	// instead of parsed as if it were the first message ever sent — see
+	// conversation.Service.BuildContext. HandleUpdate already logged this
+	// turn's own user message before dispatching here, so it's sitting as
+	// the newest row already; drop it from Recent so it isn't sent to the
+	// AI twice (once as history, once as the actual message being parsed).
+	var history ai.ConversationContext
+	conv, convErr := s.convSvc.GetOrCreate(ctx, user.ID)
+	if convErr != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("get conversation for user %d", user.ID), convErr)
+	} else if history, convErr = s.convSvc.BuildContext(ctx, conv); convErr != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("build conversation context for user %d", user.ID), convErr)
+		history = ai.ConversationContext{}
+	} else if len(history.Recent) > 0 {
+		history.Recent = history.Recent[:len(history.Recent)-1]
+	}
+
 	if msg.IsVoice {
 		source = models.SourceVoice
 		requestType = "audio_transcribe"
 		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID)
 		if dlErr != nil {
 			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download voice file for user %d", user.ID), dlErr)
-			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyVoiceDownloadFailed))
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyVoiceDownloadFailed))
 			return
 		}
 		raw = "[voice note]"
-		parsedList, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage)
+		parsedList, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage, history)
 	} else {
 		source = models.SourceText
 		requestType = "text_parse"
@@ -354,20 +392,20 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 			// how to fill in the correction. Falls back to
 			// ParseTransactionText below for providers (openai, anthropic
 			// today) that don't implement this optional capability.
-			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID))
+			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID), history)
 		} else {
-			parsedList, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage)
+			parsedList, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, history)
 		}
 	}
 
 	if err != nil {
 		if errors.Is(err, apperror.ErrProviderAudioUnsupported) {
 			// Expected capability gap, not a failure — no error log.
-			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyVoiceUnsupported, s.aiClient.ProviderName()))
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyVoiceUnsupported, s.aiClient.ProviderName()))
 			return
 		}
 		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
 		return
 	}
 	if len(parsedList) == 0 {
@@ -375,7 +413,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		// ai.AIClient's doc comment) — this is a defensive fallback, not an
 		// expected path.
 		logger.Error(logger.AIParseFailed, fmt.Sprintf("AI parse for user %d returned zero results", user.ID), nil)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.AIParseFailed))
 		return
 	}
 
@@ -396,7 +434,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	first := parsedList[0]
 
 	if first.IsAmbiguous {
-		s.reply(ctx, msg.ChatID, first.ClarificationQuestion)
+		s.reply(ctx, user, first.ClarificationQuestion)
 		return
 	}
 
@@ -457,7 +495,7 @@ func (s *Service) handleTransactionRecordBatch(ctx context.Context, user *models
 	}
 
 	if len(lines) == 0 {
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
 		return
 	}
 
@@ -466,7 +504,7 @@ func (s *Service) handleTransactionRecordBatch(ctx context.Context, user *models
 		reply = s.appendBudgetWarnings(ctx, user, anyExpense, reply)
 	}
 
-	s.reply(ctx, msg.ChatID, reply)
+	s.reply(ctx, user, reply)
 }
 
 // handleTransactionCorrection replaces the user's most recent transaction
@@ -479,7 +517,7 @@ func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.
 	createdTx, undoneTx, err := s.txSvc.CorrectLast(ctx, user.ID, user.DefaultCurrency, parsed, source, raw)
 	if createdTx == nil {
 		logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("create corrected transaction for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyTransactionSaveFailed))
 		return
 	}
 	if err != nil {
@@ -501,7 +539,7 @@ func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.
 		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName)
 	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
 
-	s.reply(ctx, msg.ChatID, reply)
+	s.reply(ctx, user, reply)
 }
 
 // appendBudgetWarnings appends any Needs/Wants budget warnings triggered by
@@ -539,24 +577,24 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		total, matched, err := s.reportSvc.CategoryTotal(ctx, user.ID, parsed.QueryPeriod, parsed.QueryCategory)
 		if err != nil {
 			logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("category spending query for user %d", user.ID), err)
-			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
 			return
 		}
 		if !matched {
-			s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
 			return
 		}
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), parsed.QueryCategory, periodLabel))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), parsed.QueryCategory, periodLabel))
 		return
 	}
 
 	totals, _, _, err := s.reportSvc.Summary(ctx, user.ID, parsed.QueryPeriod)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("summary spending query for user %d", user.ID), err)
-		s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
 		return
 	}
-	s.reply(ctx, msg.ChatID, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
 }
 
 // lastTransactionLookup backs a chained-tool-calling AIClient's
@@ -598,8 +636,31 @@ func (s *Service) lastTransactionLookup(userID uint) ai.LastTransactionLookup {
 	}
 }
 
-func (s *Service) reply(ctx context.Context, chatID int64, text string) {
-	if err := s.messenger.SendMessage(ctx, chatID, text); err != nil {
-		logger.Error(logger.TelegramSendFailed, fmt.Sprintf("send reply to chat %d", chatID), err)
+// reply sends text to user and logs it as the assistant's side of the
+// conversation, then opportunistically folds older messages into the
+// conversation's rolling summary (see conversation.Service.MaybeSummarize
+// — a no-op unless the threshold is actually crossed). Both the logging
+// and the summarize check happen for every reply uniformly, commands
+// included, since "how many raw messages have accumulated" doesn't care
+// what triggered any individual one. Summarization runs in the background
+// (its own AI call) so it never adds latency to the user-visible reply.
+func (s *Service) reply(ctx context.Context, user *models.User, text string) {
+	if err := s.messenger.SendMessage(ctx, user.TelegramChatID, text); err != nil {
+		logger.Error(logger.TelegramSendFailed, fmt.Sprintf("send reply to chat %d", user.TelegramChatID), err)
 	}
+
+	conv, err := s.convSvc.GetOrCreate(ctx, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("get conversation for user %d", user.ID), err)
+		return
+	}
+	if err := s.convSvc.AppendMessage(ctx, conv.ID, models.MessageRoleAssistant, text); err != nil {
+		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("log assistant message for user %d", user.ID), err)
+	}
+
+	go func() {
+		if err := s.convSvc.MaybeSummarize(context.Background(), conv, string(user.Language)); err != nil {
+			logger.Error(logger.SvcConversationFailed, fmt.Sprintf("summarize conversation for user %d", user.ID), err)
+		}
+	}()
 }

@@ -23,5 +23,7 @@ func RunMigrations(gormDB *gorm.DB) error {
 		&models.AIUsageLog{},
 		&models.QuotaUsage{},
 		&models.UndoHistory{},
+		&models.Conversation{},
+		&models.Message{},
 	)
 }

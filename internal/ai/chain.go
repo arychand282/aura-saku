@@ -55,17 +55,20 @@ func LastTransactionToMap(lt *LastTransaction) map[string]interface{} {
 	}
 }
 
-// ChainedCorrector is an optional capability some AIClient implementations
+// ChainedCorrector is an optional capability an AIClient implementation may
 // support: multi-step tool calling for corrections that don't restate
-// every field of the transaction being corrected. Providers without a
-// tool-calling loop (openai, anthropic today) simply don't satisfy this
-// interface — callers should type-assert (`aiClient.(ChainedCorrector)`)
-// and fall back to ParseTransactionText when they don't, exactly as
-// bot.Service does.
+// every field of the transaction being corrected. All three providers
+// (gemini, openai, anthropic) implement this today, but callers should
+// still type-assert (`aiClient.(ChainedCorrector)`) and fall back to
+// ParseTransactionText when they don't, exactly as bot.Service does — this
+// stays an optional capability, not folded into AIClient itself, since a
+// future provider without multi-round tool calling could still satisfy
+// AIClient alone.
 type ChainedCorrector interface {
 	// Same one-or-more-results contract as AIClient's parsing methods — the
 	// terminal round can still yield several ParsedTransaction results
 	// (e.g. a message with both a correction and, unusually, a separate new
-	// transaction), not just corrections.
-	ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup LastTransactionLookup) ([]*ParsedTransaction, *UsageMetadata, []ChainStep, error)
+	// transaction), not just corrections. Same history parameter and
+	// zero-value-means-no-history contract as AIClient's methods too.
+	ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup LastTransactionLookup, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, []ChainStep, error)
 }

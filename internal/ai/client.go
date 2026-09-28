@@ -98,20 +98,36 @@ type AIClient interface {
 	// ClarificationQuestion comes back in — category_name is always English
 	// regardless (see internal/ai/prompt), since it feeds internal budget
 	// categorization.
-	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
+	// history carries prior conversation turns (see ConversationContext) so
+	// a follow-up message can be understood in context instead of parsed in
+	// isolation — e.g. "totalnya 150rb" only makes sense as a food expense
+	// if the model can see the previous "abis makan di restoran mahal
+	// tadi." Pass the zero value ConversationContext{} for "no history,"
+	// which must behave identically to how this method worked before
+	// history existed.
+	ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, error)
 
 	// TranscribeAndParseAudio handles voice notes. Providers with native
 	// audio support (Gemini) transcribe+parse in one round trip; providers
 	// without it would transcribe then internally call ParseTransactionText.
-	// Same one-or-more-results contract as ParseTransactionText.
-	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
+	// Same one-or-more-results contract as ParseTransactionText, and the
+	// same history parameter.
+	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, error)
 
 	// AnswerClarification re-parses given the original ambiguous context
 	// plus the user's clarifying reply. Same one-or-more-results contract as
 	// ParseTransactionText, though a clarification reply is answering one
 	// specific ambiguous transaction and so realistically always yields
 	// exactly one result.
-	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ParsedTransaction, *UsageMetadata, error)
+	AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, error)
+
+	// Summarize condenses priorSummary (empty if none yet) plus turns into
+	// an updated summary, in preferredLanguage, standing in for everything
+	// older than the "recent" window a caller keeps as raw ConversationTurns
+	// — see internal/service/conversation.Service.MaybeSummarize. A plain
+	// text completion, not a tool call: there's nothing to extract here,
+	// just condense.
+	Summarize(ctx context.Context, priorSummary string, turns []ConversationTurn, preferredLanguage string) (string, *UsageMetadata, error)
 
 	ProviderName() string
 }

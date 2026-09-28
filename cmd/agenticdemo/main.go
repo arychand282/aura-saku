@@ -26,7 +26,7 @@ func fakeLastTransaction(ctx context.Context) (*ai.LastTransaction, error) {
 
 func run(c *gemini.Client, label, msg string) {
 	fmt.Printf("=== %s ===\nMSG: %s\n", label, msg)
-	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeLastTransaction)
+	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeLastTransaction, ai.ConversationContext{})
 	for i, s := range steps {
 		fmt.Printf("  round %d: called %s(%v)\n", i+1, s.ToolCalled, s.Args)
 	}

@@ -22,6 +22,7 @@ import (
 	"aura-saku/internal/quota"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
+	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/report"
@@ -94,11 +95,16 @@ type mockAIClient struct {
 	parseResult  *ai.ParsedTransaction
 	parseResults []*ai.ParsedTransaction
 	parseErr     error
+	// lastHistory captures whatever ConversationContext the most recent
+	// call was given — lets a test assert bot.Service actually threaded
+	// real prior turns through, not just that it compiles.
+	lastHistory ai.ConversationContext
 }
 
-func (m *mockAIClient) call() ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (m *mockAIClient) call(history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	m.mu.Lock()
 	m.calls++
+	m.lastHistory = history
 	m.mu.Unlock()
 	if m.parseErr != nil {
 		return nil, nil, m.parseErr
@@ -109,16 +115,29 @@ func (m *mockAIClient) call() ([]*ai.ParsedTransaction, *ai.UsageMetadata, error
 	return []*ai.ParsedTransaction{m.parseResult}, &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
-func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	return m.call()
+func (m *mockAIClient) getLastHistory() ai.ConversationContext {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastHistory
 }
 
-func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	return m.call()
+func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call(history)
 }
 
-func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
-	return m.call()
+func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call(history)
+}
+
+func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call(history)
+}
+
+// Summarize is a trivial stand-in — no test currently asserts on summary
+// content, only that MaybeSummarize's threshold logic fires (or doesn't)
+// at the right message count.
+func (m *mockAIClient) Summarize(ctx context.Context, priorSummary string, turns []ai.ConversationTurn, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	return "mock summary", &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
 func (m *mockAIClient) ProviderName() string { return "mock" }
@@ -167,8 +186,9 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	reconSvc := reconciliation.NewService(gormDB, txSvc)
 	usageSvc := usage.NewService(gormDB)
 	reportSvc := report.NewService(gormDB)
+	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{RecentLimit: 10, SummarizeThreshold: 20})
 
-	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, cfg)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, cfg)
 
 	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
 }
@@ -185,6 +205,11 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 
 	var user models.User
 	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err == nil {
+		var conv models.Conversation
+		if err := env.db.Where("user_id = ?", user.ID).First(&conv).Error; err == nil {
+			env.db.Unscoped().Where("conversation_id = ?", conv.ID).Delete(&models.Message{})
+			env.db.Unscoped().Delete(&conv)
+		}
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
@@ -331,6 +356,55 @@ func TestHandleUpdate_TransactionInput_Success(t *testing.T) {
 	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
 	if count != 1 {
 		t.Errorf("transaction count = %d, want 1", count)
+	}
+}
+
+// TestHandleUpdate_ConversationHistory_ThreadedIntoSecondCall covers the
+// actual plumbing for "continue multi-round with users without losing
+// context": the AI call for a second message must be given the first
+// message and its reply as history, and neither the current message nor
+// anything from a DIFFERENT user's conversation should leak in.
+func TestHandleUpdate_ConversationHistory_ThreadedIntoSecondCall(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50000, Currency: "IDR", CategoryName: "food", Description: "makan di restoran mahal",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "abis makan di restoran mahal tadi"})
+
+	// The very first call for a brand-new conversation must see no history
+	// at all — nothing to leak from a conversation that didn't exist yet.
+	if got := env.ai.getLastHistory(); len(got.Recent) != 0 {
+		t.Errorf("first message's history.Recent = %+v, want empty (nothing came before it)", got.Recent)
+	}
+
+	firstReply := env.messenger.last(chatID)
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 150000, Currency: "IDR", CategoryName: "food", Description: "makan di restoran mahal",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "totalnya 150rb"})
+
+	history := env.ai.getLastHistory()
+	if len(history.Recent) != 2 {
+		t.Fatalf("second message's history.Recent has %d turns, want 2 (first user message + its assistant reply)", len(history.Recent))
+	}
+	if history.Recent[0].Role != "user" || history.Recent[0].Content != "abis makan di restoran mahal tadi" {
+		t.Errorf("history.Recent[0] = %+v, want the first user message", history.Recent[0])
+	}
+	if history.Recent[1].Role != "assistant" || history.Recent[1].Content != firstReply {
+		t.Errorf("history.Recent[1] = %+v, want the bot's actual first reply %q", history.Recent[1], firstReply)
+	}
+	// The current message ("totalnya 150rb") must NOT appear in its own
+	// history — it's already passed as userText, including it again would
+	// double-count it in the AI's context.
+	for _, turn := range history.Recent {
+		if turn.Content == "totalnya 150rb" {
+			t.Errorf("history.Recent contains the current message itself: %+v", history.Recent)
+		}
 	}
 }
 

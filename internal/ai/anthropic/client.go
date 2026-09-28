@@ -120,21 +120,41 @@ type messagesResponse struct {
 	} `json:"usage"`
 }
 
-// converse sends the system prompt plus conversation messages plus the
-// declared transaction tools and derives one ParsedTransaction per tool
-// call the model decided to make — almost always one, but record_transaction
-// may be called several times in a single turn for a message listing
-// several distinct transactions (see internal/ai/prompt/tool_schema.go).
-// No repair-retry loop: a tool_use block's Input is schema-guaranteed by
-// Anthropic to match the declared input_schema, and content with no
-// tool_use block is the model choosing to reply in plain text instead
-// (this provider's "ambiguous" case) — there's no third case of "text that
-// was supposed to be JSON but isn't quite."
-func (c *Client) converse(ctx context.Context, systemPrompt string, messages []message) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// historyToMessages converts prior conversation turns into leading
+// messages, prepended before the current turn(s). ai.ConversationTurn.Role
+// ("user"/"assistant") already matches Anthropic's own role vocabulary —
+// no translation needed, unlike Gemini's "model".
+func historyToMessages(turns []ai.ConversationTurn) []message {
+	msgs := make([]message, 0, len(turns))
+	for _, t := range turns {
+		msgs = append(msgs, message{Role: t.Role, Content: t.Content})
+	}
+	return msgs
+}
+
+// converse sends the system prompt plus history plus conversation messages
+// plus the declared transaction tools and derives one ParsedTransaction per
+// tool call the model decided to make — almost always one, but
+// record_transaction may be called several times in a single turn for a
+// message listing several distinct transactions (see
+// internal/ai/prompt/tool_schema.go). No repair-retry loop: a tool_use
+// block's Input is schema-guaranteed by Anthropic to match the declared
+// input_schema, and content with no tool_use block is the model choosing
+// to reply in plain text instead (this provider's "ambiguous" case) —
+// there's no third case of "text that was supposed to be JSON but isn't
+// quite."
+//
+// history prepends prior conversation turns before currentMessages and
+// folds history.Summary into the system prompt, so a follow-up message is
+// understood in context instead of parsed as if it were the first message
+// ever sent. The zero value ConversationContext{} behaves exactly as this
+// method did before history existed.
+func (c *Client) converse(ctx context.Context, systemPrompt string, currentMessages []message, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	messages := append(historyToMessages(history.Recent), currentMessages...)
 	reqBody := messagesRequest{
 		Model:     c.model,
 		MaxTokens: 1024,
-		System:    systemPrompt,
+		System:    systemPrompt + prompt.ConversationSummaryPreamble(history.Summary),
 		Messages:  messages,
 		Tools:     transactionTools(),
 	}
@@ -230,20 +250,55 @@ func (c *Client) doRequest(ctx context.Context, body any) (*messagesResponse, er
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
-	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: "User message: " + userText}})
+	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: "User message: " + userText}}, history)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	content := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
 		originalText, clarificationReply,
 	)
-	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: content}})
+	return c.converse(ctx, systemPrompt, []message{{Role: "user", Content: content}}, history)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return nil, nil, apperror.ErrProviderAudioUnsupported
+}
+
+// Summarize sends priorSummary plus turns as a plain text-in/text-out
+// completion (no tools declared — there's nothing to extract, only
+// condense) and returns the model's updated summary text verbatim.
+func (c *Client) Summarize(ctx context.Context, priorSummary string, turns []ai.ConversationTurn, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	lead := "Conversation so far (write a summary of it):"
+	if priorSummary != "" {
+		lead = "Prior summary: " + priorSummary + "\n\nNew messages since that summary (merge them into one updated summary):"
+	}
+	messages := append(historyToMessages(turns), message{Role: "user", Content: lead})
+	// lead must be the LAST message (Anthropic requires the final message
+	// to be role "user"), so put it after the turns rather than before.
+
+	start := time.Now()
+	resp, err := c.doRequest(ctx, messagesRequest{
+		Model:     c.model,
+		MaxTokens: 1024,
+		System:    prompt.SummarizationSystemInstruction(preferredLanguage),
+		Messages:  messages,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Content) == 0 || strings.TrimSpace(resp.Content[0].Text) == "" {
+		return "", nil, fmt.Errorf("empty summarization response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.InputTokens,
+		CompletionTokens: resp.Usage.OutputTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Content[0].Text), usage, nil
 }

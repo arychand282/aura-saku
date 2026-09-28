@@ -44,4 +44,5 @@ type User struct {
 	Transactions    []Transaction           `gorm:"foreignKey:UserID"`
 	Budgets         []Budget                `gorm:"foreignKey:UserID"`
 	Reconciliations []BalanceReconciliation `gorm:"foreignKey:UserID"`
+	Conversation    *Conversation           `gorm:"foreignKey:UserID"`
 }

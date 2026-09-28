@@ -46,14 +46,12 @@ func correctionChainTools() []toolDef {
 // entries in the same msg.ToolCalls; get_last_transaction never mixes with
 // that, so a chaining round is detected as "any get_last_transaction call
 // present" and everything else in that round is deferred to the next.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
-	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage) + prompt.ConversationSummaryPreamble(history.Summary)
 	tools := correctionChainTools()
 
-	messages := []chatMessage{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: "User message: " + userText},
-	}
+	messages := append([]chatMessage{{Role: "system", Content: systemPrompt}}, historyToMessages(history.Recent)...)
+	messages = append(messages, chatMessage{Role: "user", Content: "User message: " + userText})
 
 	var steps []ai.ChainStep
 	usage := &ai.UsageMetadata{Model: c.model}

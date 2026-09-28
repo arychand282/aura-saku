@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"aura-saku/internal/ai"
+	"aura-saku/internal/ai/prompt"
 )
 
 const toolGetLastTransaction = "get_last_transaction"
@@ -52,11 +53,11 @@ func correctionChainTools() []genTool {
 // — the model's own tool-call turn plus the tool's real result appended as
 // a new turn — and the model decides fresh, every round, whether it has
 // enough now or needs to call something else.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
-	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage) + prompt.ConversationSummaryPreamble(history.Summary)
 	tools := correctionChainTools()
 
-	contents := []genContent{{Role: "user", Parts: []genPart{{Text: "User message: " + userText}}}}
+	contents := append(historyToContents(history.Recent), genContent{Role: "user", Parts: []genPart{{Text: "User message: " + userText}}})
 
 	var steps []ai.ChainStep
 	usage := &ai.UsageMetadata{Model: c.model}

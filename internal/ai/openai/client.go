@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"aura-saku/internal/ai"
@@ -123,24 +124,42 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-// chat sends a system+user message pair plus the declared transaction
-// tools and derives one ParsedTransaction per tool call the model decided
-// to make — almost always one, but record_transaction may be called
-// several times in a single turn for a message listing several distinct
-// transactions (see internal/ai/prompt/tool_schema.go). No repair-retry
-// loop: a tool_call's Arguments are schema-guaranteed by OpenAI to match
-// the declared parameters, and a message with no tool_calls is the model
-// choosing to reply in plain text instead (this provider's "ambiguous"
-// case) — there's no third case of "text that was supposed to be JSON but
-// isn't quite."
-func (c *Client) chat(ctx context.Context, systemPrompt, userContent string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+// historyToMessages converts prior conversation turns into leading chat
+// messages, inserted between the system message and the current one.
+// ai.ConversationTurn.Role ("user"/"assistant") already matches OpenAI's
+// own role vocabulary — no translation needed, unlike Gemini's "model".
+func historyToMessages(turns []ai.ConversationTurn) []chatMessage {
+	msgs := make([]chatMessage, 0, len(turns))
+	for _, t := range turns {
+		msgs = append(msgs, chatMessage{Role: t.Role, Content: t.Content})
+	}
+	return msgs
+}
+
+// chat sends a system+history+user message sequence plus the declared
+// transaction tools and derives one ParsedTransaction per tool call the
+// model decided to make — almost always one, but record_transaction may be
+// called several times in a single turn for a message listing several
+// distinct transactions (see internal/ai/prompt/tool_schema.go). No
+// repair-retry loop: a tool_call's Arguments are schema-guaranteed by
+// OpenAI to match the declared parameters, and a message with no
+// tool_calls is the model choosing to reply in plain text instead (this
+// provider's "ambiguous" case) — there's no third case of "text that was
+// supposed to be JSON but isn't quite."
+//
+// history prepends prior conversation turns after the system message and
+// folds history.Summary into it, so a follow-up message is understood in
+// context instead of parsed as if it were the first message ever sent.
+// The zero value ConversationContext{} behaves exactly as this method did
+// before history existed.
+func (c *Client) chat(ctx context.Context, systemPrompt, userContent string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	messages := append([]chatMessage{{Role: "system", Content: systemPrompt + prompt.ConversationSummaryPreamble(history.Summary)}}, historyToMessages(history.Recent)...)
+	messages = append(messages, chatMessage{Role: "user", Content: userContent})
+
 	reqBody := chatRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userContent},
-		},
-		Tools: transactionTools(),
+		Model:    c.model,
+		Messages: messages,
+		Tools:    transactionTools(),
 	}
 
 	start := time.Now()
@@ -228,26 +247,60 @@ func (c *Client) doChatRequest(ctx context.Context, body chatRequest) (*chatResp
 	return &parsed, nil
 }
 
-func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
-	return c.chat(ctx, systemPrompt, "User message: "+userText)
+	return c.chat(ctx, systemPrompt, "User message: "+userText, history)
 }
 
-func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	userContent := fmt.Sprintf(
 		"Original user message: %s\nThe user was asked to clarify and replied: %s\nCombine both messages into a single transaction extraction.",
 		originalText, clarificationReply,
 	)
-	return c.chat(ctx, systemPrompt, userContent)
+	return c.chat(ctx, systemPrompt, userContent, history)
 }
 
-func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	transcript, err := c.transcribe(ctx, audioBytes, mimeType)
 	if err != nil {
 		return nil, nil, fmt.Errorf("transcribe audio: %w", err)
 	}
-	return c.ParseTransactionText(ctx, transcript, defaultCurrency, preferredLanguage)
+	return c.ParseTransactionText(ctx, transcript, defaultCurrency, preferredLanguage, history)
+}
+
+// Summarize sends priorSummary plus turns as a plain text-in/text-out
+// completion (no tools declared — there's nothing to extract, only
+// condense) and returns the model's updated summary text verbatim.
+func (c *Client) Summarize(ctx context.Context, priorSummary string, turns []ai.ConversationTurn, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	lead := "Conversation so far (write a summary of it):"
+	if priorSummary != "" {
+		lead = "Prior summary: " + priorSummary + "\n\nNew messages since that summary (merge them into one updated summary):"
+	}
+	// lead is the LAST message, not the first — after the system prompt
+	// comes the raw history, then the actual instruction to act on it now,
+	// matching gemini.Client.Summarize (found live there: some providers
+	// reject or handle worse a request that doesn't end on the turn asking
+	// for a response).
+	messages := append([]chatMessage{{Role: "system", Content: prompt.SummarizationSystemInstruction(preferredLanguage)}}, historyToMessages(turns)...)
+	messages = append(messages, chatMessage{Role: "user", Content: lead})
+
+	start := time.Now()
+	resp, err := c.doChatRequest(ctx, chatRequest{Model: c.model, Messages: messages})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+		return "", nil, fmt.Errorf("empty summarization response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), usage, nil
 }
 
 func (c *Client) transcribe(ctx context.Context, audioBytes []byte, mimeType string) (string, error) {
