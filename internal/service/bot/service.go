@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
@@ -67,10 +68,11 @@ type Service struct {
 	usageSvc    *usage.Service
 	reportSvc   *report.Service
 	convSvc     *conversation.Service
+	recurSvc    *recurring.Service
 	cfg         Config
 }
 
-func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, cfg Config) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, recurSvc *recurring.Service, cfg Config) *Service {
 	return &Service{
 		db:          db,
 		redisClient: redisClient,
@@ -82,6 +84,7 @@ func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Mess
 		usageSvc:    usageSvc,
 		reportSvc:   reportSvc,
 		convSvc:     convSvc,
+		recurSvc:    recurSvc,
 		cfg:         cfg,
 	}
 }
@@ -129,6 +132,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleClaim(ctx, user, msg)
 	case "/dashboard":
 		s.handleDashboard(ctx, user, msg)
+	case "/recurring":
+		s.handleRecurring(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
@@ -227,6 +232,69 @@ func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg
 		return
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+}
+
+// handleRecurring is /recurring's dispatcher: no argument lists the user's
+// active recurring transactions with their real ids (so /recurring cancel
+// <id> below has something to reference); "cancel <id>" deactivates one.
+// List/cancel are plain commands rather than natural language — unlike
+// creation, there's no ambiguity to resolve (an id is exact), so a command
+// is simpler than teaching the model a lookup tool for this.
+func (s *Service) handleRecurring(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	args := strings.Fields(msg.CommandArgs)
+	if len(args) == 2 && strings.EqualFold(args[0], "cancel") {
+		s.handleRecurringCancel(ctx, user, args[1])
+		return
+	}
+	if len(args) > 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelUsage))
+		return
+	}
+
+	list, err := s.recurSvc.ListActive(ctx, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("list recurring transactions for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
+		return
+	}
+	if len(list) == 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringListEmpty))
+		return
+	}
+
+	lines := make([]string, 0, len(list))
+	for _, rt := range list {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyRecurringListItem,
+			rt.ID, rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
+	}
+	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// handleRecurringCancel backs "/recurring cancel <id>". idArg is validated
+// as a plain non-negative integer here rather than left to
+// recurring.Service.Cancel — a malformed id (typo, or an id copied from
+// somewhere else entirely) gets the same usage reply as no id at all,
+// instead of an opaque "not found".
+func (s *Service) handleRecurringCancel(ctx context.Context, user *models.User, idArg string) {
+	id, err := strconv.ParseUint(idArg, 10, 64)
+	if err != nil {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelUsage))
+		return
+	}
+
+	rt, err := s.recurSvc.Cancel(ctx, user.ID, uint(id))
+	if err != nil {
+		if errors.Is(err, apperror.ErrRecurringNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelNotFound))
+			return
+		}
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("cancel recurring transaction for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
+		return
+	}
+
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelSuccess,
+		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName))
 }
 
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -463,6 +531,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
+	if first.Intent == ai.IntentRecurringCreate {
+		s.handleRecurringCreate(ctx, user, first)
+		return
+	}
+
 	s.handleTransactionRecordBatch(ctx, user, msg, parsedList, source, raw)
 }
 
@@ -575,6 +648,25 @@ func (s *Service) handleTransactionDeletion(ctx context.Context, user *models.Us
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoSuccess,
 		deletedTx.Type, i18n.FormatMoney(user.Language, deletedTx.OriginalAmount, deletedTx.OriginalCurrency)))
+}
+
+// handleRecurringCreate schedules a new recurring transaction described by
+// parsed (ai.IntentRecurringCreate — e.g. "netflix 150rb setiap tanggal 5").
+// See recurring.Service.Create for the schedule math (never fires on the
+// creation day itself). Nothing is recorded as a Transaction right now —
+// only RunRecurringTransactions (an internal/scheduler job, see
+// cmd/server/main.go) ever creates one, once the schedule actually comes
+// due.
+func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	rt, err := s.recurSvc.Create(ctx, user.ID, parsed)
+	if err != nil {
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("create recurring transaction for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
+		return
+	}
+
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreated,
+		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
 }
 
 // appendBudgetWarnings appends any Needs/Wants budget warnings triggered by
@@ -756,6 +848,56 @@ func (s *Service) RunBudgetRolloverNudges(ctx context.Context) error {
 		}
 
 		s.reply(ctx, &user, msg)
+	}
+	return nil
+}
+
+// RunRecurringTransactions posts every recurring transaction whose schedule
+// has come due (see recurring.Service.Due) as a real Transaction — reusing
+// transaction.Service.CreateFromParsed unchanged by reconstructing an
+// ai.ParsedTransaction from the stored RecurringTransaction fields, so
+// category resolution and FX conversion behave identically to a normal
+// message-triggered record. Intended to be registered as a scheduler.Job's
+// Run, not called from any user-facing path. One recurring transaction's
+// failure (a bad category, a DB hiccup) is logged and skipped rather than
+// aborting the whole run — every other due one must still get posted.
+func (s *Service) RunRecurringTransactions(ctx context.Context) error {
+	due, err := s.recurSvc.Due(ctx, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("list due recurring transactions: %w", err)
+	}
+
+	for _, rt := range due {
+		parsed := &ai.ParsedTransaction{
+			Intent:       ai.IntentRecord,
+			Type:         string(rt.Type),
+			Amount:       rt.Amount,
+			Currency:     rt.Currency,
+			CategoryName: rt.CategoryName,
+			Description:  rt.Description,
+		}
+		if rt.Bucket != nil {
+			parsed.Bucket = string(*rt.Bucket)
+		}
+
+		createdTx, err := s.txSvc.CreateFromParsed(ctx, rt.UserID, rt.User.DefaultCurrency, parsed, models.SourceRecurring, rt.Description)
+		if err != nil {
+			logger.Error(logger.SvcCreateTxFailed, fmt.Sprintf("post recurring transaction %d for user %d", rt.ID, rt.UserID), err)
+			continue
+		}
+
+		// The transaction is real regardless of what happens next — never
+		// skip advancing the schedule or notifying the user just because
+		// one of those two steps might also fail; log loudly instead, since
+		// a stuck NextRunAt means this same row would fire again next tick.
+		if err := s.recurSvc.Advance(ctx, rt); err != nil {
+			logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("advance recurring transaction %d after posting", rt.ID), err)
+		}
+
+		reply := i18n.T(rt.User.Language, i18n.KeyRecurringPosted,
+			createdTx.Type, i18n.FormatMoney(rt.User.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), rt.CategoryName)
+		reply = s.appendBudgetWarnings(ctx, &rt.User, createdTx, reply)
+		s.reply(ctx, &rt.User, reply)
 	}
 	return nil
 }

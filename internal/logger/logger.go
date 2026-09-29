@@ -38,6 +38,7 @@ const (
 	SvcReportQueryFailed   Code = "AURA-SVC-006" // report.Service.Summary/CategoryTotal failed for a spending-query reply
 	SvcConversationFailed  Code = "AURA-SVC-007" // conversation.Service Get/AppendMessage/MaybeSummarize failed
 	SvcRolloverNudgeFailed Code = "AURA-SVC-008" // bot.Service.RunBudgetRolloverNudges failed for one user (skipped, other users still processed)
+	SvcRecurringFailed     Code = "AURA-SVC-009" // recurring.Service create/list/cancel/advance failed, or bot.Service.RunRecurringTransactions failed for one row
 
 	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )

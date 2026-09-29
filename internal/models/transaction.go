@@ -19,9 +19,10 @@ const (
 type TransactionSource string
 
 const (
-	SourceText  TransactionSource = "text"
-	SourceVoice TransactionSource = "voice"
-	SourceSync  TransactionSource = "sync_adjustment"
+	SourceText      TransactionSource = "text"
+	SourceVoice     TransactionSource = "voice"
+	SourceSync      TransactionSource = "sync_adjustment"
+	SourceRecurring TransactionSource = "recurring"
 )
 
 // Transaction stores both the original amount/currency as reported by the

@@ -22,6 +22,7 @@ import (
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
@@ -34,6 +35,12 @@ import (
 // surplus from the 1st of the month is noticed (and sent) within a day
 // instead of requiring exact midnight timing.
 const rolloverNudgeInterval = 24 * time.Hour
+
+// recurringTransactionsInterval controls how often RunRecurringTransactions
+// checks for due schedules. Hourly rather than daily (unlike the rollover
+// nudge above) so a rent/subscription posts within the hour of its due
+// date instead of being up to a day late.
+const recurringTransactionsInterval = 1 * time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -72,7 +79,8 @@ func main() {
 		RecentLimit:        cfg.ConversationRecentLimit,
 		SummarizeThreshold: cfg.ConversationSummarizeThreshold,
 	})
-	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, bot.Config{
+	recurSvc := recurring.NewService(gormDB)
+	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
 		MaxInputChars:         cfg.MaxInputChars,
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,
@@ -87,6 +95,11 @@ func main() {
 			Name:     "budget-rollover-nudge",
 			Interval: rolloverNudgeInterval,
 			Run:      botSvc.RunBudgetRolloverNudges,
+		},
+		scheduler.Job{
+			Name:     "recurring-transactions",
+			Interval: recurringTransactionsInterval,
+			Run:      botSvc.RunRecurringTransactions,
 		},
 	).Start(schedulerCtx)
 

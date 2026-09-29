@@ -25,6 +25,7 @@ import (
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
 	"aura-saku/internal/service/reconciliation"
+	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
@@ -187,8 +188,9 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	usageSvc := usage.NewService(gormDB)
 	reportSvc := report.NewService(gormDB)
 	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{RecentLimit: 10, SummarizeThreshold: 20})
+	recurSvc := recurring.NewService(gormDB)
 
-	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, cfg)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, cfg)
 
 	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
 }
@@ -212,6 +214,7 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 		}
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.RecurringTransaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.BalanceReconciliation{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Account{})
@@ -1105,5 +1108,217 @@ func TestRunBudgetRolloverNudges(t *testing.T) {
 	}
 	if countAfterSecond := env.messenger.count(chatID); countAfterSecond != countBefore+1 {
 		t.Errorf("message count after a second same-month RunBudgetRolloverNudges = %d, want still %d (no duplicate nudge)", countAfterSecond, countBefore+1)
+	}
+}
+
+// TestHandleUpdate_RecurringCreate_NaturalLanguage covers the new
+// create_recurring_transaction intent end to end: a message describing a
+// repeating transaction schedules a RecurringTransaction row instead of
+// recording a Transaction right away, with NextRunAt in the future.
+func TestHandleUpdate_RecurringCreate_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 150_000, Currency: "IDR",
+		CategoryName: "subscription", Description: "netflix", DayOfMonth: 5,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "netflix 150000 setiap tanggal 5"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 150_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to mention the amount %s", got, wantAmount)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+
+	var txCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&txCount)
+	if txCount != 0 {
+		t.Errorf("transaction count = %d, want 0 (creating a recurring schedule must not record anything right away)", txCount)
+	}
+
+	var rt models.RecurringTransaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&rt).Error; err != nil {
+		t.Fatalf("load recurring transaction: %v", err)
+	}
+	if rt.DayOfMonth != 5 {
+		t.Errorf("DayOfMonth = %d, want 5", rt.DayOfMonth)
+	}
+	if !rt.IsActive {
+		t.Error("expected the newly created recurring transaction to be active")
+	}
+	if !rt.NextRunAt.After(time.Now().UTC()) {
+		t.Errorf("NextRunAt = %v, want strictly in the future", rt.NextRunAt)
+	}
+}
+
+// TestHandleUpdate_Recurring_ListAndCancel covers the /recurring command's
+// two paths: listing shows an active recurring transaction with its real
+// id, and canceling by that id removes it from the list (soft-deactivates,
+// doesn't hard-delete) — with an empty-list reply once nothing is left.
+func TestHandleUpdate_Recurring_ListAndCancel(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// No recurring transactions yet.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring"})
+	want := i18n.T(models.LanguageID, i18n.KeyRecurringListEmpty)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("empty list reply = %q, want %q", got, want)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 800_000, Currency: "IDR",
+		CategoryName: "rent", Description: "kos", DayOfMonth: 1,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "sewa kos 800000 tiap tanggal 1"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var rt models.RecurringTransaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&rt).Error; err != nil {
+		t.Fatalf("load recurring transaction: %v", err)
+	}
+
+	// Listing now shows exactly this one, with its real id.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring"})
+	listReply := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 800_000, "IDR")
+	if !strings.Contains(listReply, wantAmount) || !strings.Contains(listReply, "rent") {
+		t.Errorf("list reply = %q, want it to mention the amount %s and category %q", listReply, wantAmount, "rent")
+	}
+
+	// Cancel by a malformed id -> usage message, row untouched.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring", CommandArgs: "cancel notanumber"})
+	wantUsage := i18n.T(models.LanguageID, i18n.KeyRecurringCancelUsage)
+	if got := env.messenger.last(chatID); got != wantUsage {
+		t.Errorf("malformed cancel reply = %q, want %q", got, wantUsage)
+	}
+
+	// Cancel a nonexistent id -> not-found message.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring", CommandArgs: "cancel 999999999"})
+	wantNotFound := i18n.T(models.LanguageID, i18n.KeyRecurringCancelNotFound)
+	if got := env.messenger.last(chatID); got != wantNotFound {
+		t.Errorf("nonexistent cancel reply = %q, want %q", got, wantNotFound)
+	}
+
+	// Cancel the real one -> success, then the list is empty again.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring", CommandArgs: fmt.Sprintf("cancel %d", rt.ID)})
+	cancelReply := env.messenger.last(chatID)
+	if !strings.Contains(cancelReply, wantAmount) {
+		t.Errorf("cancel success reply = %q, want it to mention the amount %s", cancelReply, wantAmount)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring"})
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("list reply after canceling the only one = %q, want the empty-list message %q", got, want)
+	}
+
+	var stillActive int64
+	env.db.Model(&models.RecurringTransaction{}).Where("id = ? AND is_active = ?", rt.ID, true).Count(&stillActive)
+	if stillActive != 0 {
+		t.Error("canceled recurring transaction should no longer be active")
+	}
+	var stillExists int64
+	env.db.Model(&models.RecurringTransaction{}).Where("id = ?", rt.ID).Count(&stillExists)
+	if stillExists != 1 {
+		t.Error("canceling should deactivate the row, not hard-delete it")
+	}
+}
+
+// TestRunRecurringTransactions_PostsWhenDueAndAdvancesSchedule covers the
+// scheduler job end to end: a due recurring transaction gets posted as a
+// real Transaction, the user is notified, and its schedule advances so the
+// same tick never posts it twice.
+func TestRunRecurringTransactions_PostsWhenDueAndAdvancesSchedule(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 150_000, Currency: "IDR",
+		CategoryName: "subscription", Description: "netflix", DayOfMonth: 5,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "netflix 150000 setiap tanggal 5"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var rt models.RecurringTransaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&rt).Error; err != nil {
+		t.Fatalf("load recurring transaction: %v", err)
+	}
+	originalNextRunAt := rt.NextRunAt
+
+	// Force it due right now without waiting for a real month boundary.
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	if err := env.db.Model(&models.RecurringTransaction{}).Where("id = ?", rt.ID).Update("next_run_at", past).Error; err != nil {
+		t.Fatalf("backdate NextRunAt: %v", err)
+	}
+
+	countBefore := env.messenger.count(chatID)
+	if err := svc.RunRecurringTransactions(ctx); err != nil {
+		t.Fatalf("RunRecurringTransactions: %v", err)
+	}
+
+	var txCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&txCount)
+	if txCount != 1 {
+		t.Fatalf("transaction count after the job ran = %d, want 1 (the due recurring transaction posted)", txCount)
+	}
+
+	var postedTx models.Transaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&postedTx).Error; err != nil {
+		t.Fatalf("load posted transaction: %v", err)
+	}
+	if postedTx.Source != models.SourceRecurring {
+		t.Errorf("posted transaction Source = %q, want %q", postedTx.Source, models.SourceRecurring)
+	}
+	if postedTx.ConvertedAmount != 150_000 {
+		t.Errorf("posted transaction amount = %.2f, want 150000.00", postedTx.ConvertedAmount)
+	}
+
+	if got := env.messenger.count(chatID); got != countBefore+1 {
+		t.Fatalf("message count after the job ran = %d, want %d (user notified exactly once)", got, countBefore+1)
+	}
+	notifyReply := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 150_000, "IDR")
+	if !strings.Contains(notifyReply, wantAmount) {
+		t.Errorf("notification reply = %q, want it to mention the amount %s", notifyReply, wantAmount)
+	}
+
+	var rtAfter models.RecurringTransaction
+	if err := env.db.First(&rtAfter, rt.ID).Error; err != nil {
+		t.Fatalf("reload recurring transaction: %v", err)
+	}
+	wantNext := past.AddDate(0, 1, 0)
+	if !rtAfter.NextRunAt.Equal(wantNext) {
+		t.Errorf("NextRunAt after posting = %v, want exactly one month after the backdated value (%v)", rtAfter.NextRunAt, wantNext)
+	}
+	if rtAfter.NextRunAt.Equal(originalNextRunAt) {
+		t.Error("NextRunAt should have moved forward from the backdated value, not stayed at the original schedule")
+	}
+
+	// A second run in the same tick-cycle must not post again — the
+	// schedule already moved past "now".
+	if err := svc.RunRecurringTransactions(ctx); err != nil {
+		t.Fatalf("RunRecurringTransactions (second call): %v", err)
+	}
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&txCount)
+	if txCount != 1 {
+		t.Errorf("transaction count after a second RunRecurringTransactions call = %d, want still 1 (no duplicate posting)", txCount)
 	}
 }

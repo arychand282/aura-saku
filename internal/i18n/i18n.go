@@ -94,6 +94,15 @@ const (
 
 	KeyDashboardLink        = "dashboard_link"
 	KeyDashboardUnavailable = "dashboard_unavailable"
+
+	KeyRecurringCreated        = "recurring_created"
+	KeyRecurringCreateFailed   = "recurring_create_failed"
+	KeyRecurringPosted         = "recurring_posted"
+	KeyRecurringListEmpty      = "recurring_list_empty"
+	KeyRecurringListItem       = "recurring_list_item"
+	KeyRecurringCancelUsage    = "recurring_cancel_usage"
+	KeyRecurringCancelSuccess  = "recurring_cancel_success"
+	KeyRecurringCancelNotFound = "recurring_cancel_not_found"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -135,6 +144,15 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyDashboardLink:        "Here's your one-time dashboard login link (valid for 10 minutes): %s",
 		KeyDashboardUnavailable: "The dashboard isn't available yet. Please check back later.",
+
+		KeyRecurringCreated:        "✅ Recurring %s of %s for \"%s\" set up — it'll auto-record on day %d of each month, starting %s.",
+		KeyRecurringCreateFailed:   "Something went wrong setting up that recurring transaction.",
+		KeyRecurringPosted:         "🔁 Recurring: %s of %s for \"%s\" was just recorded automatically.",
+		KeyRecurringListEmpty:      "You don't have any recurring transactions set up yet. Just tell me about one, e.g. \"netflix 150000 every month on the 5th\".",
+		KeyRecurringListItem:       "#%d: %s of %s for \"%s\" — day %d of each month, next: %s",
+		KeyRecurringCancelUsage:    "Usage: /recurring to list, or /recurring cancel <id> to cancel one, e.g. /recurring cancel 3.",
+		KeyRecurringCancelSuccess:  "Canceled recurring %s of %s for \"%s\".",
+		KeyRecurringCancelNotFound: "I couldn't find an active recurring transaction with that id. Use /recurring to see your list.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                 "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -174,6 +192,15 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyDashboardLink:        "Ini link login dashboard sekali pakai (berlaku 10 menit): %s",
 		KeyDashboardUnavailable: "Dashboard belum tersedia. Silakan coba lagi nanti.",
+
+		KeyRecurringCreated:        "✅ %s berulang sebesar %s untuk \"%s\" sudah diatur — akan otomatis tercatat tiap tanggal %d, mulai %s.",
+		KeyRecurringCreateFailed:   "Terjadi kesalahan saat mengatur transaksi berulang itu.",
+		KeyRecurringPosted:         "🔁 Berulang: %s sebesar %s untuk \"%s\" baru saja dicatat otomatis.",
+		KeyRecurringListEmpty:      "Kamu belum punya transaksi berulang. Cukup ceritakan satu, misal \"netflix 150000 tiap tanggal 5\".",
+		KeyRecurringListItem:       "#%d: %s sebesar %s untuk \"%s\" — tanggal %d tiap bulan, berikutnya: %s",
+		KeyRecurringCancelUsage:    "Cara pakai: /recurring untuk melihat daftar, atau /recurring cancel <id> untuk membatalkan, contoh: /recurring cancel 3.",
+		KeyRecurringCancelSuccess:  "Transaksi berulang %s sebesar %s untuk \"%s\" sudah dibatalkan.",
+		KeyRecurringCancelNotFound: "Aku tidak menemukan transaksi berulang aktif dengan id itu. Gunakan /recurring untuk melihat daftarmu.",
 	},
 }
 

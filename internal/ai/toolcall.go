@@ -35,6 +35,11 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Intent:              IntentDelete,
 			TargetTransactionID: argUint(args, "target_transaction_id"),
 		}
+	case prompt.ToolCreateRecurringTransaction:
+		pt := transactionFromArgs(args)
+		pt.Intent = IntentRecurringCreate
+		pt.DayOfMonth = argInt(args, "day_of_month")
+		return pt
 	default:
 		return nil
 	}
@@ -72,4 +77,13 @@ func argUint(args map[string]interface{}, key string) uint {
 		return 0
 	}
 	return uint(f)
+}
+
+// argInt reads a plain integer-valued argument (again always float64 as
+// decoded JSON) — unlike argUint, a missing or out-of-range value here is
+// deliberately NOT collapsed to a "valid" sentinel: ValidateParsedTransaction
+// is what rejects an out-of-range DayOfMonth, so this just truncates.
+func argInt(args map[string]interface{}, key string) int {
+	f, _ := args[key].(float64)
+	return int(f)
 }

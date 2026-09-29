@@ -15,4 +15,5 @@ var (
 	ErrInvalidLoginToken        = errors.New("invalid or expired login token")
 	ErrInvalidPeriod            = errors.New("invalid period, must be one of: daily, weekly, monthly, yearly")
 	ErrUnhandledUpdateType      = errors.New("webhook update has no actionable message (e.g. an edited message, callback query, or chat-member change)")
+	ErrRecurringNotFound        = errors.New("no active recurring transaction found with that id for this user")
 )

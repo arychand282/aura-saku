@@ -8,11 +8,12 @@ import (
 // same as IntentRecord, so every prompt/response that predates the "query"
 // intent (and any provider test fixture) keeps working unchanged.
 const (
-	IntentRecord  = "record"
-	IntentQuery   = "query"
-	IntentBalance = "balance"
-	IntentCorrect = "correct"
-	IntentDelete  = "delete"
+	IntentRecord          = "record"
+	IntentQuery           = "query"
+	IntentBalance         = "balance"
+	IntentCorrect         = "correct"
+	IntentDelete          = "delete"
+	IntentRecurringCreate = "recurring_create"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -45,7 +46,11 @@ type ParsedTransaction struct {
 	// (bot.Service) undoes the previous transaction and creates this one in
 	// its place instead of just creating a new one alongside it.
 	// IntentDelete needs nothing but TargetTransactionID (below) — the
-	// caller just removes that transaction, nothing is created.
+	// caller just removes that transaction, nothing is created. IntentRecurringCreate
+	// populates the same Type/Amount/Currency/CategoryName/Description/Bucket
+	// fields as IntentRecord, plus DayOfMonth below — the caller
+	// (recurring.Service.Create) schedules future postings instead of
+	// creating a Transaction right away.
 	Intent string `json:"intent,omitempty"`
 
 	Type           string  `json:"type"`
@@ -54,6 +59,13 @@ type ParsedTransaction struct {
 	CategoryName   string  `json:"category_name"`
 	Description    string  `json:"description"`
 	OccurredAtHint string  `json:"occurred_at_hint,omitempty"`
+
+	// DayOfMonth is only populated for IntentRecurringCreate: the day of the
+	// month (1-31) the transaction repeats on, as stated by the message. A
+	// month shorter than this falls back to that month's own last day (see
+	// recurring.Service's schedule math), so 31 safely means "end of every
+	// month" including February.
+	DayOfMonth int `json:"day_of_month,omitempty"`
 
 	// TargetTransactionID identifies which of the user's existing
 	// transactions an IntentCorrect or IntentDelete result acts on, when
@@ -152,7 +164,9 @@ type AIClient interface {
 // any of these — those fields are left zero-valued by the prompt).
 // IntentCorrect isn't special-cased here since it populates the exact same
 // fields as IntentRecord, so it naturally falls through to the same
-// Type/Amount validation below.
+// Type/Amount validation below. IntentRecurringCreate additionally requires
+// a DayOfMonth in range before falling through to that same Type/Amount
+// check, since it shares every other field with IntentRecord too.
 func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 	switch pt.Intent {
 	case IntentQuery:
@@ -164,6 +178,10 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		}
 	case IntentBalance, IntentDelete:
 		return true
+	case IntentRecurringCreate:
+		if pt.DayOfMonth < 1 || pt.DayOfMonth > 31 {
+			return false
+		}
 	}
 
 	switch pt.Type {

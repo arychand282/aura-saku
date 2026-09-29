@@ -18,6 +18,7 @@ func RunMigrations(gormDB *gorm.DB) error {
 		&models.Subscription{},
 		&models.Category{},
 		&models.Transaction{},
+		&models.RecurringTransaction{},
 		&models.Budget{},
 		&models.BalanceReconciliation{},
 		&models.AIUsageLog{},
