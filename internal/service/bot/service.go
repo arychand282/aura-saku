@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -14,6 +15,7 @@ import (
 	"aura-saku/internal/apperror"
 	"aura-saku/internal/auth"
 	"aura-saku/internal/i18n"
+	"aura-saku/internal/idempotency"
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
@@ -705,4 +707,55 @@ func (s *Service) reply(ctx context.Context, user *models.User, text string) {
 			logger.Error(logger.SvcConversationFailed, fmt.Sprintf("summarize conversation for user %d", user.ID), err)
 		}
 	}()
+}
+
+// rolloverNudgeTTL bounds how long a "this user was already notified" marker
+// lives — long enough to cover the whole rest of the calendar month it was
+// set in regardless of how often the scheduler ticks, short enough to never
+// carry over into the next month's own (differently-keyed) check. 32 days
+// covers every possible month length with margin.
+const rolloverNudgeTTL = 32 * 24 * time.Hour
+
+// RunBudgetRolloverNudges messages every active user with
+// budget.Service.SuggestRollover's end-of-month surplus suggestion,
+// skipping anyone with no surplus (an empty string, not an error) or
+// already notified this calendar month — the idempotency guard (keyed by
+// user + "YYYY-MM") is what makes it safe to call this on every scheduler
+// tick (see internal/scheduler) rather than needing the scheduler itself to
+// know about calendar boundaries. Intended to be registered as a
+// scheduler.Job's Run, not called from any user-facing path. One user's
+// failure (a bad lookup, a Redis hiccup) is logged and skipped rather than
+// aborting the whole run — every other user must still get checked.
+func (s *Service) RunBudgetRolloverNudges(ctx context.Context) error {
+	var users []models.User
+	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Find(&users).Error; err != nil {
+		return fmt.Errorf("list active users for rollover nudge: %w", err)
+	}
+
+	namespace := "budget-rollover:" + time.Now().UTC().Format("2006-01")
+	for _, user := range users {
+		isNew, err := idempotency.MarkSeen(ctx, s.redisClient, namespace, strconv.FormatUint(uint64(user.ID), 10), rolloverNudgeTTL)
+		if err != nil {
+			logger.Error(logger.RedisOpFailed, fmt.Sprintf("rollover nudge idempotency check for user %d, skipping this tick", user.ID), err)
+			continue
+		}
+		if !isNew {
+			// Already notified this calendar month.
+			continue
+		}
+
+		msg, err := s.budgetSvc.SuggestRollover(ctx, user.ID, user.Language)
+		if err != nil {
+			logger.Error(logger.SvcRolloverNudgeFailed, fmt.Sprintf("suggest rollover for user %d", user.ID), err)
+			continue
+		}
+		if msg == "" {
+			// No surplus to suggest rolling over — not an error, just
+			// nothing to say this month.
+			continue
+		}
+
+		s.reply(ctx, &user, msg)
+	}
+	return nil
 }

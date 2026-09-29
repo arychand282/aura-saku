@@ -30,13 +30,16 @@ const (
 	TelegramSendFailed     Code = "AURA-TG-002" // sendMessage/sendChatAction to Telegram failed
 	TelegramDownloadFailed Code = "AURA-TG-003" // downloading a Telegram voice note file failed
 
-	SvcUserResolveFailed  Code = "AURA-SVC-001" // get-or-create User by TelegramChatID failed
-	SvcUndoFailed         Code = "AURA-SVC-002" // transaction.Service.UndoLast failed
-	SvcSyncFailed         Code = "AURA-SVC-003" // reconciliation.Service.Sync failed
-	SvcCreateTxFailed     Code = "AURA-SVC-004" // transaction.Service.CreateFromParsed failed
-	SvcBudgetEvalFailed   Code = "AURA-SVC-005" // budget.Service.EvaluateBudget failed
-	SvcReportQueryFailed  Code = "AURA-SVC-006" // report.Service.Summary/CategoryTotal failed for a spending-query reply
-	SvcConversationFailed Code = "AURA-SVC-007" // conversation.Service Get/AppendMessage/MaybeSummarize failed
+	SvcUserResolveFailed   Code = "AURA-SVC-001" // get-or-create User by TelegramChatID failed
+	SvcUndoFailed          Code = "AURA-SVC-002" // transaction.Service.UndoLast failed
+	SvcSyncFailed          Code = "AURA-SVC-003" // reconciliation.Service.Sync failed
+	SvcCreateTxFailed      Code = "AURA-SVC-004" // transaction.Service.CreateFromParsed failed
+	SvcBudgetEvalFailed    Code = "AURA-SVC-005" // budget.Service.EvaluateBudget failed
+	SvcReportQueryFailed   Code = "AURA-SVC-006" // report.Service.Summary/CategoryTotal failed for a spending-query reply
+	SvcConversationFailed  Code = "AURA-SVC-007" // conversation.Service Get/AppendMessage/MaybeSummarize failed
+	SvcRolloverNudgeFailed Code = "AURA-SVC-008" // bot.Service.RunBudgetRolloverNudges failed for one user (skipped, other users still processed)
+
+	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )
 
 // Error logs a recoverable error tagged with its code, e.g.:

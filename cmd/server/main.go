@@ -16,6 +16,7 @@ import (
 	"aura-saku/internal/db"
 	"aura-saku/internal/logger"
 	"aura-saku/internal/messaging/telegram"
+	"aura-saku/internal/scheduler"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
@@ -25,6 +26,14 @@ import (
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
+
+// rolloverNudgeInterval controls how often RunBudgetRolloverNudges ticks,
+// not how often any single user is actually messaged — that's governed by
+// its own per-user, per-calendar-month idempotency check (see
+// bot.Service.RunBudgetRolloverNudges), so ticking daily just means a
+// surplus from the 1st of the month is noticed (and sent) within a day
+// instead of requiring exact midnight timing.
+const rolloverNudgeInterval = 24 * time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -72,6 +81,15 @@ func main() {
 		DashboardBaseURL:      cfg.DashboardBaseURL,
 	})
 
+	schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
+	scheduler.New(
+		scheduler.Job{
+			Name:     "budget-rollover-nudge",
+			Interval: rolloverNudgeInterval,
+			Run:      botSvc.RunBudgetRolloverNudges,
+		},
+	).Start(schedulerCtx)
+
 	app := fiber.New(fiber.Config{
 		AppName: "aura-saku",
 	})
@@ -99,6 +117,7 @@ func main() {
 	<-quit
 
 	log.Println("shutting down gracefully...")
+	cancelScheduler()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {

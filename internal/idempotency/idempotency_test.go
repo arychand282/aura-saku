@@ -20,7 +20,7 @@ func TestMarkSeen_FirstThenDuplicate(t *testing.T) {
 	client := newTestRedis(t)
 	ctx := context.Background()
 
-	first, err := MarkSeen(ctx, client, "test-namespace", "12345")
+	first, err := MarkSeen(ctx, client, "test-namespace", "12345", WebhookRedeliveryTTL)
 	if err != nil {
 		t.Fatalf("MarkSeen (first): %v", err)
 	}
@@ -29,7 +29,7 @@ func TestMarkSeen_FirstThenDuplicate(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Del(ctx, "aura:seen:test-namespace:12345") })
 
-	second, err := MarkSeen(ctx, client, "test-namespace", "12345")
+	second, err := MarkSeen(ctx, client, "test-namespace", "12345", WebhookRedeliveryTTL)
 	if err != nil {
 		t.Fatalf("MarkSeen (duplicate): %v", err)
 	}
@@ -38,7 +38,7 @@ func TestMarkSeen_FirstThenDuplicate(t *testing.T) {
 	}
 
 	// A different ID in the same namespace must be independent.
-	other, err := MarkSeen(ctx, client, "test-namespace", "different-id")
+	other, err := MarkSeen(ctx, client, "test-namespace", "different-id", WebhookRedeliveryTTL)
 	if err != nil {
 		t.Fatalf("MarkSeen (different id): %v", err)
 	}
@@ -49,7 +49,7 @@ func TestMarkSeen_FirstThenDuplicate(t *testing.T) {
 
 	// Same id in a different namespace must also be independent (no
 	// cross-namespace key collisions).
-	otherNamespace, err := MarkSeen(ctx, client, "other-namespace", "12345")
+	otherNamespace, err := MarkSeen(ctx, client, "other-namespace", "12345", WebhookRedeliveryTTL)
 	if err != nil {
 		t.Fatalf("MarkSeen (other namespace): %v", err)
 	}

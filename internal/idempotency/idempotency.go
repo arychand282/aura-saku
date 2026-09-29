@@ -15,14 +15,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ttl covers a messaging platform's redelivery window with margin —
-// Telegram's own retry window is well under this.
-const ttl = 24 * time.Hour
+// WebhookRedeliveryTTL covers a messaging platform's redelivery window with
+// margin — Telegram's own retry window is well under this. Callers guarding
+// against something other than webhook redelivery (e.g. a scheduled job's
+// own "once per calendar period" dedup) pass their own ttl to MarkSeen
+// instead of this constant.
+const WebhookRedeliveryTTL = 24 * time.Hour
 
-// MarkSeen atomically records that (namespace, id) has been processed.
-// Returns true the first time a given pair is seen (safe to process), or
-// false if it's a duplicate that should be skipped without reprocessing.
-func MarkSeen(ctx context.Context, redisClient *redis.Client, namespace, id string) (bool, error) {
+// MarkSeen atomically records that (namespace, id) has been processed, valid
+// for ttl. Returns true the first time a given pair is seen within that
+// window (safe to process), or false if it's a duplicate that should be
+// skipped without reprocessing.
+func MarkSeen(ctx context.Context, redisClient *redis.Client, namespace, id string, ttl time.Duration) (bool, error) {
 	key := fmt.Sprintf("aura:seen:%s:%s", namespace, id)
 	ok, err := redisClient.SetNX(ctx, key, "1", ttl).Result()
 	if err != nil {

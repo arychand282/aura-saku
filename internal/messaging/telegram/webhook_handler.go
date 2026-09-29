@@ -46,7 +46,7 @@ func NewWebhookHandler(client *Client, botSvc *bot.Service, secretToken string, 
 			return c.SendStatus(fiber.StatusBadRequest)
 		}
 
-		isNew, err := idempotency.MarkSeen(c.Context(), redisClient, "telegram-update", strconv.FormatInt(msg.RawUpdateID, 10))
+		isNew, err := idempotency.MarkSeen(c.Context(), redisClient, "telegram-update", strconv.FormatInt(msg.RawUpdateID, 10), idempotency.WebhookRedeliveryTTL)
 		if err != nil {
 			// Fail open: a rare duplicate on a Redis hiccup is a much smaller
 			// problem than dropping legitimate updates during an outage.

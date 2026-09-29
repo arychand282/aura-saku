@@ -1040,3 +1040,70 @@ func TestHandleUpdate_QuotaGating_ProTierNeverBlocked(t *testing.T) {
 		t.Errorf("AI calls for pro-tier user = %d, want 3 (never blocked)", got)
 	}
 }
+
+// TestRunBudgetRolloverNudges covers the first job registered on
+// internal/scheduler (see cmd/server/main.go): a user with a real surplus
+// from LAST calendar month gets proactively messaged once, and a second
+// call within the same calendar month is a no-op (the idempotency guard
+// keyed by user+month) — without that guard, a scheduler ticking daily
+// would otherwise resend the same nudge every single day of the month.
+func TestRunBudgetRolloverNudges(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lastMonth15th := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 14)
+	lastMonthHint := lastMonth15th.Format("2006-01-02")
+
+	// Income 2,000,000 and expense 500,000, both dated last calendar month
+	// via OccurredAtHint -> a 1,500,000 surplus SuggestRollover should pick up.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 2_000_000, Currency: "IDR", CategoryName: "salary", OccurredAtHint: lastMonthHint,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji bulan lalu 2000000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "food", OccurredAtHint: lastMonthHint,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan bulan lalu 500000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	countBefore := env.messenger.count(chatID)
+
+	// The idempotency key is global (not scoped to this test's chatID/user
+	// pair alone in a way we can namespace away), so clean it up regardless
+	// of which of this test's two RunBudgetRolloverNudges calls below ends
+	// up setting it.
+	monthKey := "budget-rollover:" + now.Format("2006-01")
+	t.Cleanup(func() {
+		env.redis.Del(ctx, fmt.Sprintf("aura:seen:%s:%d", monthKey, user.ID))
+	})
+
+	if err := svc.RunBudgetRolloverNudges(ctx); err != nil {
+		t.Fatalf("RunBudgetRolloverNudges (first call): %v", err)
+	}
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "1500000.00") {
+		t.Errorf("nudge reply = %q, want it to mention the 1,500,000 surplus", got)
+	}
+	if countAfterFirst := env.messenger.count(chatID); countAfterFirst != countBefore+1 {
+		t.Fatalf("message count after first RunBudgetRolloverNudges = %d, want %d (exactly one nudge sent)", countAfterFirst, countBefore+1)
+	}
+
+	// A second call in the same calendar month must NOT send again — this
+	// is the exact guarantee that makes it safe to call on every scheduler
+	// tick instead of requiring the scheduler to know about calendar
+	// boundaries.
+	if err := svc.RunBudgetRolloverNudges(ctx); err != nil {
+		t.Fatalf("RunBudgetRolloverNudges (second call): %v", err)
+	}
+	if countAfterSecond := env.messenger.count(chatID); countAfterSecond != countBefore+1 {
+		t.Errorf("message count after a second same-month RunBudgetRolloverNudges = %d, want still %d (no duplicate nudge)", countAfterSecond, countBefore+1)
+	}
+}
