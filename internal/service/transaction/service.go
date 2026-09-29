@@ -132,11 +132,9 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 // it. Exported (rather than folded into UndoLast alone) so the correction
 // flow below can capture *which* transaction to revert before creating the
 // corrected replacement — calling UndoLast after that create would
-// otherwise resolve "most recent" to the new transaction itself. Also used
-// by bot.Service to back the get_last_transaction tool a chained-tool-
-// calling AIClient (see ai.ChainedCorrector) can call when a correction
-// message doesn't restate every field — Category is preloaded so that path
-// can report the real category name/bucket, not just IDs.
+// otherwise resolve "most recent" to the new transaction itself. Category
+// is preloaded so a caller reporting the transaction back (e.g. as a tool
+// result) can use the real category name/bucket, not just IDs.
 func (s *Service) MostRecent(ctx context.Context, userID uint) (*models.Transaction, error) {
 	var tx models.Transaction
 	err := s.db.WithContext(ctx).
@@ -153,38 +151,119 @@ func (s *Service) MostRecent(ctx context.Context, userID uint) (*models.Transact
 	return &tx, nil
 }
 
+// RecentTransactions returns the user's most recent transactions (newest
+// first, up to limit), Category preloaded. Backs bot.Service's
+// get_recent_transactions tool (see ai.ChainedCorrector) — a
+// chained-tool-calling AIClient uses these candidates to identify EXACTLY
+// which transaction a correction message refers to, instead of always
+// assuming it's the single most recent one. An empty (not nil-error) slice
+// means the user has no transactions yet.
+func (s *Service) RecentTransactions(ctx context.Context, userID uint, limit int) ([]*models.Transaction, error) {
+	var txs []*models.Transaction
+	err := s.db.WithContext(ctx).
+		Preload("Category").
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&txs).Error
+	if err != nil {
+		return nil, fmt.Errorf("find recent transactions: %w", err)
+	}
+	return txs, nil
+}
+
+// findOwned returns the user's own transaction with the given ID, scoped by
+// user_id so one user can never target (and thus correct/undo) another
+// user's transaction even if they somehow guessed a valid ID. Not-found
+// (wrong owner or nonexistent) maps to ErrNoUndoableTransaction, the same
+// sentinel MostRecent uses for "nothing to correct" — from the caller's
+// perspective these are the same situation.
+func (s *Service) findOwned(ctx context.Context, userID, txID uint) (*models.Transaction, error) {
+	var tx models.Transaction
+	err := s.db.WithContext(ctx).
+		Preload("Category").
+		Where("user_id = ? AND id = ?", userID, txID).
+		First(&tx).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.ErrNoUndoableTransaction
+		}
+		return nil, fmt.Errorf("find transaction %d: %w", txID, err)
+	}
+	return &tx, nil
+}
+
 // UndoLast soft-deletes the most recent transaction for a user and records
-// an UndoHistory("undone") snapshot in the same DB transaction.
+// an UndoHistory("undone") snapshot in the same DB transaction. A thin
+// wrapper over DeleteTransaction with no target (0) — kept as its own named
+// method since /undo is a distinct command, not a natural-language flow.
 func (s *Service) UndoLast(ctx context.Context, userID uint) (*models.Transaction, error) {
-	tx, err := s.MostRecent(ctx, userID)
+	return s.DeleteTransaction(ctx, userID, 0)
+}
+
+// DeleteTransaction soft-deletes one of the user's existing transactions
+// (ai.IntentDelete — "hapus transaksi makan siang tadi") and records an
+// UndoHistory("undone") snapshot, the same mechanism /undo and CorrectLast
+// both use. When targetTransactionID is set — a chained-tool-calling
+// AIClient matched the delete request against a get_recent_transactions
+// candidate (see ai.ChainedCorrector) — that exact transaction is targeted,
+// scoped to userID so one user can never delete another's transaction.
+// Zero falls back to the single most recent transaction, the same
+// "unspecified" convention CorrectLast uses for TargetTransactionID.
+func (s *Service) DeleteTransaction(ctx context.Context, userID uint, targetTransactionID uint) (*models.Transaction, error) {
+	var (
+		tx  *models.Transaction
+		err error
+	)
+	if targetTransactionID > 0 {
+		tx, err = s.findOwned(ctx, userID, targetTransactionID)
+	} else {
+		tx, err = s.MostRecent(ctx, userID)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return s.undoTransaction(ctx, userID, tx)
 }
 
-// CorrectLast replaces the user's most recent transaction with a corrected
-// one described by parsed (ai.IntentCorrect — "eh maaf, harusnya 1jt deh,
-// typo"): it creates the new transaction first and only reverts the
-// previous one on success. This ordering is deliberate — if creation fails,
-// the user's original (uncorrected but real) transaction is left intact
-// rather than silently deleted with nothing to replace it.
+// CorrectLast replaces one of the user's existing transactions with a
+// corrected one described by parsed (ai.IntentCorrect — "eh maaf, harusnya
+// 1jt deh, typo"): it creates the new transaction first and only reverts
+// the previous one on success. This ordering is deliberate — if creation
+// fails, the user's original (uncorrected but real) transaction is left
+// intact rather than silently deleted with nothing to replace it.
+//
+// Despite the name (kept for the common case), the transaction reverted is
+// NOT always the most recent one: when parsed.TargetTransactionID is set —
+// a chained-tool-calling AIClient matched the correction message against a
+// get_recent_transactions candidate (see ai.ChainedCorrector) — that exact
+// transaction is targeted instead, scoped to userID so one user can never
+// correct another's transaction. TargetTransactionID's zero value falls
+// back to MostRecent, the original behavior from before targeting existed
+// (e.g. voice corrections, or a provider without chained tool calling).
 //
 // Returns the newly created transaction and, separately, the transaction
 // that was reverted (nil if there was nothing to correct — e.g. this was
-// the user's very first message — which is not an error: recording it
-// fresh is still the right outcome). If creation itself fails, created is
-// nil and err explains why. If creation succeeds but the revert step fails,
-// created is still returned (the correction was recorded) alongside a
-// non-nil err describing the revert failure, so the caller can decide how
-// to report a partial outcome instead of discarding a real transaction.
+// the user's very first message, or an unresolvable target ID — which is
+// not an error: recording it fresh is still the right outcome). If
+// creation itself fails, created is nil and err explains why. If creation
+// succeeds but the revert step fails, created is still returned (the
+// correction was recorded) alongside a non-nil err describing the revert
+// failure, so the caller can decide how to report a partial outcome
+// instead of discarding a real transaction.
 func (s *Service) CorrectLast(ctx context.Context, userID uint, defaultCurrency string, parsed *ai.ParsedTransaction, source models.TransactionSource, rawInput string) (created *models.Transaction, undone *models.Transaction, err error) {
-	previous, err := s.MostRecent(ctx, userID)
+	var previous *models.Transaction
+	if parsed.TargetTransactionID > 0 {
+		previous, err = s.findOwned(ctx, userID, parsed.TargetTransactionID)
+	} else {
+		previous, err = s.MostRecent(ctx, userID)
+	}
 	if err != nil && !errors.Is(err, apperror.ErrNoUndoableTransaction) {
 		return nil, nil, fmt.Errorf("find transaction to correct: %w", err)
 	}
 	// previous is nil here exactly when err is ErrNoUndoableTransaction —
-	// nothing to correct, but we still record the new transaction below.
+	// nothing to correct (or the targeted id didn't resolve to this user's
+	// own transaction), but we still record the new transaction below.
 
 	created, err = s.CreateFromParsed(ctx, userID, defaultCurrency, parsed, source, rawInput)
 	if err != nil {

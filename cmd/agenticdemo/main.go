@@ -10,23 +10,45 @@ import (
 	"aura-saku/internal/ai/gemini"
 )
 
-func fakeLastTransaction(ctx context.Context) (*ai.LastTransaction, error) {
-	fmt.Println("  [lookup fired: this demo fakes it; bot.Service wires the real transaction.Service.MostRecent instead]")
-	return &ai.LastTransaction{
-		Found:        true,
-		Type:         "investment",
-		Amount:       2000000,
-		Currency:     "IDR",
-		CategoryName: "mutual fund",
-		Bucket:       "savings",
-		Description:  "reksa dana",
-		OccurredAt:   time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
+func fakeRecentTransactions(ctx context.Context) ([]*ai.RecentTransaction, error) {
+	fmt.Println("  [lookup fired: this demo fakes it; bot.Service wires the real transaction.Service.RecentTransactions instead]")
+	return []*ai.RecentTransaction{
+		{
+			ID:           3,
+			Type:         "expense",
+			Amount:       100000,
+			Currency:     "IDR",
+			CategoryName: "food",
+			Bucket:       "needs",
+			Description:  "makan malam",
+			OccurredAt:   time.Now().Format("2006-01-02"),
+		},
+		{
+			ID:           2,
+			Type:         "expense",
+			Amount:       300000,
+			Currency:     "IDR",
+			CategoryName: "food",
+			Bucket:       "needs",
+			Description:  "makan siang",
+			OccurredAt:   time.Now().Format("2006-01-02"),
+		},
+		{
+			ID:           1,
+			Type:         "investment",
+			Amount:       2000000,
+			Currency:     "IDR",
+			CategoryName: "mutual fund",
+			Bucket:       "savings",
+			Description:  "reksa dana",
+			OccurredAt:   time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
+		},
 	}, nil
 }
 
 func run(c *gemini.Client, label, msg string) {
 	fmt.Printf("=== %s ===\nMSG: %s\n", label, msg)
-	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeLastTransaction, ai.ConversationContext{})
+	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeRecentTransactions, ai.ConversationContext{})
 	for i, s := range steps {
 		fmt.Printf("  round %d: called %s(%v)\n", i+1, s.ToolCalled, s.Args)
 	}
@@ -43,4 +65,7 @@ func main() {
 	run(c, "PARTIAL CORRECTION (should chain)", "eh salah, harusnya 1 juta aja deh")
 	run(c, "FULL CORRECTION (should NOT chain)", "eh maaf salah, harusnya expense 50000 buat makan siang, bukan reksa dana")
 	run(c, "MULTIPLE RECORDS IN ONE MESSAGE (should NOT chain, 1 round, 3 results)", "pengeluaran tadi:\nbensin mobile 300k\nmakan siang 300k\nmakan malam 100k")
+	run(c, "CORRECTION TARGETING A NON-LATEST TRANSACTION (should chain, target_transaction_id=2)", "eh yang makan siang tadi salah, harusnya 350rb bukan 300rb")
+	run(c, "DELETE A NON-LATEST TRANSACTION (should chain, delete_transaction target_transaction_id=2)", "hapus transaksi makan siang tadi")
+	run(c, "DELETE THE OBVIOUSLY-LATEST TRANSACTION (may or may not chain, delete_transaction target_transaction_id=3 or omitted)", "eh batalin transaksi makan malam tadi")
 }

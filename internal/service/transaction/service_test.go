@@ -2,12 +2,14 @@ package transaction_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
 	"aura-saku/internal/ai"
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/config"
 	"aura-saku/internal/db"
 	"aura-saku/internal/models"
@@ -194,6 +196,103 @@ func TestCreateFromParsed_UnrecognizedBucketIsNoOverride(t *testing.T) {
 	}
 	if created.Bucket != nil {
 		t.Errorf("Bucket = %v, want nil for an empty AI classification", *created.Bucket)
+	}
+}
+
+// TestDeleteTransaction_TargetsSpecificTransactionNotJustLatest covers
+// natural-language deletion of a specific transaction from among several,
+// the same targeting mechanism as CorrectLast's TargetTransactionID (see
+// internal/service/bot's handleTransactionDeletion and
+// ai.ChainedCorrector's get_recent_transactions): passing the fuel
+// transaction's own ID must delete exactly that one, leaving the more
+// recent lunch and dinner transactions untouched — not silently fall back
+// to "most recent" the way DeleteTransaction(ctx, userID, 0) would.
+func TestDeleteTransaction_TargetsSpecificTransactionNotJustLatest(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	fuel, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "transport", Description: "bensin",
+	}, models.SourceText, "bensin 300k")
+	if err != nil {
+		t.Fatalf("CreateFromParsed(fuel): %v", err)
+	}
+	lunch, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food", Description: "makan siang",
+	}, models.SourceText, "makan siang 300k")
+	if err != nil {
+		t.Fatalf("CreateFromParsed(lunch): %v", err)
+	}
+	dinner, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "makan malam",
+	}, models.SourceText, "makan malam 100k")
+	if err != nil {
+		t.Fatalf("CreateFromParsed(dinner): %v", err)
+	}
+
+	deleted, err := svc.DeleteTransaction(ctx, user.ID, fuel.ID)
+	if err != nil {
+		t.Fatalf("DeleteTransaction: %v", err)
+	}
+	if deleted.ID != fuel.ID {
+		t.Fatalf("DeleteTransaction deleted transaction %d, want the targeted fuel transaction %d", deleted.ID, fuel.ID)
+	}
+
+	var fuelAfter models.Transaction
+	if err := gormDB.Unscoped().First(&fuelAfter, fuel.ID).Error; err != nil {
+		t.Fatalf("fetch fuel transaction: %v", err)
+	}
+	if !fuelAfter.DeletedAt.Valid {
+		t.Error("targeted fuel transaction should be soft-deleted, was not")
+	}
+
+	for _, untouched := range []*models.Transaction{lunch, dinner} {
+		var got models.Transaction
+		if err := gormDB.First(&got, untouched.ID).Error; err != nil {
+			t.Errorf("transaction %d (%s) should still exist untouched: %v", untouched.ID, untouched.Description, err)
+		}
+	}
+
+	// A target ID belonging to a different user must never resolve — same
+	// ownership guarantee CorrectLast relies on.
+	otherUser := models.User{
+		TelegramChatID:  time.Now().UnixNano() + 1,
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&otherUser).Error; err != nil {
+		t.Fatalf("create second test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, otherUser.ID) })
+
+	if _, err := svc.DeleteTransaction(ctx, otherUser.ID, lunch.ID); !errors.Is(err, apperror.ErrNoUndoableTransaction) {
+		t.Errorf("DeleteTransaction across users err = %v, want ErrNoUndoableTransaction (must not cross ownership)", err)
+	}
+	var lunchStillActive models.Transaction
+	if err := gormDB.First(&lunchStillActive, lunch.ID).Error; err != nil {
+		t.Errorf("lunch transaction should still be active after a cross-user delete attempt: %v", err)
 	}
 }
 

@@ -12,6 +12,7 @@ const (
 	IntentQuery   = "query"
 	IntentBalance = "balance"
 	IntentCorrect = "correct"
+	IntentDelete  = "delete"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -43,6 +44,8 @@ type ParsedTransaction struct {
 	// corrected version of my last message," not a diff) — the caller
 	// (bot.Service) undoes the previous transaction and creates this one in
 	// its place instead of just creating a new one alongside it.
+	// IntentDelete needs nothing but TargetTransactionID (below) — the
+	// caller just removes that transaction, nothing is created.
 	Intent string `json:"intent,omitempty"`
 
 	Type           string  `json:"type"`
@@ -51,6 +54,16 @@ type ParsedTransaction struct {
 	CategoryName   string  `json:"category_name"`
 	Description    string  `json:"description"`
 	OccurredAtHint string  `json:"occurred_at_hint,omitempty"`
+
+	// TargetTransactionID identifies which of the user's existing
+	// transactions an IntentCorrect or IntentDelete result acts on, when
+	// known. Populated from a get_recent_transactions candidate a
+	// chained-tool-calling provider (see ChainedCorrector) echoed back
+	// after matching it against what the message actually describes. Zero
+	// means unspecified — the caller (transaction.Service.CorrectLast /
+	// DeleteTransaction) falls back to the single most recent transaction,
+	// the original behavior from before this field existed.
+	TargetTransactionID uint `json:"target_transaction_id,omitempty"`
 
 	// Bucket is the AI's per-transaction Needs/Wants/Savings classification
 	// from the actual message context (e.g. "replacing broken shoes" reads
@@ -134,11 +147,12 @@ type AIClient interface {
 
 // ValidateParsedTransaction is the shared schema-shape check every
 // provider's response must pass before it's trusted. Query-intent responses
-// only need a real period; balance-intent responses need nothing at all
-// (the record-intent Type/Amount checks below don't apply to either — those
-// fields are left zero-valued by the prompt). IntentCorrect isn't special-
-// cased here since it populates the exact same fields as IntentRecord, so
-// it naturally falls through to the same Type/Amount validation below.
+// only need a real period; balance- and delete-intent responses need
+// nothing at all (the record-intent Type/Amount checks below don't apply to
+// any of these — those fields are left zero-valued by the prompt).
+// IntentCorrect isn't special-cased here since it populates the exact same
+// fields as IntentRecord, so it naturally falls through to the same
+// Type/Amount validation below.
 func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 	switch pt.Intent {
 	case IntentQuery:
@@ -148,7 +162,7 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		default:
 			return false
 		}
-	case IntentBalance:
+	case IntentBalance, IntentDelete:
 		return true
 	}
 

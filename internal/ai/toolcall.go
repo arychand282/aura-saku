@@ -20,6 +20,7 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 	case prompt.ToolCorrectTransaction:
 		pt := transactionFromArgs(args)
 		pt.Intent = IntentCorrect
+		pt.TargetTransactionID = argUint(args, "target_transaction_id")
 		return pt
 	case prompt.ToolQuerySpending:
 		return &ParsedTransaction{
@@ -29,6 +30,11 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 		}
 	case prompt.ToolGetBalance:
 		return &ParsedTransaction{Intent: IntentBalance}
+	case prompt.ToolDeleteTransaction:
+		return &ParsedTransaction{
+			Intent:              IntentDelete,
+			TargetTransactionID: argUint(args, "target_transaction_id"),
+		}
 	default:
 		return nil
 	}
@@ -54,4 +60,16 @@ func argString(args map[string]interface{}, key string) string {
 func argFloat(args map[string]interface{}, key string) float64 {
 	f, _ := args[key].(float64)
 	return f
+}
+
+// argUint reads an id-like argument (a tool call's decoded JSON number,
+// always float64 in Go) as a uint — negative or missing values (including
+// the zero the model would send for "not applicable") collapse to 0, which
+// TargetTransactionID's own doc comment defines as "unspecified".
+func argUint(args map[string]interface{}, key string) uint {
+	f, _ := args[key].(float64)
+	if f <= 0 {
+		return 0
+	}
+	return uint(f)
 }

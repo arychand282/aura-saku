@@ -385,14 +385,17 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		raw = msg.Text
 		if chained, ok := s.aiClient.(ai.ChainedCorrector); ok {
 			// See internal/ai/chain.go: a correction that doesn't restate
-			// every field ("eh salah, harusnya 1 juta aja") can't be safely
-			// filled in from the message alone, so a chained-tool-calling
-			// provider can call get_last_transaction first — backed here
-			// by the real transaction.Service.MostRecent — before deciding
-			// how to fill in the correction. Falls back to
-			// ParseTransactionText below for providers (openai, anthropic
-			// today) that don't implement this optional capability.
-			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.lastTransactionLookup(user.ID), history)
+			// every field ("eh salah, harusnya 1 juta aja"), or a correction/
+			// deletion that targets something other than the single most
+			// recent transaction, can't be safely resolved from the message
+			// alone, so a chained-tool-calling provider can call
+			// get_recent_transactions first — backed here by the real
+			// transaction.Service.RecentTransactions — before deciding how
+			// to fill in the correction (or which transaction to delete) and
+			// which transaction it acts on. Falls back to ParseTransactionText
+			// below for providers that
+			// don't implement this optional capability.
+			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.recentTransactionsLookup(user.ID), history)
 		} else {
 			parsedList, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, history)
 		}
@@ -450,6 +453,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentCorrect {
 		s.handleTransactionCorrection(ctx, user, msg, first, source, raw)
+		return
+	}
+
+	if first.Intent == ai.IntentDelete {
+		s.handleTransactionDeletion(ctx, user, first)
 		return
 	}
 
@@ -542,6 +550,31 @@ func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.
 	s.reply(ctx, user, reply)
 }
 
+// handleTransactionDeletion removes one of the user's existing transactions
+// described by parsed (ai.IntentDelete — e.g. "hapus transaksi makan siang
+// tadi") instead of correcting or adding one. See
+// transaction.Service.DeleteTransaction for how parsed.TargetTransactionID
+// (identified via get_recent_transactions by a chained-tool-calling
+// AIClient, same mechanism as a correction's target) picks which
+// transaction, falling back to the most recent one when unset. Reuses the
+// exact same reply text as /undo (KeyUndoNone/KeyUndoFailed/KeyUndoSuccess)
+// since deleting a specific transaction by name and undoing the last one
+// are the same user-visible outcome, just reached a different way.
+func (s *Service) handleTransactionDeletion(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	deletedTx, err := s.txSvc.DeleteTransaction(ctx, user.ID, parsed.TargetTransactionID)
+	if err != nil {
+		if errors.Is(err, apperror.ErrNoUndoableTransaction) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoNone))
+			return
+		}
+		logger.Error(logger.SvcUndoFailed, fmt.Sprintf("delete transaction for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyUndoSuccess,
+		deletedTx.Type, i18n.FormatMoney(user.Language, deletedTx.OriginalAmount, deletedTx.OriginalCurrency)))
+}
+
 // appendBudgetWarnings appends any Needs/Wants budget warnings triggered by
 // tx to reply — shared by the normal record-success reply and the
 // correction-success reply. Only expenses can trip a Needs/Wants guardrail,
@@ -597,42 +630,51 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
 }
 
-// lastTransactionLookup backs a chained-tool-calling AIClient's
-// get_last_transaction tool (see ai.ChainedCorrector) with the real
-// transaction.Service.MostRecent, mapped onto the provider-agnostic
-// ai.LastTransaction shape. "No transaction to correct" is a valid,
-// expected answer (e.g. this is the user's very first message) — not an
-// error — so ErrNoUndoableTransaction maps to Found: false rather than
-// propagating a failure the model has no use for.
-func (s *Service) lastTransactionLookup(userID uint) ai.LastTransactionLookup {
-	return func(ctx context.Context) (*ai.LastTransaction, error) {
-		tx, err := s.txSvc.MostRecent(ctx, userID)
+// recentTransactionsLookupLimit bounds how many of the user's recent
+// transactions get_recent_transactions hands the model as correction
+// candidates — enough to cover a batch of several transactions recorded
+// from one message plus a few messages before it, without unboundedly
+// growing the request every time the tool fires.
+const recentTransactionsLookupLimit = 10
+
+// recentTransactionsLookup backs a chained-tool-calling AIClient's
+// get_recent_transactions tool (see ai.ChainedCorrector) with the real
+// transaction.Service.RecentTransactions, mapped onto the
+// provider-agnostic ai.RecentTransaction shape — including the real
+// database ID, so the model can echo back exactly which one a correction
+// message targets instead of the caller always assuming the most recent.
+// An empty slice (not an error) is a valid, expected answer (e.g. this is
+// the user's very first message).
+func (s *Service) recentTransactionsLookup(userID uint) ai.RecentTransactionsLookup {
+	return func(ctx context.Context) ([]*ai.RecentTransaction, error) {
+		txs, err := s.txSvc.RecentTransactions(ctx, userID, recentTransactionsLookupLimit)
 		if err != nil {
-			if errors.Is(err, apperror.ErrNoUndoableTransaction) {
-				return &ai.LastTransaction{Found: false}, nil
-			}
 			return nil, err
 		}
 
-		categoryName, bucket := "", ""
-		if tx.Category != nil {
-			categoryName = tx.Category.Name
-			bucket = string(tx.Category.Bucket)
-		}
-		if tx.Bucket != nil {
-			bucket = string(*tx.Bucket)
-		}
+		results := make([]*ai.RecentTransaction, 0, len(txs))
+		for _, tx := range txs {
+			categoryName, bucket := "", ""
+			if tx.Category != nil {
+				categoryName = tx.Category.Name
+				bucket = string(tx.Category.Bucket)
+			}
+			if tx.Bucket != nil {
+				bucket = string(*tx.Bucket)
+			}
 
-		return &ai.LastTransaction{
-			Found:        true,
-			Type:         string(tx.Type),
-			Amount:       tx.OriginalAmount,
-			Currency:     tx.OriginalCurrency,
-			CategoryName: categoryName,
-			Bucket:       bucket,
-			Description:  tx.Description,
-			OccurredAt:   tx.OccurredAt.Format("2006-01-02"),
-		}, nil
+			results = append(results, &ai.RecentTransaction{
+				ID:           tx.ID,
+				Type:         string(tx.Type),
+				Amount:       tx.OriginalAmount,
+				Currency:     tx.OriginalCurrency,
+				CategoryName: categoryName,
+				Bucket:       bucket,
+				Description:  tx.Description,
+				OccurredAt:   tx.OccurredAt.Format("2006-01-02"),
+			})
+		}
+		return results, nil
 	}
 }
 

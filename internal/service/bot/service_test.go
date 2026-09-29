@@ -786,6 +786,167 @@ func TestHandleUpdate_Correction_ReplacesLastTransaction(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_Correction_TargetsSpecificTransactionNotJustLatest
+// reproduces the reported bug: after recording SEVERAL transactions (e.g. a
+// batch from one itemized message), a correction referring to one of the
+// earlier ones by category/amount used to always revert the most recent
+// transaction instead — a chained-tool-calling AIClient is supposed to
+// identify the actual target via get_recent_transactions and echo it back
+// as ParsedTransaction.TargetTransactionID (see ai.ChainedCorrector,
+// transaction.Service.CorrectLast). mockAIClient doesn't implement
+// ChainedCorrector, so this exercises the same target-honoring code path
+// bot.Service and transaction.Service run regardless of which AIClient
+// method produced the TargetTransactionID.
+func TestHandleUpdate_Correction_TargetsSpecificTransactionNotJustLatest(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// Batch of 3, oldest to newest: bensin (300k), makan siang (300k), makan
+	// malam (100k).
+	env.ai.parseResults = []*ai.ParsedTransaction{
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "transport", Description: "bensin"},
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food", Description: "makan siang"},
+		{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "makan malam"},
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bensin 300k, makan siang 300k, makan malam 100k"})
+	env.ai.parseResults = nil
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var lunch models.Transaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "makan siang").First(&lunch).Error; err != nil {
+		t.Fatalf("load lunch transaction: %v", err)
+	}
+
+	// Correct the LUNCH transaction specifically (not the most recent,
+	// "makan malam") by targeting its real ID, as a chained-tool-calling
+	// provider's get_recent_transactions match would.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentCorrect, Type: "expense", Amount: 350_000, Currency: "IDR", CategoryName: "food", Description: "makan siang",
+		TargetTransactionID: lunch.ID,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "eh yang makan siang tadi salah, harusnya 350rb"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 350_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to mention the corrected amount %s", got, wantAmount)
+	}
+
+	var activeCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&activeCount)
+	if activeCount != 3 {
+		t.Fatalf("active transaction count = %d, want 3 (lunch replaced, the other two untouched)", activeCount)
+	}
+
+	// The dinner transaction (the most recent one before the correction)
+	// must be untouched — this is exactly the bug being guarded against.
+	var dinner models.Transaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "makan malam").First(&dinner).Error; err != nil {
+		t.Fatalf("dinner transaction should still exist untouched: %v", err)
+	}
+	if dinner.ConvertedAmount != 100_000 {
+		t.Errorf("dinner amount = %.2f, want unchanged 100000.00 (correction must not have touched it)", dinner.ConvertedAmount)
+	}
+
+	// The bensin transaction must also be untouched.
+	var fuel models.Transaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "bensin").First(&fuel).Error; err != nil {
+		t.Fatalf("fuel transaction should still exist untouched: %v", err)
+	}
+
+	// The lunch transaction must be soft-deleted and replaced by a new one
+	// at the corrected amount.
+	var deletedLunch models.Transaction
+	if err := env.db.Unscoped().Where("id = ?", lunch.ID).First(&deletedLunch).Error; err != nil {
+		t.Fatalf("load original lunch transaction: %v", err)
+	}
+	if !deletedLunch.DeletedAt.Valid {
+		t.Errorf("original lunch transaction (id %d) should be soft-deleted, was not", lunch.ID)
+	}
+
+	var correctedLunch models.Transaction
+	if err := env.db.Where("user_id = ? AND description = ? AND id != ?", user.ID, "makan siang", lunch.ID).First(&correctedLunch).Error; err != nil {
+		t.Fatalf("load corrected lunch transaction: %v", err)
+	}
+	if correctedLunch.ConvertedAmount != 350_000 {
+		t.Errorf("corrected lunch amount = %.2f, want 350000.00", correctedLunch.ConvertedAmount)
+	}
+}
+
+// TestHandleUpdate_Deletion_TargetsSpecificTransactionNotJustLatest covers
+// the new natural-language delete capability (ai.IntentDelete): "hapus
+// transaksi X" must remove the specific transaction X refers to, not always
+// the most recent one — the same targeting mechanism as correction (see
+// ai.ChainedCorrector's get_recent_transactions,
+// transaction.Service.DeleteTransaction). mockAIClient doesn't implement
+// ChainedCorrector, so this exercises the target-honoring dispatch/service
+// code directly, same as
+// TestHandleUpdate_Correction_TargetsSpecificTransactionNotJustLatest.
+func TestHandleUpdate_Deletion_TargetsSpecificTransactionNotJustLatest(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResults = []*ai.ParsedTransaction{
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "transport", Description: "bensin"},
+		{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food", Description: "makan siang"},
+		{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "makan malam"},
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bensin 300k, makan siang 300k, makan malam 100k"})
+	env.ai.parseResults = nil
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var fuel models.Transaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "bensin").First(&fuel).Error; err != nil {
+		t.Fatalf("load fuel transaction: %v", err)
+	}
+
+	// Delete the FUEL transaction specifically (not the most recent, "makan
+	// malam") by targeting its real ID, as a chained-tool-calling provider's
+	// get_recent_transactions match would.
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentDelete, TargetTransactionID: fuel.ID}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "hapus transaksi bensin tadi"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 300_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to mention the deleted amount %s", got, wantAmount)
+	}
+
+	var activeCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&activeCount)
+	if activeCount != 2 {
+		t.Fatalf("active transaction count = %d, want 2 (fuel deleted, lunch and dinner untouched)", activeCount)
+	}
+
+	var deletedFuel models.Transaction
+	if err := env.db.Unscoped().Where("id = ?", fuel.ID).First(&deletedFuel).Error; err != nil {
+		t.Fatalf("load fuel transaction: %v", err)
+	}
+	if !deletedFuel.DeletedAt.Valid {
+		t.Errorf("targeted fuel transaction (id %d) should be soft-deleted, was not", fuel.ID)
+	}
+
+	// Lunch and dinner (neither targeted, and dinner is the actual most
+	// recent one) must both still be active — this is exactly the bug
+	// class being guarded against.
+	for _, description := range []string{"makan siang", "makan malam"} {
+		var tx models.Transaction
+		if err := env.db.Where("user_id = ? AND description = ?", user.ID, description).First(&tx).Error; err != nil {
+			t.Errorf("%s transaction should still exist untouched: %v", description, err)
+		}
+	}
+}
+
 // TestHandleUpdate_QuotaGating_BlocksWithoutReward is the core guardrail
 // this test suite exists to protect: once a free-tier user has used their
 // daily quota, the AI client must never be called again, and the user gets

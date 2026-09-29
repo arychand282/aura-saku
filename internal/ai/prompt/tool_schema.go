@@ -15,10 +15,14 @@ import (
 // uppercase "OBJECT"/"STRING"/"NUMBER" vs OpenAI/Anthropic's lowercase
 // JSON Schema types) — see ToolProperty.Type's doc comment.
 const (
-	ToolRecordTransaction  = "record_transaction"
-	ToolQuerySpending      = "query_spending"
-	ToolGetBalance         = "get_balance"
-	ToolCorrectTransaction = "correct_last_transaction"
+	ToolRecordTransaction = "record_transaction"
+	ToolQuerySpending     = "query_spending"
+	ToolGetBalance        = "get_balance"
+	// ToolCorrectTransaction's wire name dropped "last" (it isn't anymore —
+	// see its Tool.Description below) now that it can target any of the
+	// user's recent transactions, not just the newest one.
+	ToolCorrectTransaction = "correct_transaction"
+	ToolDeleteTransaction  = "delete_transaction"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -42,9 +46,33 @@ type Tool struct {
 	Required    []string
 }
 
+// targetTransactionIDProperty is shared by correct_transaction and
+// delete_transaction — the one field either needs to identify EXACTLY which
+// existing transaction it acts on, filled from a prior get_recent_transactions
+// lookup rather than assumed to be the newest one. verb names the action
+// ("corrected"/"deleted") in the description so each tool's own wording
+// stays natural without duplicating this whole sentence per tool.
+func targetTransactionIDProperty(verb string) ToolProperty {
+	return ToolProperty{
+		Type:        "number",
+		Description: fmt.Sprintf("The id of the specific transaction being %s, taken from a prior get_recent_transactions lookup — pick whichever candidate's amount/category/description actually matches what this message describes. Required whenever that lookup was called and returned more than one transaction; omit only when there was exactly one transaction it could plausibly mean (e.g. the user's very first/only transaction ever, or the lookup wasn't needed because the message obviously means the single most recent transaction).", verb),
+	}
+}
+
+// correctTransactionProperties is transactionProperties() plus one field
+// only a correction needs: which existing transaction it replaces. Kept
+// separate from transactionProperties() (rather than adding it there)
+// because record_transaction has no "existing transaction" to reference at
+// all — offering the field there would just confuse the model.
+func correctTransactionProperties() map[string]ToolProperty {
+	props := transactionProperties()
+	props["target_transaction_id"] = targetTransactionIDProperty("corrected")
+	return props
+}
+
 // transactionProperties is shared by record_transaction and
-// correct_last_transaction — a correction describes the corrected
-// transaction in full, using the exact same fields as a fresh record.
+// correct_transaction — a correction describes the corrected transaction in
+// full, using the exact same fields as a fresh record.
 func transactionProperties() map[string]ToolProperty {
 	return map[string]ToolProperty{
 		"type": {
@@ -80,7 +108,7 @@ func transactionProperties() map[string]ToolProperty {
 	}
 }
 
-// TransactionTools declares the four callable tools every native-function-
+// TransactionTools declares the five callable tools every native-function-
 // calling provider offers the model on every request — the direct analog
 // of transaction_prompt.go's Step 1 intent list, except each entry's
 // Description here plays the exact role the "jika user menanyakan tentang
@@ -119,9 +147,16 @@ func TransactionTools() []Tool {
 		},
 		{
 			Name:        ToolCorrectTransaction,
-			Description: "Call this when the message is fixing a mistake in the user's own immediately preceding message — correction language like \"typo\", \"salah\", \"harusnya\", \"maksudnya\", \"koreksi\" (Indonesian) or \"sorry I meant\", \"should be\", \"correction\", \"my bad\", \"oops\" (English), e.g. \"eh maaf, harusnya 1jt deh untuk reksa dana kemarin, typo\". Describe the CORRECTED transaction in full here (same fields as record_transaction, not a diff) — the caller replaces the previous entry with this one instead of adding a second one.",
-			Properties:  transactionProperties(),
+			Description: "Call this when the message is fixing a mistake in one of the user's own previous messages — correction language like \"typo\", \"salah\", \"harusnya\", \"maksudnya\", \"koreksi\" (Indonesian) or \"sorry I meant\", \"should be\", \"correction\", \"my bad\", \"oops\" (English), e.g. \"eh maaf, harusnya 1jt deh untuk reksa dana kemarin, typo\". Describe the CORRECTED transaction in full here (same fields as record_transaction, not a diff) — the caller replaces the existing entry with this one instead of adding a second one. IMPORTANT: the mistake may be in ANY of the user's recent transactions, not necessarily the newest one — e.g. several transactions were just recorded from one message, or the correction refers to something further back. Unless it's obviously the single most recent transaction, call get_recent_transactions first and set target_transaction_id to whichever candidate actually matches what this message describes as wrong, instead of assuming it's the latest.",
+			Properties:  correctTransactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name"},
+		},
+		{
+			Name:        ToolDeleteTransaction,
+			Description: "Call this when the message asks to DELETE / remove / cancel one of the user's existing transactions entirely — not fix it, just remove it (e.g. \"hapus transaksi makan siang tadi\", \"batalin yang bensin\", \"delete the fuel expense\", \"remove that transaction\", \"cancel it\"). Never call this together with record_transaction or correct_transaction for the same message — a message either adds, fixes, or removes a transaction, never more than one of those at once. IMPORTANT: identify WHICH existing transaction to delete the same way correct_transaction does — unless it's obviously the single most recent transaction, call get_recent_transactions first and set target_transaction_id to whichever candidate matches what the message describes wanting removed, instead of assuming it's the latest.",
+			Properties: map[string]ToolProperty{
+				"target_transaction_id": targetTransactionIDProperty("deleted"),
+			},
 		},
 	}
 }
@@ -141,7 +176,9 @@ func ToolCallingSystemInstruction(defaultCurrency string, today time.Time, prefe
 		`You are a financial transaction parser and spending-report assistant for an expense-tracking bot.
 Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
-Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_last_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.`,
+Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
+
+Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.`,
 		today.UTC().Format("2006-01-02"),
 		defaultCurrency,
 		toolCallingLanguageName(preferredLanguage),

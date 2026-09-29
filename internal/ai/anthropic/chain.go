@@ -11,7 +11,7 @@ import (
 	"aura-saku/internal/ai/prompt"
 )
 
-const toolGetLastTransaction = "get_last_transaction"
+const toolGetRecentTransactions = "get_recent_transactions"
 
 // maxChainRounds bounds how many times ParseCorrectionChained will call the
 // API in a single request — see the identical constant/comment on
@@ -19,14 +19,14 @@ const toolGetLastTransaction = "get_last_transaction"
 const maxChainRounds = 4
 
 // correctionChainTools is the shared 4 tools (transactionTools) plus a 5th
-// one only this method offers: get_last_transaction. Deliberately NOT
+// one only this method offers: get_recent_transactions. Deliberately NOT
 // added to the shared prompt.TransactionTools() list every provider uses —
 // see gemini/chain.go's identical comment for why.
 func correctionChainTools() []toolDef {
 	tools := transactionTools()
 	return append(tools, toolDef{
-		Name:        toolGetLastTransaction,
-		Description: "Call this BEFORE correct_last_transaction if the correction message doesn't restate every field of the original transaction (e.g. \"eh salah, harusnya 1 juta aja\" only gives a corrected amount, not a category) — use its result to fill in whatever correct_last_transaction still needs. Takes no parameters. Skip this entirely if the correction message already states type/amount/currency/category on its own.",
+		Name:        toolGetRecentTransactions,
+		Description: "Call this BEFORE correct_transaction whenever the transaction being fixed might not be the single most recent one — e.g. several transactions were just recorded from one message, or the correction refers to something further back by category/amount/description — or when the correction message doesn't restate every field of the original (e.g. \"eh salah, harusnya 1 juta aja\" only gives a corrected amount, not a category). Returns the user's recent transactions, each with an id — pass the matching one's id back as correct_transaction's target_transaction_id, and use its other fields to fill in whatever correct_transaction still needs. Takes no parameters. Skip this only when it's obviously the single most recent transaction AND the correction message already states type/amount/currency/category on its own.",
 		InputSchema: inputSchema{Type: "object", Properties: map[string]propertySchema{}},
 	})
 }
@@ -44,9 +44,9 @@ type chainMessage struct {
 // toolUseBlock replays the model's own tool_use block back into history
 // verbatim. Input deliberately has NO omitempty: Anthropic's real API
 // always includes "input" on a tool_use block, even as {} for a
-// zero-argument tool like get_last_transaction — omitempty would silently
-// drop it for exactly that case, since Go treats a 0-length map as empty
-// regardless of nil-ness.
+// zero-argument tool like get_recent_transactions — omitempty would
+// silently drop it for exactly that case, since Go treats a 0-length map as
+// empty regardless of nil-ness.
 type toolUseBlock struct {
 	Type  string                 `json:"type"`
 	ID    string                 `json:"id"`
@@ -83,10 +83,10 @@ type chainRequest struct {
 // record_transaction may be called several times for a message listing
 // several distinct transactions (see internal/ai/prompt/tool_schema.go),
 // which Anthropic represents as several tool_use blocks in the same
-// response; get_last_transaction never mixes with that, so a chaining
-// round is detected as "any get_last_transaction block present" and
+// response; get_recent_transactions never mixes with that, so a chaining
+// round is detected as "any get_recent_transactions block present" and
 // everything else in that round is deferred to the next.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.LastTransactionLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.RecentTransactionsLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage) + prompt.ConversationSummaryPreamble(history.Summary)
 	tools := correctionChainTools()
 
@@ -128,14 +128,14 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 			return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, usage, steps, nil
 		}
 
-		if lookupBlock := findBlockByName(toolBlocks, toolGetLastTransaction); lookupBlock != nil {
-			result, lookupErr := lookup(ctx)
+		if lookupBlock := findBlockByName(toolBlocks, toolGetRecentTransactions); lookupBlock != nil {
+			results, lookupErr := lookup(ctx)
 			if lookupErr != nil {
-				return nil, nil, steps, fmt.Errorf("get_last_transaction lookup: %w", lookupErr)
+				return nil, nil, steps, fmt.Errorf("get_recent_transactions lookup: %w", lookupErr)
 			}
-			steps = append(steps, ai.ChainStep{ToolCalled: lookupBlock.Name, Args: lookupBlock.Input, Result: result})
+			steps = append(steps, ai.ChainStep{ToolCalled: lookupBlock.Name, Args: lookupBlock.Input, Results: results})
 
-			resultJSON, jsonErr := json.Marshal(ai.LastTransactionToMap(result))
+			resultJSON, jsonErr := json.Marshal(ai.RecentTransactionsToMap(results))
 			if jsonErr != nil {
 				return nil, nil, steps, fmt.Errorf("marshal tool result: %w", jsonErr)
 			}
