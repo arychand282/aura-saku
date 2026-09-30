@@ -245,7 +245,14 @@ func (s *Service) activate(ctx context.Context, userID uint, orderID string) (*N
 	var existing models.Subscription
 	err := s.db.WithContext(ctx).Where("payment_ref = ?", orderID).First(&existing).Error
 	if err == nil {
-		return &NotificationResult{UserID: userID, Outcome: OutcomeActivated, ExpiresAt: *existing.ExpiresAt}, nil
+		// .UTC(): pgx decodes timestamptz columns into the Go process's own
+		// time.Local, not UTC (verified empirically — the absolute instant
+		// is correct, only the Location label differs), so formatting a
+		// value read straight back from the DB can land on the wrong
+		// calendar day whenever the reading process's local timezone isn't
+		// UTC. Every date-only display of a DB-loaded time.Time in this
+		// codebase normalizes with .UTC() first for exactly this reason.
+		return &NotificationResult{UserID: userID, Outcome: OutcomeActivated, ExpiresAt: existing.ExpiresAt.UTC()}, nil
 	}
 	if err != gorm.ErrRecordNotFound {
 		return nil, fmt.Errorf("look up existing subscription for %s: %w", orderID, err)

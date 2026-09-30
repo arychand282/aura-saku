@@ -1393,7 +1393,16 @@ func TestHandleUpdate_MySubscription_Pro(t *testing.T) {
 	if err := env.db.Model(&models.User{}).Where("id = ?", user.ID).Update("tier", models.TierPro).Error; err != nil {
 		t.Fatalf("set user to pro: %v", err)
 	}
-	expiresAt := time.Now().UTC().Add(20 * 24 * time.Hour)
+	// Deliberately fixed and close to a UTC day boundary (23:30 UTC) rather
+	// than time.Now() — pgx decodes a timestamptz column back into the
+	// reading process's own time.Local, not UTC (verified empirically; the
+	// absolute instant is correct, only the Location label differs), so a
+	// value this close to midnight UTC reliably exposes a missing .UTC()
+	// call on any machine east of UTC (this is exactly how the bug this
+	// test now guards against was originally found: a flaky failure right
+	// at a real UTC midnight). Using time.Now() here would only catch the
+	// bug on the ~1-in-24 test runs that happen to straddle midnight.
+	expiresAt := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
 	sub := &models.Subscription{
 		UserID: user.ID, Tier: models.TierPro, Status: models.SubStatusActive,
 		StartedAt: time.Now().UTC(), ExpiresAt: &expiresAt, PaymentRef: "sub-test-order",
@@ -1405,9 +1414,9 @@ func TestHandleUpdate_MySubscription_Pro(t *testing.T) {
 
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/mysubscription"})
 	got := env.messenger.last(chatID)
-	want := i18n.T(models.LanguageID, i18n.KeyMySubscriptionPro, expiresAt.Format("2006-01-02"))
+	want := i18n.T(models.LanguageID, i18n.KeyMySubscriptionPro, "2026-10-20")
 	if got != want {
-		t.Errorf("reply = %q, want %q", got, want)
+		t.Errorf("reply = %q, want %q (the UTC calendar date, regardless of the test machine's own local timezone)", got, want)
 	}
 }
 

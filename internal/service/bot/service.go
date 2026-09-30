@@ -297,7 +297,12 @@ func (s *Service) handleMySubscription(ctx context.Context, user *models.User, m
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionPro, "-"))
 		return
 	}
-	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionPro, sub.ExpiresAt.Format("2006-01-02")))
+	// .UTC(): pgx decodes timestamptz columns into time.Local, not UTC (the
+	// absolute instant is correct, only the Location label differs) — every
+	// date-only display of a DB-loaded time.Time in this codebase
+	// normalizes with .UTC() first so the shown date doesn't depend on the
+	// server process's own local timezone.
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionPro, sub.ExpiresAt.UTC().Format("2006-01-02")))
 }
 
 // RunSubscriptionExpiry reverts every subscription whose ExpiresAt has
@@ -344,7 +349,7 @@ func (s *Service) HandleMidtransNotification(ctx context.Context, body []byte) e
 
 	switch result.Outcome {
 	case payment.OutcomeActivated:
-		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscribeSuccess, result.ExpiresAt.Format("2006-01-02")))
+		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscribeSuccess, result.ExpiresAt.UTC().Format("2006-01-02")))
 	case payment.OutcomeFailed:
 		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscribeFailed))
 	}
@@ -386,7 +391,7 @@ func (s *Service) handleRecurring(ctx context.Context, user *models.User, msg *m
 			modeSuffix = i18n.T(user.Language, i18n.KeyRecurringModeReminder)
 		}
 		lines = append(lines, i18n.T(user.Language, i18n.KeyRecurringListItem,
-			rt.ID, rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02"), modeSuffix))
+			rt.ID, rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.UTC().Format("2006-01-02"), modeSuffix))
 	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
@@ -498,7 +503,7 @@ func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, 
 		replyKey = i18n.KeyBillReminderCreated
 	}
 	reply := i18n.T(user.Language, replyKey,
-		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), newRt.CategoryName, newRt.DayOfMonth, newRt.NextRunAt.Format("2006-01-02"))
+		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), newRt.CategoryName, newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02"))
 
 	if cancelErr == nil && oldRt != nil {
 		reply += "\n" + i18n.T(user.Language, i18n.KeyRecurringUpdatedFrom, i18n.FormatMoney(user.Language, oldRt.Amount, oldRt.Currency))
@@ -983,7 +988,7 @@ func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, 
 		replyKey = i18n.KeyBillReminderCreated
 	}
 	s.reply(ctx, user, i18n.T(user.Language, replyKey,
-		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
+		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.UTC().Format("2006-01-02")))
 }
 
 // handleSavingsGoalCreate creates (or replaces — only one goal is active at
@@ -1002,7 +1007,7 @@ func (s *Service) handleSavingsGoalCreate(ctx context.Context, user *models.User
 
 	deadlineClause := ""
 	if goal.Deadline != nil {
-		deadlineClause = " by " + goal.Deadline.Format("2006-01-02")
+		deadlineClause = " by " + goal.Deadline.UTC().Format("2006-01-02")
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreated,
 		i18n.FormatMoney(user.Language, goal.TargetAmount, goal.Currency), goal.Name, deadlineClause))
@@ -1069,7 +1074,7 @@ func (s *Service) handleGoal(ctx context.Context, user *models.User, msg *messag
 			i18n.FormatMoney(user.Language, progress.Goal.TargetAmount-progress.Saved, progress.Goal.Currency)))
 	}
 	if progress.Goal.Deadline != nil {
-		lines = append(lines, i18n.T(user.Language, i18n.KeyGoalProgressDeadline, progress.Goal.Deadline.Format("2006-01-02")))
+		lines = append(lines, i18n.T(user.Language, i18n.KeyGoalProgressDeadline, progress.Goal.Deadline.UTC().Format("2006-01-02")))
 	}
 
 	s.reply(ctx, user, strings.Join(lines, "\n"))
@@ -1340,7 +1345,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	}
 	for i, item := range page.Items {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItem,
-			offset+i+1, item.OccurredAt.Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName),
+			offset+i+1, item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName),
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 	}
 
@@ -1527,7 +1532,7 @@ func (s *Service) recentTransactionsLookup(userID uint) ai.RecentTransactionsLoo
 				CategoryName: categoryName,
 				Bucket:       bucket,
 				Description:  tx.Description,
-				OccurredAt:   tx.OccurredAt.Format("2006-01-02"),
+				OccurredAt:   tx.OccurredAt.UTC().Format("2006-01-02"),
 			})
 		}
 		return results, nil
