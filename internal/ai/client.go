@@ -9,14 +9,16 @@ import (
 // same as IntentRecord, so every prompt/response that predates the "query"
 // intent (and any provider test fixture) keeps working unchanged.
 const (
-	IntentRecord            = "record"
-	IntentQuery             = "query"
-	IntentBalance           = "balance"
-	IntentCorrect           = "correct"
-	IntentDelete            = "delete"
-	IntentRecurringCreate   = "recurring_create"
-	IntentRecurringDelete   = "recurring_delete"
-	IntentSavingsGoalCreate = "savings_goal_create"
+	IntentRecord             = "record"
+	IntentQuery              = "query"
+	IntentBalance            = "balance"
+	IntentCorrect            = "correct"
+	IntentDelete             = "delete"
+	IntentRecurringCreate    = "recurring_create"
+	IntentRecurringDelete    = "recurring_delete"
+	IntentSavingsGoalCreate  = "savings_goal_create"
+	IntentSubscribe          = "subscribe"
+	IntentSubscriptionStatus = "subscription_status"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -250,7 +252,7 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		default:
 			return false
 		}
-	case IntentBalance, IntentDelete:
+	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus:
 		return true
 	case IntentRecurringDelete:
 		// Unlike IntentDelete (a regular transaction), there's no

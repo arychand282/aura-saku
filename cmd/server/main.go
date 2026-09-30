@@ -21,6 +21,7 @@ import (
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
+	"aura-saku/internal/service/payment"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
@@ -48,6 +49,12 @@ const recurringTransactionsInterval = 1 * time.Hour
 // rolloverNudgeInterval, even though the value matches) so each job's
 // cadence can be tuned independently later.
 const categoryInsightInterval = 24 * time.Hour
+
+// subscriptionExpiryInterval controls how often RunSubscriptionExpiry checks
+// for lapsed Pro subscriptions — daily is frequent enough that a lapsed
+// user reverts to free within a day of their ExpiresAt, without needing
+// exact-time precision.
+const subscriptionExpiryInterval = 24 * time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -88,7 +95,8 @@ func main() {
 	})
 	recurSvc := recurring.NewService(gormDB)
 	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
-	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, bot.Config{
+	paymentSvc := payment.NewService(gormDB, redisClient, cfg.MidtransServerKey, cfg.MidtransIsProduction)
+	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, paymentSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
 		MaxInputChars:         cfg.MaxInputChars,
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,
@@ -113,6 +121,11 @@ func main() {
 			Name:     "category-insights",
 			Interval: categoryInsightInterval,
 			Run:      botSvc.RunCategoryInsights,
+		},
+		scheduler.Job{
+			Name:     "subscription-expiry",
+			Interval: subscriptionExpiryInterval,
+			Run:      botSvc.RunSubscriptionExpiry,
 		},
 	).Start(schedulerCtx)
 

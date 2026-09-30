@@ -74,6 +74,16 @@ type Config struct {
 	// /dashboard (empty means that command replies "not available yet").
 	DashboardBaseURL string
 
+	// MidtransServerKey/MidtransClientKey configure the Pro-tier checkout
+	// flow (see internal/service/payment) — same "empty disables it
+	// entirely" convention as RewardAffiliateURL above: /subscribe replies
+	// "not available yet" rather than failing outright when unset.
+	// MidtransIsProduction defaults false (sandbox) so this ships safely
+	// testable before any real key is ever configured.
+	MidtransServerKey    string
+	MidtransClientKey    string
+	MidtransIsProduction bool
+
 	AdminLoginRateLimitWindowSeconds int
 	AdminLoginRateLimitMaxAttempts   int
 
@@ -151,6 +161,10 @@ func Load() (*Config, error) {
 
 		DashboardBaseURL: getEnv("DASHBOARD_BASE_URL", ""),
 
+		MidtransServerKey:    getEnv("MIDTRANS_SERVER_KEY", ""),
+		MidtransClientKey:    getEnv("MIDTRANS_CLIENT_KEY", ""),
+		MidtransIsProduction: getEnvBool("MIDTRANS_IS_PRODUCTION", false),
+
 		AdminLoginRateLimitWindowSeconds: getEnvInt("ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300),
 		AdminLoginRateLimitMaxAttempts:   getEnvInt("ADMIN_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 5),
 
@@ -202,4 +216,16 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return i
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }

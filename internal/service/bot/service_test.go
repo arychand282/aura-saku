@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/fx"
+	"aura-saku/internal/service/payment"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
@@ -208,8 +209,15 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{RecentLimit: 10, SummarizeThreshold: 20})
 	recurSvc := recurring.NewService(gormDB)
 	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
+	// A fixed fake key, deliberately NOT appCfg.MidtransServerKey — tests in
+	// this file never exercise CreateCheckout/HandleNotification's actual
+	// Midtrans network calls (see the plan's live-sandbox-verification step
+	// for that), only paths that return before touching the network. Using
+	// a real key here would risk this suite making live API calls the
+	// moment a developer's local .env gets real sandbox credentials.
+	paymentSvc := payment.NewService(gormDB, redisClient, "test-midtrans-key", false)
 
-	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, cfg)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, paymentSvc, cfg)
 
 	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
 }
@@ -236,6 +244,7 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.RecurringTransaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.SavingsGoal{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Subscription{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.BalanceReconciliation{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Account{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.AIUsageLog{})
@@ -1080,6 +1089,139 @@ func TestHandleUpdate_SpendingQuery_UncategorizedTotal(t *testing.T) {
 	}
 	if strings.Contains(got, "tidak menemukan kategori") {
 		t.Errorf("reply = %q, must not fall back to the category-not-found reply", got)
+	}
+}
+
+// TestHandleUpdate_Subscribe_AlreadyPending covers /subscribe's
+// double-checkout guard: a pending order_id already cached for the user
+// must produce KeySubscribePending, never a second checkout link, and
+// never touch User.Tier.
+func TestHandleUpdate_Subscribe_AlreadyPending(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// Seed a user first (a plain record keeps this test independent of any
+	// particular AI intent).
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 1000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	pendingKey := fmt.Sprintf("aura:paymentpending:%d", user.ID)
+	if err := env.redis.Set(ctx, pendingKey, "sub-existing-order", time.Hour).Err(); err != nil {
+		t.Fatalf("seed pending checkout key: %v", err)
+	}
+	t.Cleanup(func() { env.redis.Del(context.Background(), pendingKey) })
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/subscribe"})
+
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeySubscribePending)
+	if got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var reloaded models.User
+	env.db.First(&reloaded, user.ID)
+	if reloaded.Tier != models.TierFree {
+		t.Errorf("Tier = %q, want it untouched (still free) since no payment ever succeeded", reloaded.Tier)
+	}
+}
+
+// TestHandleUpdate_Subscribe_NaturalLanguage covers the natural-language
+// path to the exact same double-checkout guard as the /subscribe command
+// above, confirming ai.IntentSubscribe dispatches to the identical handler
+// rather than a separate code path.
+func TestHandleUpdate_Subscribe_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 1000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	pendingKey := fmt.Sprintf("aura:paymentpending:%d", user.ID)
+	if err := env.redis.Set(ctx, pendingKey, "sub-existing-order", time.Hour).Err(); err != nil {
+		t.Fatalf("seed pending checkout key: %v", err)
+	}
+	t.Cleanup(func() { env.redis.Del(context.Background(), pendingKey) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSubscribe}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku mau upgrade ke pro dong"})
+
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeySubscribePending)
+	if got != want {
+		t.Errorf("reply = %q, want %q (natural-language subscribe must reach the same handler as /subscribe)", got, want)
+	}
+}
+
+// TestHandleUpdate_MySubscription_Free covers /mysubscription for a free
+// user (the default) via both the slash command and its natural-language
+// equivalent, both converging on the same reply.
+func TestHandleUpdate_MySubscription_Free(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/mysubscription"})
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeyMySubscriptionFree)
+	if got != want {
+		t.Errorf("/mysubscription reply = %q, want %q", got, want)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSubscriptionStatus}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku pro ga sih?"})
+	got = env.messenger.last(chatID)
+	if got != want {
+		t.Errorf("natural-language status reply = %q, want %q (same as /mysubscription)", got, want)
+	}
+}
+
+// TestHandleUpdate_MySubscription_Pro covers a Pro user's /mysubscription
+// reply showing the real renewal date from their active Subscription row.
+func TestHandleUpdate_MySubscription_Pro(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 1000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if err := env.db.Model(&models.User{}).Where("id = ?", user.ID).Update("tier", models.TierPro).Error; err != nil {
+		t.Fatalf("set user to pro: %v", err)
+	}
+	expiresAt := time.Now().UTC().Add(20 * 24 * time.Hour)
+	sub := &models.Subscription{
+		UserID: user.ID, Tier: models.TierPro, Status: models.SubStatusActive,
+		StartedAt: time.Now().UTC(), ExpiresAt: &expiresAt, PaymentRef: "sub-test-order",
+	}
+	if err := env.db.Create(sub).Error; err != nil {
+		t.Fatalf("seed active subscription: %v", err)
+	}
+	t.Cleanup(func() { env.db.Unscoped().Delete(sub) })
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/mysubscription"})
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeyMySubscriptionPro, expiresAt.Format("2006-01-02"))
+	if got != want {
+		t.Errorf("reply = %q, want %q", got, want)
 	}
 }
 

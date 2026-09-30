@@ -27,6 +27,8 @@ const (
 	ToolCreateBillReminder         = "create_bill_reminder"
 	ToolCreateSavingsGoal          = "create_savings_goal"
 	ToolDeleteRecurringTransaction = "delete_recurring_transaction"
+	ToolSubscribeToPro             = "subscribe_to_pro"
+	ToolCheckSubscriptionStatus    = "check_subscription_status"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -241,6 +243,16 @@ func TransactionTools() []Tool {
 			},
 			Required: []string{"target_recurring_transaction_id"},
 		},
+		{
+			Name:        ToolSubscribeToPro,
+			Description: "Call this when the message expresses wanting to upgrade THIS BOT's own account to Pro tier, in any phrasing (\"aku mau upgrade ke pro\", \"gimana caranya jadi member pro?\", \"mau langganan pro dong\", \"I want to go premium\", \"how do I upgrade?\", \"cara jadi pro gimana?\"). This is about the bot's own Pro tier specifically — never confuse it with a recurring transaction the user tracks for themselves (a gym membership, Netflix, etc; that's create_recurring_transaction/delete_recurring_transaction instead). Takes no parameters.",
+			Properties:  map[string]ToolProperty{},
+		},
+		{
+			Name:        ToolCheckSubscriptionStatus,
+			Description: "Call this when the message asks about the user's OWN current Pro-tier status or renewal date on this bot (\"aku pro ga sih?\", \"kapan langganan pro ku abis?\", \"am I still Pro?\", \"when does my subscription renew?\", \"status pro aku gimana?\"). Not for a recurring transaction the user tracks for themselves — that's a normal query_spending/get_recurring_transactions question instead. Takes no parameters.",
+			Properties:  map[string]ToolProperty{},
+		},
 	}
 }
 
@@ -259,7 +271,7 @@ func ToolCallingSystemInstruction(defaultCurrency string, today time.Time, prefe
 		`You are a financial transaction parser and spending-report assistant for an expense-tracking bot.
 Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
-Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder, create_savings_goal, delete_recurring_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message — with exactly ONE exception: delete_recurring_transaction MAY be paired with create_recurring_transaction or create_bill_reminder in the same message when the message describes an UPDATE to an existing recurring transaction/bill reminder rather than a plain cancellation (see each of those three tools' own description for exactly when). If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
+Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder, create_savings_goal, delete_recurring_transaction, subscribe_to_pro, check_subscription_status) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message — with exactly ONE exception: delete_recurring_transaction MAY be paired with create_recurring_transaction or create_bill_reminder in the same message when the message describes an UPDATE to an existing recurring transaction/bill reminder rather than a plain cancellation (see each of those three tools' own description for exactly when). If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
 
 Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.
 

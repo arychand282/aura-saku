@@ -62,6 +62,10 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Intent:                       IntentRecurringDelete,
 			TargetRecurringTransactionID: argUint(args, "target_recurring_transaction_id"),
 		}
+	case prompt.ToolSubscribeToPro:
+		return &ParsedTransaction{Intent: IntentSubscribe}
+	case prompt.ToolCheckSubscriptionStatus:
+		return &ParsedTransaction{Intent: IntentSubscriptionStatus}
 	default:
 		return nil
 	}

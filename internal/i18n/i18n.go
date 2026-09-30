@@ -136,6 +136,15 @@ const (
 	KeyGoalProgressDeadline = "goal_progress_deadline"
 	KeyGoalReached          = "goal_reached"
 	KeyGoalCancelSuccess    = "goal_cancel_success"
+
+	KeySubscribeLink        = "subscribe_link"
+	KeySubscribePending     = "subscribe_pending"
+	KeySubscribeUnavailable = "subscribe_unavailable"
+	KeySubscribeSuccess     = "subscribe_success"
+	KeySubscribeFailed      = "subscribe_failed"
+	KeySubscriptionExpired  = "subscription_expired"
+	KeyMySubscriptionPro    = "my_subscription_pro"
+	KeyMySubscriptionFree   = "my_subscription_free"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -219,6 +228,15 @@ var catalog = map[models.Language]map[string]string{
 		KeyGoalProgressDeadline: "Deadline: %s.",
 		KeyGoalReached:          "🎉 You've reached your goal! Great job — set a new one anytime, or just keep going.",
 		KeyGoalCancelSuccess:    "Canceled your goal: \"%s\".",
+
+		KeySubscribeLink:        "Tap here to complete your Pro upgrade (Rp50.000/month): %s\nI'll confirm here once the payment goes through.",
+		KeySubscribePending:     "You already have a pending payment link — check your last message, or wait a bit before trying again.",
+		KeySubscribeUnavailable: "Pro upgrades aren't available yet. Please check back later.",
+		KeySubscribeSuccess:     "🎉 You're now Pro! Unlimited daily use until %s.",
+		KeySubscribeFailed:      "Your payment didn't go through. Send /subscribe (or just tell me you want to upgrade) to try again.",
+		KeySubscriptionExpired:  "Your Pro subscription has expired. Send /subscribe to renew and keep unlimited daily use.",
+		KeyMySubscriptionPro:    "You're on the Pro tier — unlimited daily use. Renews on %s.",
+		KeyMySubscriptionFree:   "You're on the Free tier. Send /subscribe (or just tell me you want to upgrade) to go Pro for unlimited daily use.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                    "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -300,6 +318,15 @@ var catalog = map[models.Language]map[string]string{
 		KeyGoalProgressDeadline: "Target: %s.",
 		KeyGoalReached:          "🎉 Kamu sudah mencapai goal-mu! Kerja bagus — atur goal baru kapan saja, atau terus lanjutkan.",
 		KeyGoalCancelSuccess:    "Goal \"%s\" sudah dibatalkan.",
+
+		KeySubscribeLink:        "Ketuk di sini untuk menyelesaikan upgrade ke Pro (Rp50.000/bulan): %s\nAku akan konfirmasi di sini begitu pembayarannya berhasil.",
+		KeySubscribePending:     "Kamu masih punya link pembayaran yang belum selesai — cek pesan sebelumnya, atau tunggu sebentar sebelum coba lagi.",
+		KeySubscribeUnavailable: "Upgrade ke Pro belum tersedia. Silakan coba lagi nanti.",
+		KeySubscribeSuccess:     "🎉 Kamu sekarang Pro! Pemakaian harian tanpa batas sampai %s.",
+		KeySubscribeFailed:      "Pembayaranmu tidak berhasil. Kirim /subscribe (atau bilang aja mau upgrade) untuk coba lagi.",
+		KeySubscriptionExpired:  "Langganan Pro kamu sudah habis masa berlakunya. Kirim /subscribe untuk perpanjang dan tetap dapat pemakaian tanpa batas.",
+		KeyMySubscriptionPro:    "Kamu di tier Pro — pemakaian harian tanpa batas. Perpanjangan pada %s.",
+		KeyMySubscriptionFree:   "Kamu di tier Free. Kirim /subscribe (atau bilang aja mau upgrade) untuk jadi Pro dan dapat pemakaian harian tanpa batas.",
 	},
 }
 

@@ -115,6 +115,8 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyCategoryInsightHeader, KeyCategoryInsightItem, KeyCategoryInsightWarning,
 		KeyGoalUsage, KeyGoalCreated, KeyGoalCreateFailed, KeyGoalNone,
 		KeyGoalProgress, KeyGoalProgressToGo, KeyGoalProgressDeadline, KeyGoalReached, KeyGoalCancelSuccess,
+		KeySubscribeLink, KeySubscribePending, KeySubscribeUnavailable, KeySubscribeSuccess, KeySubscribeFailed,
+		KeySubscriptionExpired, KeyMySubscriptionPro, KeyMySubscriptionFree,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

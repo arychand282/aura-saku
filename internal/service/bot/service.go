@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/reward"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
+	"aura-saku/internal/service/payment"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
@@ -72,10 +73,11 @@ type Service struct {
 	convSvc     *conversation.Service
 	recurSvc    *recurring.Service
 	goalSvc     *savingsgoal.Service
+	paymentSvc  *payment.Service
 	cfg         Config
 }
 
-func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, recurSvc *recurring.Service, goalSvc *savingsgoal.Service, cfg Config) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, recurSvc *recurring.Service, goalSvc *savingsgoal.Service, paymentSvc *payment.Service, cfg Config) *Service {
 	return &Service{
 		db:          db,
 		redisClient: redisClient,
@@ -89,6 +91,7 @@ func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Mess
 		convSvc:     convSvc,
 		recurSvc:    recurSvc,
 		goalSvc:     goalSvc,
+		paymentSvc:  paymentSvc,
 		cfg:         cfg,
 	}
 }
@@ -142,6 +145,10 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleBudget(ctx, user, msg)
 	case "/goal":
 		s.handleGoal(ctx, user, msg)
+	case "/subscribe":
+		s.handleSubscribe(ctx, user, msg)
+	case "/mysubscription":
+		s.handleMySubscription(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
@@ -240,6 +247,103 @@ func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg
 		return
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+}
+
+// handleSubscribe starts (or resumes) a Pro-tier checkout — reachable via
+// /subscribe or the natural-language ai.IntentSubscribe path (see
+// tool_schema.go's subscribe_to_pro), both converging here so there's one
+// code path per action regardless of how it was triggered.
+func (s *Service) handleSubscribe(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if !s.paymentSvc.IsConfigured() {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySubscribeUnavailable))
+		return
+	}
+
+	redirectURL, err := s.paymentSvc.CreateCheckout(ctx, user)
+	if err != nil {
+		if errors.Is(err, apperror.ErrPaymentAlreadyPending) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeySubscribePending))
+			return
+		}
+		logger.Error(logger.SvcPaymentFailed, fmt.Sprintf("create checkout for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcPaymentFailed))
+		return
+	}
+
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeySubscribeLink, redirectURL))
+}
+
+// handleMySubscription answers "am I Pro?" — reachable via /mysubscription
+// or the natural-language ai.IntentSubscriptionStatus path.
+func (s *Service) handleMySubscription(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	if user.Tier != models.TierPro {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionFree))
+		return
+	}
+
+	var sub models.Subscription
+	err := s.db.WithContext(ctx).Where("user_id = ? AND status = ?", user.ID, models.SubStatusActive).
+		Order("expires_at DESC").First(&sub).Error
+	if err != nil || sub.ExpiresAt == nil {
+		// Tier says Pro but there's no active Subscription row to read a
+		// renewal date from (shouldn't normally happen — Tier is only ever
+		// set alongside one — but report the tier honestly rather than
+		// erroring over a missing "nice to have" date).
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionPro, "-"))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyMySubscriptionPro, sub.ExpiresAt.Format("2006-01-02")))
+}
+
+// RunSubscriptionExpiry reverts every subscription whose ExpiresAt has
+// passed back to free tier and notifies each affected user — the
+// "subscription-expiry" scheduler job's Run function. DB work lives in
+// payment.Service.ExpireSubscriptions; only the Telegram side-effect lives
+// here, the same split RunBudgetRolloverNudges/RunCategoryInsights use.
+func (s *Service) RunSubscriptionExpiry(ctx context.Context) error {
+	userIDs, err := s.paymentSvc.ExpireSubscriptions(ctx)
+	if err != nil {
+		return fmt.Errorf("expire subscriptions: %w", err)
+	}
+
+	for _, userID := range userIDs {
+		var user models.User
+		if err := s.db.WithContext(ctx).First(&user, userID).Error; err != nil {
+			logger.Error(logger.SvcPaymentFailed, fmt.Sprintf("load user %d for expiry notification", userID), err)
+			continue
+		}
+		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscriptionExpired))
+	}
+	return nil
+}
+
+// HandleMidtransNotification is the thin Telegram-facing wrapper around
+// payment.Service.HandleNotification — internal/api/handlers' webhook
+// handler calls this (not payment.Service directly) so the "which user
+// gets told what" decision stays in bot.Service alongside every other
+// proactive message this service sends, matching the scheduled jobs'
+// "DB work in the service, chat side-effect in bot.Service" split.
+func (s *Service) HandleMidtransNotification(ctx context.Context, body []byte) error {
+	result, err := s.paymentSvc.HandleNotification(ctx, body)
+	if err != nil {
+		return err
+	}
+	if result.UserID == 0 {
+		return nil
+	}
+
+	var user models.User
+	if err := s.db.WithContext(ctx).First(&user, result.UserID).Error; err != nil {
+		return fmt.Errorf("load user %d for payment notification: %w", result.UserID, err)
+	}
+
+	switch result.Outcome {
+	case payment.OutcomeActivated:
+		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscribeSuccess, result.ExpiresAt.Format("2006-01-02")))
+	case payment.OutcomeFailed:
+		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeySubscribeFailed))
+	}
+	return nil
 }
 
 // handleRecurring is /recurring's dispatcher: no argument lists the user's
@@ -700,6 +804,16 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentRecurringDelete {
 		s.handleRecurringDelete(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentSubscribe {
+		s.handleSubscribe(ctx, user, msg)
+		return
+	}
+
+	if first.Intent == ai.IntentSubscriptionStatus {
+		s.handleMySubscription(ctx, user, msg)
 		return
 	}
 

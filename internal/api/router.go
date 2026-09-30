@@ -48,6 +48,11 @@ func Setup(app *fiber.App, deps Deps) {
 		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret, deps.Redis),
 	)
 
+	// Signature verification happens inside payment.Service.HandleNotification
+	// (Midtrans's own signature_key field, not a shared-secret header like
+	// Telegram's), so no auth middleware is needed on this route itself.
+	app.Post("/webhook/midtrans", handlers.NewMidtransWebhookHandler(deps.BotService))
+
 	// Auth endpoints are registered directly on app (not the session-gated
 	// v1 group below) since logging in is, by definition, unauthenticated.
 	sessionTTL := time.Duration(deps.Config.SessionTTLHours) * time.Hour

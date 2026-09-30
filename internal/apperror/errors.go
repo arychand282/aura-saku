@@ -19,4 +19,6 @@ var (
 	ErrInvalidBudgetPercentages = errors.New("budget percentages must each be non-negative and sum to 100")
 	ErrInvalidSavingsGoal       = errors.New("savings goal target amount must be positive and have a name")
 	ErrNoActiveSavingsGoal      = errors.New("no active savings goal for this user")
+	ErrPaymentAlreadyPending    = errors.New("a checkout is already pending for this user")
+	ErrInvalidWebhookSignature  = errors.New("invalid webhook signature")
 )
