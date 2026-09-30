@@ -301,18 +301,23 @@ type TransactionListPage struct {
 // [start, end), most-recent-first — the data behind a natural-language
 // "what did I buy for X" / "list my Y expenses" listing request, as opposed
 // to query_spending's aggregate total/breakdown modes above. At most one of
-// categoryQuery (ILIKE match, same convention as CategoryTotal) or bucket
-// (same COALESCE resolution as BucketSpending) should be set — leave both
-// empty to list every expense in the period regardless of category. offset
-// is the caller-tracked pagination cursor (see bot.Service's short-lived
-// Redis cursor); this always returns at most transactionListPageSize items
-// starting from it, ordered with the row id as a tiebreaker so pagination
-// stays stable even when two transactions share the exact same OccurredAt.
-func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, categoryQuery string, bucket models.BudgetBucket, offset int) (*TransactionListPage, error) {
+// uncategorizedOnly (Transaction.CategoryID IS NULL — e.g. a /sync "blind
+// spot" adjustment, see categoryDisplayName's own doc comment), categoryQuery
+// (ILIKE match, same convention as CategoryTotal), or bucket (same COALESCE
+// resolution as BucketSpending) should be set, checked in that order — leave
+// all three empty/zero to list every expense in the period regardless of
+// category. offset is the caller-tracked pagination cursor (see
+// bot.Service's short-lived Redis cursor); this always returns at most
+// transactionListPageSize items starting from it, ordered with the row id as
+// a tiebreaker so pagination stays stable even when two transactions share
+// the exact same OccurredAt.
+func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, categoryQuery string, bucket models.BudgetBucket, uncategorizedOnly bool, offset int) (*TransactionListPage, error) {
 	where := "transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at >= ? AND transactions.occurred_at < ?"
 	args := []interface{}{userID, models.TxExpense, start, end}
 
 	switch {
+	case uncategorizedOnly:
+		where += " AND transactions.category_id IS NULL"
 	case categoryQuery != "":
 		where += " AND categories.name ILIKE ?"
 		args = append(args, "%"+categoryQuery+"%")
@@ -343,6 +348,26 @@ func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end 
 	}
 
 	return &TransactionListPage{Items: items, Total: int(total)}, nil
+}
+
+// UncategorizedTotal sums expense transactions in the given period with no
+// category assigned at all (Transaction.CategoryID nil) — the total-query
+// counterpart to ListTransactions' uncategorizedOnly filter, for a
+// follow-up naming whatever categoryDisplayName's fallback label was shown
+// as (e.g. "how much was uncategorized this month").
+func (s *Service) UncategorizedTotal(ctx context.Context, userID uint, period string) (float64, error) {
+	start, end, err := PeriodRange(period)
+	if err != nil {
+		return 0, err
+	}
+
+	var total float64
+	err = s.db.WithContext(ctx).Model(&models.Transaction{}).
+		Select("COALESCE(SUM(converted_amount), 0)").
+		Where("user_id = ? AND type = ? AND occurred_at BETWEEN ? AND ? AND category_id IS NULL",
+			userID, models.TxExpense, start, end).
+		Scan(&total).Error
+	return total, err
 }
 
 // CategoryTotal sums expense transactions in the given period whose category

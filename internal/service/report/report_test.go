@@ -269,7 +269,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Fatalf("PeriodRange: %v", err)
 	}
 
-	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", 0)
+	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", false, 0)
 	if err != nil {
 		t.Fatalf("ListTransactions page 1: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Errorf("page1.Items[0].Description = %q, want %q (most recent first)", page1.Items[0].Description, "item 12")
 	}
 
-	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", 10)
+	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", false, 10)
 	if err != nil {
 		t.Fatalf("ListTransactions page 2: %v", err)
 	}
@@ -295,6 +295,52 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 	}
 	if page2.Items[0].Description != "item 2" || page2.Items[1].Description != "item 1" {
 		t.Errorf("page2.Items = %+v, want items 2 then 1 (still most-recent-first, continuing from page 1)", page2.Items)
+	}
+}
+
+// TestListTransactions_UncategorizedOnly covers the /sync "blind spot"
+// adjustment case: a transaction with no category at all (reproduced here
+// via CreateAdjustment directly, same as reconciliation.Service actually
+// produces one) must be returned by uncategorizedOnly, and a normal
+// categorized expense must be excluded from it.
+func TestListTransactions_UncategorizedOnly(t *testing.T) {
+	gormDB := setupTestDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	if _, err := txSvc.CreateAdjustment(ctx, user.ID, -500_000, "IDR", "Balance reconciliation adjustment (blind spot)"); err != nil {
+		t.Fatalf("create adjustment: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food",
+	}, models.SourceText, "food 100000"); err != nil {
+		t.Fatalf("create categorized expense: %v", err)
+	}
+
+	reportSvc := report.NewService(gormDB)
+	start, end, err := report.PeriodRange("monthly")
+	if err != nil {
+		t.Fatalf("PeriodRange: %v", err)
+	}
+
+	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "", "", true, 0)
+	if err != nil {
+		t.Fatalf("ListTransactions: %v", err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("page.Total = %d, want 1 (only the uncategorized adjustment)", page.Total)
+	}
+	if len(page.Items) != 1 || page.Items[0].CategoryName != "" {
+		t.Errorf("page.Items = %+v, want exactly one item with an empty category name", page.Items)
+	}
+
+	total, err := reportSvc.UncategorizedTotal(ctx, user.ID, "monthly")
+	if err != nil {
+		t.Fatalf("UncategorizedTotal: %v", err)
+	}
+	if total != 500_000 {
+		t.Errorf("UncategorizedTotal = %.2f, want 500000.00 (excluding the categorized food expense)", total)
 	}
 }
 

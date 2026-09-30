@@ -989,6 +989,11 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 
+	if isUncategorizedQuery(parsed) {
+		s.handleUncategorizedSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel)
+		return
+	}
+
 	if bucket, ok := resolveQueryBucket(parsed); ok {
 		s.handleBucketSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel, bucket)
 		return
@@ -1054,6 +1059,7 @@ type spendingListCursor struct {
 	Period        string `json:"period"`
 	CategoryQuery string `json:"category_query"`
 	Bucket        string `json:"bucket"`
+	Uncategorized bool   `json:"uncategorized"`
 	NextOffset    int    `json:"next_offset"`
 }
 
@@ -1125,16 +1131,25 @@ func (s *Service) clearSpendingListCursor(ctx context.Context, userID uint) {
 // single "nothing to show" reply covers both honestly enough without a
 // second existence-check query.
 func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction, periodLabel string) {
-	bucket, hasBucket := resolveQueryBucket(parsed)
+	uncategorized := isUncategorizedQuery(parsed)
+	var bucket models.BudgetBucket
+	var hasBucket bool
 	categoryQuery := parsed.QueryCategory
-	if hasBucket {
+	switch {
+	case uncategorized:
 		categoryQuery = ""
+	default:
+		bucket, hasBucket = resolveQueryBucket(parsed)
+		if hasBucket {
+			categoryQuery = ""
+		}
 	}
 
 	offset := 0
 	if parsed.QueryListMore {
 		if cursor, ok := s.loadSpendingListCursor(ctx, user.ID); ok &&
-			cursor.Period == parsed.QueryPeriod && cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) {
+			cursor.Period == parsed.QueryPeriod && cursor.CategoryQuery == categoryQuery &&
+			cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized {
 			offset = cursor.NextOffset
 		}
 		// No matching cursor (expired, or the model attached QueryListMore
@@ -1150,7 +1165,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 		return
 	}
 
-	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, categoryQuery, bucket, offset)
+	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, categoryQuery, bucket, uncategorized, offset)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("spending list query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1158,7 +1173,10 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	}
 
 	scopeLabel := categoryQuery
-	if scopeLabel == "" && hasBucket {
+	switch {
+	case uncategorized:
+		scopeLabel = i18n.T(user.Language, i18n.KeyUncategorizedLabel)
+	case scopeLabel == "" && hasBucket:
 		scopeLabel = bucketDisplayName(bucket)
 	}
 
@@ -1187,13 +1205,55 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	if remaining := page.Total - shown; remaining > 0 {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
 		s.saveSpendingListCursor(ctx, user.ID, spendingListCursor{
-			Period: parsed.QueryPeriod, CategoryQuery: categoryQuery, Bucket: string(bucket), NextOffset: shown,
+			Period: parsed.QueryPeriod, CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
 		})
 	} else {
 		s.clearSpendingListCursor(ctx, user.ID)
 	}
 
 	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// isUncategorizedQuery recognizes a follow-up referring back to whatever
+// categoryDisplayName's "Uncategorized"/"Tanpa kategori" fallback label was
+// shown as in a previous reply (see that function's own doc comment for why
+// such transactions exist — e.g. a /sync "blind spot" adjustment with no
+// category at all). The model has no real category name to echo back for
+// these, so it tends to guess a literal word like "none" or repeat the
+// Indonesian label itself — without this, that guess would ILIKE-match
+// against real category names, find nothing, and produce a confusing
+// "you have no expenses for 'none'" reply even though the very list the
+// user is asking about just showed one.
+func isUncategorizedQuery(parsed *ai.ParsedTransaction) bool {
+	for _, raw := range []string{parsed.QueryCategory, parsed.QueryBucket} {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "none", "uncategorized", "no category", "not categorized", "tanpa kategori",
+			"tidak ada kategori", "tidak berkategori", "belum berkategori", "tak berkategori":
+			return true
+		}
+	}
+	return false
+}
+
+// handleUncategorizedSpendingQuery answers a total-mode follow-up about
+// whatever categoryDisplayName's fallback label refers to — the
+// uncategorized-total counterpart to CategoryTotal, using the SAME
+// translated label (never the raw "none"/"tanpa kategori" the model
+// guessed) so the reply reads the same way the original list did.
+func (s *Service) handleUncategorizedSpendingQuery(ctx context.Context, user *models.User, period, periodLabel string) {
+	total, err := s.reportSvc.UncategorizedTotal(ctx, user.ID, period)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("uncategorized spending query for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+
+	label := i18n.T(user.Language, i18n.KeyUncategorizedLabel)
+	if total <= 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingScopeNone, label, periodLabel))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), label, periodLabel))
 }
 
 // resolveQueryBucket decides whether a query_spending parse is actually

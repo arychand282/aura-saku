@@ -175,7 +175,7 @@ func TransactionTools() []Tool {
 				},
 				"query_category": {
 					Type:        "string",
-					Description: "Optional category filter, in English (e.g. \"berapa aku keluar buat makan bulan ini?\" -> \"food\"). Leave empty for spending in general. ALSO set this (or query_bucket, whichever fits) when the current message is a short confirmation (\"iya\", \"iya tolong\", \"yes please\", \"boleh\", \"ya udah\") replying to the ASSISTANT'S OWN PREVIOUS MESSAGE offering to break spending down by a specific category or budget bucket — resolve it from that offer, a confirmation like this is never asking for a plain total.",
+					Description: "Optional category filter, in English (e.g. \"berapa aku keluar buat makan bulan ini?\" -> \"food\"). Leave empty for spending in general. ALSO set this (or query_bucket, whichever fits) when the current message is a short confirmation (\"iya\", \"iya tolong\", \"yes please\", \"boleh\", \"ya udah\") replying to the ASSISTANT'S OWN PREVIOUS MESSAGE offering to break spending down by a specific category or budget bucket — resolve it from that offer, a confirmation like this is never asking for a plain total. Set this to \"uncategorized\" (regardless of the message's own language, e.g. Indonesian \"tanpa kategori\") when the message is asking about a transaction/line item YOU previously showed with no category name at all (labeled \"Uncategorized\"/\"Tanpa kategori\" in that prior reply) — this is a real, answerable query the server recognizes, not an invalid category; never treat such a follow-up as too ambiguous to call this tool over.",
 				},
 				"query_bucket": {
 					Type:        "string",

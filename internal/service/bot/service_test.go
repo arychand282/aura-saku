@@ -1005,6 +1005,84 @@ func TestHandleUpdate_SpendingQuery_ListPagination(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_UncategorizedList reproduces a real chat
+// bug: after seeing "1. 30 Sep — Tanpa kategori: Rp3.432.000,00 (...)" in a
+// list reply, the user's follow-up ("yang tanpa kategori bisa jelasin lagi
+// habis buat apa?") had the model guess QueryCategory="none" — which
+// ILIKE-matched no real category, so the bot flatly denied having any such
+// expense ("Kamu belum ada pengeluaran untuk none bulan ini.") even though
+// it had just shown one. isUncategorizedQuery must recognize "none" (and
+// the Indonesian label itself) and answer with the actual uncategorized
+// transaction, using the translated label rather than the raw guess.
+func TestHandleUpdate_SpendingQuery_UncategorizedList(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 3_432_000, Currency: "IDR", CategoryName: "", Description: "Balance reconciliation adjustment (blind spot)",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "adjustment 3432000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "roti",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "roti 100000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "none", QueryMode: ai.QueryModeList,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "yang tanpa kategori bisa jelasin lagi habis buat apa?"})
+
+	got := env.messenger.last(chatID)
+	wantLabel := i18n.T(models.LanguageID, i18n.KeyUncategorizedLabel)
+	if !strings.Contains(got, wantLabel) {
+		t.Errorf("reply = %q, want it to use the translated label %q instead of the raw \"none\"", got, wantLabel)
+	}
+	if strings.Contains(got, "untuk none ") {
+		t.Errorf("reply = %q, must not leak the raw \"none\" value", got)
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 3_432_000, "IDR")) {
+		t.Errorf("reply = %q, want it to show the uncategorized transaction's actual amount, not deny it exists", got)
+	}
+	if strings.Contains(got, "roti") {
+		t.Errorf("reply = %q, must not include the categorized food expense", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_UncategorizedTotal covers the same
+// recognition for a total-mode (non-list) follow-up, e.g. "berapa total yang
+// tanpa kategori bulan ini?" — must sum only the uncategorized transactions
+// and label them naturally rather than reporting a category-not-found error
+// for the literal word the model guessed.
+func TestHandleUpdate_SpendingQuery_UncategorizedTotal(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "adjustment 500000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "tanpa kategori",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa total yang tanpa kategori bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	wantLabel := i18n.T(models.LanguageID, i18n.KeyUncategorizedLabel)
+	want := i18n.FormatMoney(models.LanguageID, 500_000, "IDR")
+	if !strings.Contains(got, want) || !strings.Contains(got, wantLabel) {
+		t.Errorf("reply = %q, want it to report %s for %q", got, want, wantLabel)
+	}
+	if strings.Contains(got, "tidak menemukan kategori") {
+		t.Errorf("reply = %q, must not fall back to the category-not-found reply", got)
+	}
+}
+
 // TestHandleUpdate_Sync_NoArgumentShowsBalance covers /sync with no
 // argument reporting the calculated balance directly, instead of falling
 // into the usage-instructions reply.
