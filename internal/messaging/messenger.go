@@ -36,10 +36,17 @@ type Messenger interface {
 	// DownloadFile fetches a voice/media file by platform-specific fileID,
 	// returning raw bytes + detected mime type for
 	// AIClient.TranscribeAndParseAudio/AnalyzeReceiptImage. fallbackMimeType
-	// is used only when the platform's own download response doesn't supply
-	// a Content-Type — callers pass the type appropriate to what they
+	// should be the type the caller already knows is correct for what it
 	// requested (e.g. "audio/ogg" for a voice note, "image/jpeg" for a
-	// photo) rather than one implementation guessing for every caller.
+	// photo) — implementations trust this over whatever the platform's own
+	// download response reports, falling back to that response's
+	// Content-Type only when the caller passes "". This isn't just a safety
+	// net for a missing header: Telegram's file-serving endpoint has been
+	// confirmed (empirically, debugging a real receipt-photo misread) to
+	// report a generic "application/octet-stream" for at least some photo
+	// downloads — a present but useless Content-Type, not an absent one —
+	// which would otherwise reach a vision-capable AI call mislabeled as
+	// opaque binary data regardless of how legible the actual photo is.
 	DownloadFile(ctx context.Context, fileID string, fallbackMimeType string) (data []byte, mimeType string, err error)
 
 	PlatformName() string

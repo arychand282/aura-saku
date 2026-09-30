@@ -184,9 +184,21 @@ func (c *Client) DownloadFile(ctx context.Context, fileID string, fallbackMimeTy
 		return nil, "", fmt.Errorf("read downloaded file: %w", err)
 	}
 
-	mimeType := dlResp.Header.Get("Content-Type")
+	// fallbackMimeType takes priority over Telegram's own Content-Type
+	// header, not the other way around — confirmed empirically that
+	// Telegram's file-serving endpoint often reports a generic
+	// "application/octet-stream" for a photo download (not merely an empty
+	// header), which would otherwise get passed to a vision-capable AI call
+	// as an unrecognized binary blob instead of an image, regardless of how
+	// legible the actual photo is. The caller already knows the real type
+	// for every message kind this bot handles (photos are always
+	// JPEG-recompressed by Telegram server-side, voice notes always
+	// OGG/Opus), so that known-correct value is trusted over whatever this
+	// endpoint happens to report. Telegram's own header is used only when
+	// the caller genuinely doesn't know the type in advance.
+	mimeType := fallbackMimeType
 	if mimeType == "" {
-		mimeType = fallbackMimeType
+		mimeType = dlResp.Header.Get("Content-Type")
 	}
 	return data, mimeType, nil
 }
