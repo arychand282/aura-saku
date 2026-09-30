@@ -95,7 +95,7 @@ func main() {
 	})
 	recurSvc := recurring.NewService(gormDB)
 	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
-	paymentSvc := payment.NewService(gormDB, redisClient, cfg.MidtransServerKey, cfg.MidtransIsProduction)
+	paymentSvc := payment.NewService(gormDB, redisClient, cfg.MidtransServerKey, cfg.MidtransIsProduction, cfg.MidtransActive)
 	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, paymentSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
 		MaxInputChars:         cfg.MaxInputChars,

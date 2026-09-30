@@ -56,25 +56,29 @@ type Service struct {
 // NewService configures both Midtrans clients from serverKey directly
 // (rather than the SDK's alternative global midtrans.ServerKey/Environment
 // vars) so multiple *Service instances — e.g. in tests — never race on
-// shared package state. An empty serverKey leaves the service unconfigured
-// (see IsConfigured) — matches DashboardBaseURL's existing "empty disables
-// this feature entirely" convention rather than failing to start.
-func NewService(db *gorm.DB, redisClient *redis.Client, serverKey string, isProduction bool) *Service {
+// shared package state. The feature is only available (see IsConfigured)
+// when BOTH a non-empty serverKey is supplied AND active is true — an
+// empty key matches DashboardBaseURL's existing "empty disables this
+// feature entirely" convention, while active is a separate manual kill
+// switch (config.Config.MidtransActive) for pausing new subscriptions
+// without touching real credentials.
+func NewService(db *gorm.DB, redisClient *redis.Client, serverKey string, isProduction bool, active bool) *Service {
 	env := midtrans.Sandbox
 	if isProduction {
 		env = midtrans.Production
 	}
 
-	s := &Service{db: db, redis: redisClient, configured: serverKey != ""}
+	s := &Service{db: db, redis: redisClient, configured: active && serverKey != ""}
 	s.snapClient.New(serverKey, env)
 	s.coreClient.New(serverKey, env)
 	return s
 }
 
-// IsConfigured reports whether a Midtrans server key was actually supplied
-// — bot.Service checks this before attempting a checkout, replying
-// KeySubscribeUnavailable instead of a confusing Midtrans API error when
-// it's false.
+// IsConfigured reports whether the checkout flow is actually available
+// right now — both a real server key AND the active toggle — bot.Service
+// checks this before attempting a checkout, replying
+// KeySubscribeUnavailable instead of a confusing Midtrans API error (or
+// silently proceeding while paused) when it's false.
 func (s *Service) IsConfigured() bool {
 	return s.configured
 }

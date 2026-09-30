@@ -215,7 +215,7 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	// for that), only paths that return before touching the network. Using
 	// a real key here would risk this suite making live API calls the
 	// moment a developer's local .env gets real sandbox credentials.
-	paymentSvc := payment.NewService(gormDB, redisClient, "test-midtrans-key", false)
+	paymentSvc := payment.NewService(gormDB, redisClient, "test-midtrans-key", false, true)
 
 	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, paymentSvc, cfg)
 
@@ -1089,6 +1089,66 @@ func TestHandleUpdate_SpendingQuery_UncategorizedTotal(t *testing.T) {
 	}
 	if strings.Contains(got, "tidak menemukan kategori") {
 		t.Errorf("reply = %q, must not fall back to the category-not-found reply", got)
+	}
+}
+
+// TestHandleUpdate_Subscribe_InactiveToggle covers the MIDTRANS_ACTIVE kill
+// switch: even with a valid-looking server key configured, active=false
+// must make /subscribe (and its natural-language equivalent) reply
+// KeySubscribeUnavailable — never attempt a checkout — so an operator can
+// pause new subscriptions without touching real credentials. Builds its own
+// bot.Service (rather than setupTestEnv, which fixes active=true for every
+// other test in this file) since this is the one test that needs the
+// toggle off.
+func TestHandleUpdate_Subscribe_InactiveToggle(t *testing.T) {
+	appCfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(appCfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("%s:%s", appCfg.RedisHost, appCfg.RedisPort)})
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("skipping integration test, redis not reachable: %v", err)
+	}
+
+	messenger := newMockMessenger()
+	aiClient := &mockAIClient{}
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+	reconSvc := reconciliation.NewService(gormDB, txSvc)
+	usageSvc := usage.NewService(gormDB)
+	reportSvc := report.NewService(gormDB)
+	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{RecentLimit: 10, SummarizeThreshold: 20})
+	recurSvc := recurring.NewService(gormDB)
+	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
+	// A real-looking key with active=false — proves the toggle blocks
+	// availability independently of whether credentials are present.
+	paymentSvc := payment.NewService(gormDB, redisClient, "test-midtrans-key", false, false)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, paymentSvc, bot.Config{FreeTierDailyQuota: 5})
+	env := &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
+
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/subscribe"})
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeySubscribeUnavailable)
+	if got != want {
+		t.Errorf("/subscribe reply = %q, want %q (MIDTRANS_ACTIVE=false must block even with a key present)", got, want)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSubscribe}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku mau upgrade ke pro dong"})
+	got = env.messenger.last(chatID)
+	if got != want {
+		t.Errorf("natural-language subscribe reply = %q, want %q (the toggle must also block the natural-language path)", got, want)
 	}
 }
 

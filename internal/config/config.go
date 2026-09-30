@@ -79,10 +79,16 @@ type Config struct {
 	// entirely" convention as RewardAffiliateURL above: /subscribe replies
 	// "not available yet" rather than failing outright when unset.
 	// MidtransIsProduction defaults false (sandbox) so this ships safely
-	// testable before any real key is ever configured.
+	// testable before any real key is ever configured. MidtransActive is a
+	// separate manual kill switch, independent of whether keys are
+	// present — set false to force /subscribe "not available yet" without
+	// touching real credentials (e.g. to pause new signups temporarily).
+	// payment.Service treats both conditions the same way: either one being
+	// false means unavailable.
 	MidtransServerKey    string
 	MidtransClientKey    string
 	MidtransIsProduction bool
+	MidtransActive       bool
 
 	AdminLoginRateLimitWindowSeconds int
 	AdminLoginRateLimitMaxAttempts   int
@@ -164,6 +170,7 @@ func Load() (*Config, error) {
 		MidtransServerKey:    getEnv("MIDTRANS_SERVER_KEY", ""),
 		MidtransClientKey:    getEnv("MIDTRANS_CLIENT_KEY", ""),
 		MidtransIsProduction: getEnvBool("MIDTRANS_IS_PRODUCTION", false),
+		MidtransActive:       getEnvBool("MIDTRANS_ACTIVE", true),
 
 		AdminLoginRateLimitWindowSeconds: getEnvInt("ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300),
 		AdminLoginRateLimitMaxAttempts:   getEnvInt("ADMIN_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 5),

@@ -53,19 +53,32 @@ func setup(t *testing.T) (*payment.Service, *gorm.DB, *redis.Client, *models.Use
 	// is exercised live against the real sandbox separately (see this
 	// feature's plan doc), not in this automated suite. Tests here only
 	// reach code paths that return before ever touching the network.
-	svc := payment.NewService(gormDB, redisClient, cfg.MidtransServerKey, false)
+	svc := payment.NewService(gormDB, redisClient, cfg.MidtransServerKey, false, true)
 	return svc, gormDB, redisClient, user
 }
 
 func TestIsConfigured(t *testing.T) {
-	unconfigured := payment.NewService(nil, nil, "", false)
-	if unconfigured.IsConfigured() {
-		t.Error("IsConfigured() = true for an empty server key, want false")
+	unconfiguredKey := payment.NewService(nil, nil, "", false, true)
+	if unconfiguredKey.IsConfigured() {
+		t.Error("IsConfigured() = true for an empty server key (active=true), want false")
 	}
 
-	configured := payment.NewService(nil, nil, "some-server-key", false)
+	configured := payment.NewService(nil, nil, "some-server-key", false, true)
 	if !configured.IsConfigured() {
-		t.Error("IsConfigured() = false for a non-empty server key, want true")
+		t.Error("IsConfigured() = false for a non-empty server key with active=true, want true")
+	}
+
+	// The MIDTRANS_ACTIVE kill switch: a real key present but active=false
+	// must still report unavailable — this is the whole point of having a
+	// toggle independent of whether credentials are configured.
+	inactive := payment.NewService(nil, nil, "some-server-key", false, false)
+	if inactive.IsConfigured() {
+		t.Error("IsConfigured() = true with active=false despite a valid server key, want false")
+	}
+
+	bothOff := payment.NewService(nil, nil, "", false, false)
+	if bothOff.IsConfigured() {
+		t.Error("IsConfigured() = true with neither a key nor active=true, want false")
 	}
 }
 
