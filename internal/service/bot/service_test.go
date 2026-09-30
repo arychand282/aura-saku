@@ -721,6 +721,49 @@ func TestHandleUpdate_SpendingQuery_OverallTotal_IncludesCategoryBreakdown(t *te
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_OverallTotal_UncategorizedGetsALabel covers
+// a real gap found from a live chat: a transaction with no category at all
+// (e.g. transaction.Service.CreateAdjustment's /sync "blind spot" entry,
+// reproduced here via a normal record with an empty CategoryName, which
+// resolveCategory treats identically — nil CategoryID) must not render as a
+// blank, unexplained breakdown line like "1. : Rp500.000,00 (...)" — it
+// needs the "Uncategorized"/"Tanpa kategori" label instead.
+func TestHandleUpdate_SpendingQuery_OverallTotal_UncategorizedGetsALabel(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "", Description: "blind spot adjustment",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "adjustment 500000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 100000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:      ai.IntentQuery,
+		QueryPeriod: ai.PeriodMonthly,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "pengeluaranku bulan ini apa saja?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, i18n.T(models.LanguageID, i18n.KeyUncategorizedLabel)) {
+		t.Errorf("reply = %q, want it to label the uncategorized transaction as %q instead of a blank line", got, i18n.T(models.LanguageID, i18n.KeyUncategorizedLabel))
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 500_000, "IDR")) {
+		t.Errorf("reply = %q, want it to still show the uncategorized transaction's amount", got)
+	}
+	// "1. : Rp..." — a colon directly preceded by whitespace/line-start with
+	// nothing before it — is exactly the blank line seen in the reported bug.
+	if strings.Contains(got, "1. : ") || strings.Contains(got, "2. : ") {
+		t.Errorf("reply = %q, must not contain a blank category name in the breakdown", got)
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_CategoryTotal covers the optional category
 // filter, including that the match is case-insensitive against the stored
 // category name.

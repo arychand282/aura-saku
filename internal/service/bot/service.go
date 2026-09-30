@@ -1031,7 +1031,7 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 	lines := []string{headline}
 	for i, c := range topCategories {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
-			i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), c.Total/expenseTotal*100))
+			i+1, categoryDisplayName(user.Language, c.CategoryName), i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), c.Total/expenseTotal*100))
 	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
@@ -1058,6 +1058,23 @@ func resolveQueryBucket(parsed *ai.ParsedTransaction) (models.BudgetBucket, bool
 		}
 	}
 	return "", false
+}
+
+// categoryDisplayName covers a real gap, not just cosmetics: category-total
+// query rows can come back with an empty CategoryName because
+// transaction.Service.CreateAdjustment (the /sync "blind spot" adjustment
+// entry) and any other transaction created with no category name at all
+// leave Transaction.CategoryID nil, which a LEFT JOIN to categories then
+// resolves to a NULL/empty name — rendering as a blank, unexplained line
+// like "1. : Rp3.432.000,00 (69% dari total)" instead of saying what that
+// spend actually is. Every other category name is shown as-is, in English,
+// regardless of language (see TopCategories' own doc comment on that
+// convention) — this only substitutes a translated label for the empty case.
+func categoryDisplayName(lang models.Language, name string) string {
+	if name == "" {
+		return i18n.T(lang, i18n.KeyUncategorizedLabel)
+	}
+	return name
 }
 
 // bucketDisplayName renders a BudgetBucket the same way every other
@@ -1101,7 +1118,7 @@ func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.Us
 	for i, c := range breakdown.Categories {
 		percent := c.Total / breakdown.Total * 100
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
-			i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
+			i+1, categoryDisplayName(user.Language, c.CategoryName), i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
 	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
@@ -1382,7 +1399,7 @@ func (s *Service) RunCategoryInsights(ctx context.Context) error {
 				percent = c.Total / insight.TotalExpense * 100
 			}
 			lines = append(lines, i18n.T(user.Language, i18n.KeyCategoryInsightItem,
-				i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
+				i+1, categoryDisplayName(user.Language, c.CategoryName), i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
 		}
 		if insight.IncreasedCategory != "" {
 			lines = append(lines, i18n.T(user.Language, i18n.KeyCategoryInsightWarning,
@@ -1422,7 +1439,7 @@ func categoryInsightSummaryForAI(insight *report.CategoryInsight) string {
 		if insight.TotalExpense > 0 {
 			percent = c.Total / insight.TotalExpense * 100
 		}
-		fmt.Fprintf(&b, "- %s: %.2f (%.0f%% of total)\n", c.CategoryName, c.Total, percent)
+		fmt.Fprintf(&b, "- %s: %.2f (%.0f%% of total)\n", categoryDisplayName(models.LanguageEN, c.CategoryName), c.Total, percent)
 	}
 	if insight.IncreasedCategory != "" {
 		fmt.Fprintf(&b, "%s increased the most since the month before: %.2f last month vs %.2f the month before (up %.0f%%).\n",
