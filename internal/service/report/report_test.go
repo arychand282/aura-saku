@@ -3,6 +3,7 @@ package report_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -234,6 +235,66 @@ func TestBucketSpending_NoExpensesReturnsZero(t *testing.T) {
 	}
 	if len(breakdown.Categories) != 0 {
 		t.Errorf("len(breakdown.Categories) = %d, want 0", len(breakdown.Categories))
+	}
+}
+
+// TestListTransactions_CategoryFilterAndPagination covers the itemized
+// listing behind a "what did I buy for food this month?" request: a
+// category filter that excludes an unrelated category, pagination capped at
+// report's own page size (10) with an accurate Total across every page (not
+// just the current one), and most-recent-first ordering.
+func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
+	gormDB := setupTestDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	const foodCount = 12
+	for i := 1; i <= foodCount; i++ {
+		if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+			Type: "expense", Amount: float64(i) * 1000, Currency: "IDR", CategoryName: "food", Description: fmt.Sprintf("item %d", i),
+		}, models.SourceText, fmt.Sprintf("food %d", i)); err != nil {
+			t.Fatalf("create food expense %d: %v", i, err)
+		}
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "rent", Description: "sewa",
+	}, models.SourceText, "rent 500000"); err != nil {
+		t.Fatalf("create unrelated rent expense: %v", err)
+	}
+
+	reportSvc := report.NewService(gormDB)
+	start, end, err := report.PeriodRange("monthly")
+	if err != nil {
+		t.Fatalf("PeriodRange: %v", err)
+	}
+
+	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", 0)
+	if err != nil {
+		t.Fatalf("ListTransactions page 1: %v", err)
+	}
+	if page1.Total != foodCount {
+		t.Errorf("page1.Total = %d, want %d (excluding the unrelated rent expense)", page1.Total, foodCount)
+	}
+	if len(page1.Items) != 10 {
+		t.Fatalf("len(page1.Items) = %d, want 10 (capped at the page size)", len(page1.Items))
+	}
+	if page1.Items[0].Description != "item 12" {
+		t.Errorf("page1.Items[0].Description = %q, want %q (most recent first)", page1.Items[0].Description, "item 12")
+	}
+
+	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", 10)
+	if err != nil {
+		t.Fatalf("ListTransactions page 2: %v", err)
+	}
+	if page2.Total != foodCount {
+		t.Errorf("page2.Total = %d, want %d", page2.Total, foodCount)
+	}
+	if len(page2.Items) != 2 {
+		t.Fatalf("len(page2.Items) = %d, want 2 (the remainder after the first page of 10)", len(page2.Items))
+	}
+	if page2.Items[0].Description != "item 2" || page2.Items[1].Description != "item 1" {
+		t.Errorf("page2.Items = %+v, want items 2 then 1 (still most-recent-first, continuing from page 1)", page2.Items)
 	}
 }
 

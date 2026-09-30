@@ -77,8 +77,13 @@ const (
 	KeyQueryCategoryNotFound      = "query_category_not_found"
 	KeyQuerySpendingByBucket      = "query_spending_by_bucket"
 	KeyQuerySpendingBreakdownItem = "query_spending_bucket_item"
-	KeyQuerySpendingBucketNone    = "query_spending_bucket_none"
+	KeyQuerySpendingScopeNone     = "query_spending_bucket_none"
 	KeyUncategorizedLabel         = "uncategorized_label"
+	KeyQuerySpendingListHeader    = "query_spending_list_header"
+	KeyQuerySpendingListHeaderAll = "query_spending_list_header_all"
+	KeyQuerySpendingListItem      = "query_spending_list_item"
+	KeyQuerySpendingListMore      = "query_spending_list_more"
+	KeyQuerySpendingListEmptyAll  = "query_spending_list_empty_all"
 	KeyLanguageUsage              = "language_usage"
 	KeyLanguageSet                = "language_set"
 	KeyInputTooLong               = "input_too_long"
@@ -155,8 +160,13 @@ var catalog = map[models.Language]map[string]string{
 		KeyQueryCategoryNotFound:      "I couldn't find a category matching \"%s\" — no spending recorded under that name %s.",
 		KeyQuerySpendingByBucket:      "You've spent %s on %s %s:",
 		KeyQuerySpendingBreakdownItem: "%d. %s: %s (%.0f%% of total)",
-		KeyQuerySpendingBucketNone:    "You haven't spent anything on %s %s.",
+		KeyQuerySpendingScopeNone:     "You haven't spent anything on %s %s.",
 		KeyUncategorizedLabel:         "Uncategorized",
+		KeyQuerySpendingListHeader:    "Here's what you spent on %s %s:",
+		KeyQuerySpendingListHeaderAll: "Here's what you spent %s:",
+		KeyQuerySpendingListItem:      "%d. %s — %s: %s (%s)",
+		KeyQuerySpendingListMore:      "...and %d more — say \"show me more\" to see the rest.",
+		KeyQuerySpendingListEmptyAll:  "You don't have any expenses %s.",
 		KeyLanguageUsage:              "Usage: /language <en|id>, e.g. /language id",
 		KeyLanguageSet:                "Language set to English.",
 		KeyInputTooLong:               "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
@@ -231,8 +241,13 @@ var catalog = map[models.Language]map[string]string{
 		KeyQueryCategoryNotFound:      "Aku tidak menemukan kategori yang cocok dengan \"%s\" — tidak ada pengeluaran tercatat dengan nama itu %s.",
 		KeyQuerySpendingByBucket:      "Kamu sudah menghabiskan %s untuk %s %s:",
 		KeyQuerySpendingBreakdownItem: "%d. %s: %s (%.0f%% dari total)",
-		KeyQuerySpendingBucketNone:    "Kamu belum ada pengeluaran untuk %s %s.",
+		KeyQuerySpendingScopeNone:     "Kamu belum ada pengeluaran untuk %s %s.",
 		KeyUncategorizedLabel:         "Tanpa kategori",
+		KeyQuerySpendingListHeader:    "Berikut pengeluaranmu untuk %s %s:",
+		KeyQuerySpendingListHeaderAll: "Berikut pengeluaranmu %s:",
+		KeyQuerySpendingListItem:      "%d. %s — %s: %s (%s)",
+		KeyQuerySpendingListMore:      "...dan %d lainnya — ketik \"lanjutkan\" untuk lihat selanjutnya.",
+		KeyQuerySpendingListEmptyAll:  "Kamu belum ada pengeluaran %s.",
 		KeyLanguageUsage:              "Cara pakai: /language <en|id>, contoh: /language id",
 		KeyLanguageSet:                "Bahasa diatur ke Bahasa Indonesia.",
 		KeyInputTooLong:               "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",

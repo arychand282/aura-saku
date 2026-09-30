@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -983,6 +984,11 @@ func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, t
 func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction) {
 	periodLabel := i18n.PeriodLabel(user.Language, parsed.QueryPeriod)
 
+	if parsed.QueryMode == ai.QueryModeList {
+		s.handleSpendingListQuery(ctx, user, parsed, periodLabel)
+		return
+	}
+
 	if bucket, ok := resolveQueryBucket(parsed); ok {
 		s.handleBucketSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel, bucket)
 		return
@@ -1033,6 +1039,160 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
 			i+1, categoryDisplayName(user.Language, c.CategoryName), i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), c.Total/expenseTotal*100))
 	}
+	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// spendingListCursor is the small piece of state a "show me more"/"lanjutkan"
+// follow-up needs to resume exactly where the previous list left off. The
+// model is never asked to track a numeric offset across turns — that's
+// exactly the kind of arithmetic a language model does unreliably once a
+// few turns separate the original list from the follow-up — so bot.Service
+// keeps it server-side instead, scoped to the user and matched against the
+// same period/category/bucket before it's trusted (see
+// handleSpendingListQuery).
+type spendingListCursor struct {
+	Period        string `json:"period"`
+	CategoryQuery string `json:"category_query"`
+	Bucket        string `json:"bucket"`
+	NextOffset    int    `json:"next_offset"`
+}
+
+// spendingListCursorTTL is generous enough to survive a user pausing mid
+// conversation to think, but short enough that a stale cursor from a
+// long-abandoned list never resurfaces days later against an unrelated
+// "lanjutkan" about something else entirely.
+const spendingListCursorTTL = 15 * time.Minute
+
+func spendingListCursorKey(userID uint) string {
+	return fmt.Sprintf("aura:spendinglistcursor:%d", userID)
+}
+
+// saveSpendingListCursor persists where a list reply left off. Failing to
+// save is never fatal to the reply that already went out — worst case, the
+// next "lanjutkan" doesn't find a cursor and restarts from the first page,
+// which handleSpendingListQuery already treats as an acceptable fallback.
+func (s *Service) saveSpendingListCursor(ctx context.Context, userID uint, cursor spendingListCursor) {
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("encode spending list cursor for user %d", userID), err)
+		return
+	}
+	if err := s.redisClient.Set(ctx, spendingListCursorKey(userID), data, spendingListCursorTTL).Err(); err != nil {
+		logger.Error(logger.RedisOpFailed, fmt.Sprintf("save spending list cursor for user %d", userID), err)
+	}
+}
+
+// loadSpendingListCursor returns (nil, false) for a missing/expired cursor
+// (redis.Nil) exactly the same as for a real Redis error or a corrupt
+// value — every one of those cases means the same thing to the caller:
+// there's nothing safe to resume, start over from the first page.
+func (s *Service) loadSpendingListCursor(ctx context.Context, userID uint) (*spendingListCursor, bool) {
+	data, err := s.redisClient.Get(ctx, spendingListCursorKey(userID)).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var cursor spendingListCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return nil, false
+	}
+	return &cursor, true
+}
+
+// clearSpendingListCursor is called once a list reply reaches its last
+// page, so a later unrelated "lanjutkan" (about a completely different
+// question by then) can never wrongly resume a list that's already fully
+// shown. Best-effort — the TTL would clean it up anyway.
+func (s *Service) clearSpendingListCursor(ctx context.Context, userID uint) {
+	s.redisClient.Del(ctx, spendingListCursorKey(userID))
+}
+
+// handleSpendingListQuery answers a "beli apa aja buat food bulan ini?"
+// (what did I buy for food this month?) / "listing pengeluaran wants bulan
+// ini" style request — ai.QueryModeList — with the actual individual
+// transactions instead of a sum, capped at report.transactionListPageSize
+// per reply with a "+N more" note, and resumable via QueryListMore instead
+// of ever asking the model to compute which page comes next.
+//
+// A category filter (categoryQuery) and a bucket filter are mutually
+// exclusive, same precedence as resolveQueryBucket: if the bucket resolves
+// (from QueryBucket or a QueryCategory that happens to be a bucket name),
+// it wins and no category filter is applied. Leaving both empty lists every
+// expense transaction in the period.
+//
+// Unlike CategoryTotal's total-query path, this does not distinguish "that
+// category doesn't exist" from "that category exists but has no spending
+// this period" — both simply produce zero matching transactions, and a
+// single "nothing to show" reply covers both honestly enough without a
+// second existence-check query.
+func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction, periodLabel string) {
+	bucket, hasBucket := resolveQueryBucket(parsed)
+	categoryQuery := parsed.QueryCategory
+	if hasBucket {
+		categoryQuery = ""
+	}
+
+	offset := 0
+	if parsed.QueryListMore {
+		if cursor, ok := s.loadSpendingListCursor(ctx, user.ID); ok &&
+			cursor.Period == parsed.QueryPeriod && cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) {
+			offset = cursor.NextOffset
+		}
+		// No matching cursor (expired, or the model attached QueryListMore
+		// to a request that doesn't actually match the previous list) —
+		// silently start over from the first page rather than erroring;
+		// that's still a sensible answer to "lanjutkan".
+	}
+
+	start, end, err := report.PeriodRange(parsed.QueryPeriod)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("resolve period for spending list query for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+
+	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, categoryQuery, bucket, offset)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("spending list query for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+
+	scopeLabel := categoryQuery
+	if scopeLabel == "" && hasBucket {
+		scopeLabel = bucketDisplayName(bucket)
+	}
+
+	if len(page.Items) == 0 {
+		if scopeLabel != "" {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingScopeNone, scopeLabel, periodLabel))
+		} else {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingListEmptyAll, periodLabel))
+		}
+		return
+	}
+
+	var lines []string
+	if scopeLabel != "" {
+		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeader, scopeLabel, periodLabel)}
+	} else {
+		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeaderAll, periodLabel)}
+	}
+	for i, item := range page.Items {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItem,
+			offset+i+1, item.OccurredAt.Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName),
+			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
+	}
+
+	shown := offset + len(page.Items)
+	if remaining := page.Total - shown; remaining > 0 {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
+		s.saveSpendingListCursor(ctx, user.ID, spendingListCursor{
+			Period: parsed.QueryPeriod, CategoryQuery: categoryQuery, Bucket: string(bucket), NextOffset: shown,
+		})
+	} else {
+		s.clearSpendingListCursor(ctx, user.ID)
+	}
+
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
@@ -1109,7 +1269,7 @@ func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.Us
 
 	label := bucketDisplayName(bucket)
 	if breakdown.Total <= 0 {
-		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingBucketNone, label, periodLabel))
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingScopeNone, label, periodLabel))
 		return
 	}
 

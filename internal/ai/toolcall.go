@@ -28,6 +28,8 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			QueryPeriod:   argString(args, "query_period"),
 			QueryCategory: argString(args, "query_category"),
 			QueryBucket:   argString(args, "query_bucket"),
+			QueryMode:     argString(args, "query_mode"),
+			QueryListMore: argBool(args, "query_list_more"),
 		}
 	case prompt.ToolGetBalance:
 		return &ParsedTransaction{Intent: IntentBalance}
@@ -106,4 +108,13 @@ func argUint(args map[string]interface{}, key string) uint {
 func argInt(args map[string]interface{}, key string) int {
 	f, _ := args[key].(float64)
 	return int(f)
+}
+
+// argBool reads a boolean-valued argument — a missing key (the common case,
+// since a boolean tool property is only ever sent when true by most
+// providers) collapses to false, the same "unspecified" default every other
+// argN helper here uses for its own zero value.
+func argBool(args map[string]interface{}, key string) bool {
+	b, _ := args[key].(bool)
+	return b
 }

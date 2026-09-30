@@ -182,6 +182,15 @@ func TransactionTools() []Tool {
 					Description: "Set this instead of query_category when the message asks about spending in a 50/30/20 budget bucket AS A WHOLE, not one specific category — e.g. \"berapa pengeluaran kebutuhanku?\" (needs), \"how much did I spend on wants?\", or a confirmation replying to the assistant's own previous message that just flagged/offered a Needs/Wants/Savings breakdown (see query_category's note on resolving such confirmations). Leave empty otherwise.",
 					Enum:        []string{"needs", "wants", "savings"},
 				},
+				"query_mode": {
+					Type:        "string",
+					Description: "Set to \"list\" when the message asks to SEE or LIST the actual individual transactions/purchases, not a sum — e.g. \"beli apa aja buat food bulan ini?\" (what did I buy for food this month?), \"listing semua pengeluaran untuk makanan\", \"rincian pengeluaran wants\", \"what did I buy this month\". Leave empty (defaults to a plain total/breakdown) for a \"how much\" style question — that's the far more common case.",
+					Enum:        []string{"total", "list"},
+				},
+				"query_list_more": {
+					Type:        "boolean",
+					Description: "Only meaningful when query_mode is \"list\". Set true when this message is asking to continue/see more of a list YOU (the assistant) just showed in your immediately previous reply — e.g. \"lanjutkan\", \"lanjut dong\", \"ada lagi?\", \"show me more\", \"next\" — rather than starting a brand-new list request. When true, still set query_period/query_category/query_bucket to the SAME values you used for that previous list (the server tracks exactly which page comes next on its own — never try to guess or state an offset/page number yourself). Leave false/omitted for a fresh list request.",
+				},
 			},
 			Required: []string{"query_period"},
 		},
@@ -254,7 +263,7 @@ Decide which tool (if any) matches the user's message. Call record_transaction o
 
 Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.
 
-The same history check applies to a short confirmation with no content of its own ("iya", "iya tolong", "yes please", "boleh") — it almost always answers a question YOU (the assistant) just asked in the previous turn, not a fresh request in isolation. If your previous message offered to break down spending by a specific category or budget bucket, treat this confirmation as a query_spending call for that exact category/bucket (see query_spending's query_category and query_bucket fields), never as a generic total.`,
+The same history check applies to a short confirmation with no content of its own ("iya", "iya tolong", "yes please", "boleh") — it almost always answers a question YOU (the assistant) just asked in the previous turn, not a fresh request in isolation. If your previous message offered to break down spending by a specific category or budget bucket, treat this confirmation as a query_spending call for that exact category/bucket (see query_spending's query_category and query_bucket fields), never as a generic total. Likewise, a short continuation request ("lanjutkan", "lanjut", "ada lagi?", "show me more", "next") right after you showed a numbered spending list means another query_spending call with query_mode="list", query_list_more=true, and the SAME period/category/bucket as that list — never a fresh, unfiltered request.`,
 		today.UTC().Format("2006-01-02"),
 		defaultCurrency,
 		toolCallingLanguageName(preferredLanguage),

@@ -270,6 +270,81 @@ func (s *Service) BucketSpending(ctx context.Context, userID uint, period string
 	return breakdown, nil
 }
 
+// transactionListPageSize caps a single reply to ListTransactions' caller at
+// this many items — a user asking "what did I buy for X" gets the 10 most
+// recent, with the total match count telling the caller how many more exist
+// for a "+N more, say 'show more' to continue" note, rather than dumping a
+// potentially huge list in one message.
+const transactionListPageSize = 10
+
+// TransactionListItem is one row of ListTransactions' result — the same
+// flat, JOIN-flattened shape as the dashboard's TransactionRow
+// (internal/api/handlers/transaction_query.go), duplicated here rather than
+// imported since a service package importing an api/handlers package would
+// be a layering inversion neither side needs otherwise.
+type TransactionListItem struct {
+	OccurredAt   time.Time
+	CategoryName string
+	Description  string
+	Amount       float64
+}
+
+// TransactionListPage is one page of ListTransactions' paginated result —
+// Total is the full match count across every page, not just len(Items), so
+// a caller can compute how many more remain beyond this page.
+type TransactionListPage struct {
+	Items []TransactionListItem
+	Total int
+}
+
+// ListTransactions returns one page of a user's expense transactions within
+// [start, end), most-recent-first — the data behind a natural-language
+// "what did I buy for X" / "list my Y expenses" listing request, as opposed
+// to query_spending's aggregate total/breakdown modes above. At most one of
+// categoryQuery (ILIKE match, same convention as CategoryTotal) or bucket
+// (same COALESCE resolution as BucketSpending) should be set — leave both
+// empty to list every expense in the period regardless of category. offset
+// is the caller-tracked pagination cursor (see bot.Service's short-lived
+// Redis cursor); this always returns at most transactionListPageSize items
+// starting from it, ordered with the row id as a tiebreaker so pagination
+// stays stable even when two transactions share the exact same OccurredAt.
+func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, categoryQuery string, bucket models.BudgetBucket, offset int) (*TransactionListPage, error) {
+	where := "transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at >= ? AND transactions.occurred_at < ?"
+	args := []interface{}{userID, models.TxExpense, start, end}
+
+	switch {
+	case categoryQuery != "":
+		where += " AND categories.name ILIKE ?"
+		args = append(args, "%"+categoryQuery+"%")
+	case bucket != "":
+		where += " AND COALESCE(transactions.bucket, categories.bucket, 'none') = ?"
+		args = append(args, string(bucket))
+	}
+
+	var total int64
+	if err := s.db.WithContext(ctx).Table("transactions").
+		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
+		Where(where, args...).
+		Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("count transactions for listing: %w", err)
+	}
+
+	var items []TransactionListItem
+	if err := s.db.WithContext(ctx).Table("transactions").
+		Select(`transactions.occurred_at, COALESCE(categories.name, '') as category_name,
+			transactions.description, transactions.converted_amount as amount`).
+		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
+		Where(where, args...).
+		Order("transactions.occurred_at DESC, transactions.id DESC").
+		Offset(offset).
+		Limit(transactionListPageSize).
+		Scan(&items).Error; err != nil {
+		return nil, fmt.Errorf("list transactions: %w", err)
+	}
+
+	return &TransactionListPage{Items: items, Total: int(total)}, nil
+}
+
 // CategoryTotal sums expense transactions in the given period whose category
 // name matches categoryQuery (case-insensitive partial match, e.g. "food"
 // matches a "Food" category). matched=false means no category exists

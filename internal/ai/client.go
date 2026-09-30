@@ -30,6 +30,12 @@ const (
 	PeriodYearly  = "yearly"
 )
 
+// QueryModeList is ParsedTransaction.QueryMode's non-default value — see
+// that field's own doc comment. There's no QueryModeTotal constant since
+// empty (and any unrecognized value) already means "total", the original
+// behavior before QueryMode existed.
+const QueryModeList = "list"
+
 // ParsedTransaction is the structured-output contract every provider must
 // populate from free-form text or transcribed audio. See
 // internal/ai/prompt/tool_schema.go for the declared tool/parameter shapes
@@ -138,6 +144,25 @@ type ParsedTransaction struct {
 	// parse that puts a bucket word here instead — see
 	// bot.Service.handleSpendingQuery.
 	QueryBucket string `json:"query_bucket,omitempty"`
+
+	// QueryMode switches IntentQuery between an aggregate answer (the
+	// original behavior, when empty/unrecognized) and QueryModeList — an
+	// itemized listing of the individual matching transactions instead of a
+	// sum, for a message like "beli apa aja buat food bulan ini?" (what did
+	// I buy for food this month?) rather than "how much did I spend on
+	// food?". Only meaningful together with QueryCategory/QueryBucket (or
+	// neither, meaning "list everything this period").
+	QueryMode string `json:"query_mode,omitempty"`
+
+	// QueryListMore is only meaningful when QueryMode == QueryModeList: true
+	// means this message is asking to continue/see more of a list the
+	// assistant just showed (e.g. "lanjutkan", "show me more"), rather than
+	// starting a fresh list. The model is never asked to track which page
+	// comes next — bot.Service keeps a short-lived server-side cursor
+	// (keyed by user + the same period/category/bucket) for that, since
+	// asking a language model to do that arithmetic reliably across turns
+	// is exactly the kind of thing that silently drifts wrong.
+	QueryListMore bool `json:"query_list_more,omitempty"`
 }
 
 type UsageMetadata struct {

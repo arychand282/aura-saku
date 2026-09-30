@@ -911,6 +911,100 @@ func TestHandleUpdate_SpendingQuery_BucketBreakdown_CategoryFieldFallback(t *tes
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_ListByCategory covers "beli apa aja buat
+// food bulan ini?" (what did I buy for food this month?) style requests —
+// ai.QueryModeList — which must reply with the individual transactions
+// (date, category, amount, description), not a total.
+func TestHandleUpdate_SpendingQuery_ListByCategory(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 30_000, Currency: "IDR", CategoryName: "food", Description: "nasi goreng",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nasi goreng 30000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food", Description: "es teh",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "es teh 20000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "food", QueryMode: ai.QueryModeList,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "untuk food beli apa aja bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "nasi goreng") || !strings.Contains(got, "es teh") {
+		t.Errorf("reply = %q, want it to list both purchases by description", got)
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 30_000, "IDR")) ||
+		!strings.Contains(got, i18n.FormatMoney(models.LanguageID, 20_000, "IDR")) {
+		t.Errorf("reply = %q, want it to show each item's own amount, not a total", got)
+	}
+	wantTotal := i18n.FormatMoney(models.LanguageID, 50_000, "IDR")
+	if strings.Contains(got, wantTotal) {
+		t.Errorf("reply = %q, must not collapse to the combined total %s", got, wantTotal)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_ListPagination covers the requested
+// pagination behavior: a list capped at 10 items with a "+N more" note, and
+// a follow-up "lanjutkan" (QueryListMore=true, same period/category) resumes
+// from the server-side cursor instead of repeating the first page or
+// requiring the model to compute an offset itself.
+func TestHandleUpdate_SpendingQuery_ListPagination(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 20})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	for i := 1; i <= 12; i++ {
+		env.ai.parseResult = &ai.ParsedTransaction{
+			Type: "expense", Amount: float64(i) * 1000, Currency: "IDR", CategoryName: "food",
+			Description: fmt.Sprintf("item %d", i),
+		}
+		svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: fmt.Sprintf("food item %d, %d000", i, i)})
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "food", QueryMode: ai.QueryModeList,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "listing pengeluaran food bulan ini"})
+
+	firstPage := env.messenger.last(chatID)
+	if !strings.Contains(firstPage, "item 12") || !strings.Contains(firstPage, "item 3") {
+		t.Errorf("firstPage = %q, want the 10 most recent items (12 down to 3)", firstPage)
+	}
+	if strings.Contains(firstPage, "item 1)") || strings.Contains(firstPage, "item 2)") {
+		t.Errorf("firstPage = %q, must not already include items 1 or 2 (those are on page 2)", firstPage)
+	}
+	if !strings.Contains(firstPage, i18n.T(models.LanguageID, i18n.KeyQuerySpendingListMore, 2)) {
+		t.Errorf("firstPage = %q, want a \"+2 more\" style note for the 2 remaining items", firstPage)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	t.Cleanup(func() { env.redis.Del(context.Background(), fmt.Sprintf("aura:spendinglistcursor:%d", user.ID)) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "food", QueryMode: ai.QueryModeList, QueryListMore: true,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "lanjutkan"})
+
+	secondPage := env.messenger.last(chatID)
+	if !strings.Contains(secondPage, "item 2") || !strings.Contains(secondPage, "item 1") {
+		t.Errorf("secondPage = %q, want the remaining items 2 and 1", secondPage)
+	}
+	if strings.Contains(secondPage, "item 12") || strings.Contains(secondPage, "item 3") {
+		t.Errorf("secondPage = %q, must not repeat items already shown on the first page", secondPage)
+	}
+}
+
 // TestHandleUpdate_Sync_NoArgumentShowsBalance covers /sync with no
 // argument reporting the calculated balance directly, instead of falling
 // into the usage-instructions reply.
