@@ -42,6 +42,12 @@ const rolloverNudgeInterval = 24 * time.Hour
 // date instead of being up to a day late.
 const recurringTransactionsInterval = 1 * time.Hour
 
+// categoryInsightInterval controls how often RunCategoryInsights checks
+// whether a user's monthly recap is due — its own constant (not reusing
+// rolloverNudgeInterval, even though the value matches) so each job's
+// cadence can be tuned independently later.
+const categoryInsightInterval = 24 * time.Hour
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -100,6 +106,11 @@ func main() {
 			Name:     "recurring-transactions",
 			Interval: recurringTransactionsInterval,
 			Run:      botSvc.RunRecurringTransactions,
+		},
+		scheduler.Job{
+			Name:     "category-insights",
+			Interval: categoryInsightInterval,
+			Run:      botSvc.RunCategoryInsights,
 		},
 	).Start(schedulerCtx)
 

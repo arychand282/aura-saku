@@ -107,6 +107,10 @@ const (
 
 	KeyBillReminderCreated = "bill_reminder_created"
 	KeyBillReminderDue     = "bill_reminder_due"
+
+	KeyCategoryInsightHeader  = "category_insight_header"
+	KeyCategoryInsightItem    = "category_insight_item"
+	KeyCategoryInsightWarning = "category_insight_warning"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -161,6 +165,10 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyBillReminderCreated: "🔔 Reminder set for %s of %s for \"%s\" — I'll notify you on day %d of each month, starting %s. I won't record it automatically; let me know when you've paid it.",
 		KeyBillReminderDue:     "🔔 Reminder: your %s of %s for \"%s\" is due today.",
+
+		KeyCategoryInsightHeader:  "📊 Your top spending categories last month (total: %s):",
+		KeyCategoryInsightItem:    "%d. %s: %s (%.0f%% of total)",
+		KeyCategoryInsightWarning: "⚠️ %s increased the most compared to the month before — %s last month vs %s the month before (up %.0f%%). Consider limiting this category to save more.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                 "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -213,6 +221,10 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyBillReminderCreated: "🔔 Pengingat diatur untuk %s sebesar %s untuk \"%s\" — aku akan mengingatkanmu tiap tanggal %d, mulai %s. Aku tidak akan mencatatnya otomatis; kabari aku kalau sudah dibayar.",
 		KeyBillReminderDue:     "🔔 Pengingat: %s sebesar %s untuk \"%s\" jatuh tempo hari ini.",
+
+		KeyCategoryInsightHeader:  "📊 Kategori pengeluaran terbesarmu bulan lalu (total: %s):",
+		KeyCategoryInsightItem:    "%d. %s: %s (%.0f%% dari total)",
+		KeyCategoryInsightWarning: "⚠️ %s naik paling banyak dibanding bulan sebelumnya — %s bulan lalu vs %s bulan sebelumnya (naik %.0f%%). Pertimbangkan untuk membatasi kategori ini agar bisa menabung lebih banyak.",
 	},
 }
 

@@ -108,6 +108,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyRecurringListEmpty, KeyRecurringListItem, KeyRecurringModeReminder,
 		KeyRecurringCancelUsage, KeyRecurringCancelSuccess, KeyRecurringCancelNotFound,
 		KeyBillReminderCreated, KeyBillReminderDue,
+		KeyCategoryInsightHeader, KeyCategoryInsightItem, KeyCategoryInsightWarning,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

@@ -925,3 +925,107 @@ func (s *Service) RunRecurringTransactions(ctx context.Context) error {
 	}
 	return nil
 }
+
+// categoryInsightTTL mirrors rolloverNudgeTTL's reasoning exactly — long
+// enough to cover the rest of the calendar month it was set in regardless
+// of how often the scheduler ticks, short enough to never bleed into the
+// next month's own (differently-keyed) check.
+const categoryInsightTTL = 32 * 24 * time.Hour
+
+// RunCategoryInsights messages every active user with an end-of-month
+// breakdown of last month's spending by category (see
+// report.Service.MonthlyCategoryInsight), highlighting whichever category
+// grew the most since the month before, plus a short AI-generated
+// suggestion for what to do about it. Guarded by the same per-user,
+// per-calendar-month idempotency pattern as RunBudgetRolloverNudges, so
+// it's safe to call on every scheduler tick. The AI suggestion is
+// best-effort: the deterministic header/list/warning lines need no AI call
+// at all, so if SuggestSavings fails, the recap still sends without that
+// one extra line rather than being dropped entirely over it. Intended to
+// be registered as a scheduler.Job's Run, not called from any user-facing
+// path. One user's failure is logged and skipped rather than aborting the
+// whole run — every other user must still get checked.
+func (s *Service) RunCategoryInsights(ctx context.Context) error {
+	var users []models.User
+	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Find(&users).Error; err != nil {
+		return fmt.Errorf("list active users for category insights: %w", err)
+	}
+
+	namespace := "category-insight:" + time.Now().UTC().Format("2006-01")
+	for _, user := range users {
+		isNew, err := idempotency.MarkSeen(ctx, s.redisClient, namespace, strconv.FormatUint(uint64(user.ID), 10), categoryInsightTTL)
+		if err != nil {
+			logger.Error(logger.RedisOpFailed, fmt.Sprintf("category insight idempotency check for user %d, skipping this tick", user.ID), err)
+			continue
+		}
+		if !isNew {
+			// Already notified this calendar month.
+			continue
+		}
+
+		insight, err := s.reportSvc.MonthlyCategoryInsight(ctx, user.ID)
+		if err != nil {
+			logger.Error(logger.SvcCategoryInsightFailed, fmt.Sprintf("compute category insight for user %d", user.ID), err)
+			continue
+		}
+		if insight == nil {
+			// No expenses recorded at all last month — nothing to report.
+			continue
+		}
+
+		lines := []string{i18n.T(user.Language, i18n.KeyCategoryInsightHeader,
+			i18n.FormatMoney(user.Language, insight.TotalExpense, user.DefaultCurrency))}
+		for i, c := range insight.TopCategories {
+			var percent float64
+			if insight.TotalExpense > 0 {
+				percent = c.Total / insight.TotalExpense * 100
+			}
+			lines = append(lines, i18n.T(user.Language, i18n.KeyCategoryInsightItem,
+				i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
+		}
+		if insight.IncreasedCategory != "" {
+			lines = append(lines, i18n.T(user.Language, i18n.KeyCategoryInsightWarning,
+				insight.IncreasedCategory,
+				i18n.FormatMoney(user.Language, insight.IncreasedLastMonth, user.DefaultCurrency),
+				i18n.FormatMoney(user.Language, insight.IncreasedPriorMonth, user.DefaultCurrency),
+				insight.IncreasedPercent))
+		}
+
+		suggestion, usageMeta, sugErr := s.aiClient.SuggestSavings(ctx, categoryInsightSummaryForAI(insight), string(user.Language))
+		if sugErr != nil {
+			logger.Error(logger.AISuggestSavingsFailed, fmt.Sprintf("suggest savings for user %d", user.ID), sugErr)
+		} else {
+			lines = append(lines, "💡 "+suggestion)
+			// System-triggered, not user-initiated — never counted against
+			// the interactive daily quota (no quota.Increment call), but
+			// still logged for cost visibility like every other real AI call.
+			s.usageSvc.RecordAICall(ctx, user.ID, models.AIProvider(s.aiClient.ProviderName()), "savings_suggestion", usageMeta)
+		}
+
+		s.reply(ctx, &user, strings.Join(lines, "\n"))
+	}
+	return nil
+}
+
+// categoryInsightSummaryForAI builds the plain-language (English, same
+// convention as category names being internal-only) description of insight
+// fed to ai.AIClient.SuggestSavings — the model renders its actual reply in
+// the user's preferred language regardless of the language this input is
+// written in.
+func categoryInsightSummaryForAI(insight *report.CategoryInsight) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Total expenses last month: %.2f.\n", insight.TotalExpense)
+	b.WriteString("Top categories last month:\n")
+	for _, c := range insight.TopCategories {
+		var percent float64
+		if insight.TotalExpense > 0 {
+			percent = c.Total / insight.TotalExpense * 100
+		}
+		fmt.Fprintf(&b, "- %s: %.2f (%.0f%% of total)\n", c.CategoryName, c.Total, percent)
+	}
+	if insight.IncreasedCategory != "" {
+		fmt.Fprintf(&b, "%s increased the most since the month before: %.2f last month vs %.2f the month before (up %.0f%%).\n",
+			insight.IncreasedCategory, insight.IncreasedLastMonth, insight.IncreasedPriorMonth, insight.IncreasedPercent)
+	}
+	return b.String()
+}

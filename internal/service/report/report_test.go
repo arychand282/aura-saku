@@ -172,3 +172,148 @@ func TestCategoryTotal_NotFound(t *testing.T) {
 		t.Errorf("total = %.2f, want 0", total)
 	}
 }
+
+// dateInMonthsAgo returns an OccurredAtHint (YYYY-MM-DD) for the 10th of
+// the calendar month monthsAgo months before now — enough to land solidly
+// inside that month regardless of today's actual day-of-month.
+func dateInMonthsAgo(monthsAgo int) string {
+	t := time.Now().UTC().AddDate(0, -monthsAgo, 0)
+	return time.Date(t.Year(), t.Month(), 10, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+}
+
+func createExpense(t *testing.T, txSvc *transaction.Service, userID uint, amount float64, category, occurredAtHint string) {
+	t.Helper()
+	if _, err := txSvc.CreateFromParsed(context.Background(), userID, "IDR", &ai.ParsedTransaction{
+		Type: "expense", Amount: amount, Currency: "IDR", CategoryName: category, OccurredAtHint: occurredAtHint,
+	}, models.SourceText, category+" "+occurredAtHint); err != nil {
+		t.Fatalf("create expense (%s, %s): %v", category, occurredAtHint, err)
+	}
+}
+
+// TestMonthlyCategoryInsight_TopCategoriesAndIncrease covers the main path:
+// last month's top 3 categories by amount, and the single category (out of
+// possibly more than 3) that grew the most since the month before, with
+// both months' real totals kept (not just the delta) so a caller can show
+// a side-by-side comparison.
+func TestMonthlyCategoryInsight_TopCategoriesAndIncrease(t *testing.T) {
+	gormDB := setupTestDB(t)
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	lastMonth := dateInMonthsAgo(1)
+	priorMonth := dateInMonthsAgo(2)
+
+	// Last month: food, transport, entertainment — food and transport are
+	// brand new categories (no prior-month baseline), entertainment tripled
+	// from 200,000 to 600,000 (+200%, well above the 15% threshold).
+	createExpense(t, txSvc, user.ID, 1_200_000, "food", lastMonth)
+	createExpense(t, txSvc, user.ID, 800_000, "transport", lastMonth)
+	createExpense(t, txSvc, user.ID, 600_000, "entertainment", lastMonth)
+	createExpense(t, txSvc, user.ID, 200_000, "entertainment", priorMonth)
+
+	reportSvc := report.NewService(gormDB)
+	insight, err := reportSvc.MonthlyCategoryInsight(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("MonthlyCategoryInsight: %v", err)
+	}
+	if insight == nil {
+		t.Fatal("insight = nil, want a real result")
+	}
+
+	if insight.TotalExpense != 2_600_000 {
+		t.Errorf("TotalExpense = %.2f, want 2600000.00", insight.TotalExpense)
+	}
+	if len(insight.TopCategories) != 3 {
+		t.Fatalf("len(TopCategories) = %d, want 3", len(insight.TopCategories))
+	}
+	if insight.TopCategories[0].CategoryName != "food" || insight.TopCategories[0].Total != 1_200_000 {
+		t.Errorf("TopCategories[0] = %+v, want {food 1200000}", insight.TopCategories[0])
+	}
+
+	if insight.IncreasedCategory != "entertainment" {
+		t.Fatalf("IncreasedCategory = %q, want \"entertainment\"", insight.IncreasedCategory)
+	}
+	if insight.IncreasedLastMonth != 600_000 {
+		t.Errorf("IncreasedLastMonth = %.2f, want 600000.00", insight.IncreasedLastMonth)
+	}
+	if insight.IncreasedPriorMonth != 200_000 {
+		t.Errorf("IncreasedPriorMonth = %.2f, want 200000.00", insight.IncreasedPriorMonth)
+	}
+	if insight.IncreasedPercent != 200 {
+		t.Errorf("IncreasedPercent = %.2f, want 200.00", insight.IncreasedPercent)
+	}
+}
+
+// TestMonthlyCategoryInsight_BelowThresholdIsNotFlagged covers the
+// significance cutoff: a category that grew, but by less than
+// categoryIncreaseThresholdPercent (15%), must not be flagged — otherwise
+// ordinary month-to-month noise would get called out every time.
+func TestMonthlyCategoryInsight_BelowThresholdIsNotFlagged(t *testing.T) {
+	gormDB := setupTestDB(t)
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	lastMonth := dateInMonthsAgo(1)
+	priorMonth := dateInMonthsAgo(2)
+
+	// 100,000 -> 110,000 is a 10% increase, below the 15% threshold.
+	createExpense(t, txSvc, user.ID, 110_000, "food", lastMonth)
+	createExpense(t, txSvc, user.ID, 100_000, "food", priorMonth)
+
+	reportSvc := report.NewService(gormDB)
+	insight, err := reportSvc.MonthlyCategoryInsight(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("MonthlyCategoryInsight: %v", err)
+	}
+	if insight == nil {
+		t.Fatal("insight = nil, want a real result (last month did have expenses)")
+	}
+	if insight.IncreasedCategory != "" {
+		t.Errorf("IncreasedCategory = %q, want \"\" (a 10%% increase must not clear the 15%% threshold)", insight.IncreasedCategory)
+	}
+}
+
+// TestMonthlyCategoryInsight_NoPriorMonthOmitsIncrease covers a brand-new
+// user (or a fresh category) with only one month of history: the
+// top-categories list still works, but nothing gets flagged as "increased"
+// since there's no valid baseline to compare against.
+func TestMonthlyCategoryInsight_NoPriorMonthOmitsIncrease(t *testing.T) {
+	gormDB := setupTestDB(t)
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	createExpense(t, txSvc, user.ID, 500_000, "food", dateInMonthsAgo(1))
+
+	reportSvc := report.NewService(gormDB)
+	insight, err := reportSvc.MonthlyCategoryInsight(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("MonthlyCategoryInsight: %v", err)
+	}
+	if insight == nil {
+		t.Fatal("insight = nil, want a real result")
+	}
+	if len(insight.TopCategories) != 1 || insight.TopCategories[0].Total != 500_000 {
+		t.Errorf("TopCategories = %+v, want a single 500000 food entry", insight.TopCategories)
+	}
+	if insight.IncreasedCategory != "" {
+		t.Errorf("IncreasedCategory = %q, want \"\" (no prior month to compare against)", insight.IncreasedCategory)
+	}
+}
+
+// TestMonthlyCategoryInsight_NoExpensesReturnsNil covers the "nothing to
+// report" case — no expenses at all last month means MonthlyCategoryInsight
+// returns (nil, nil), the same "empty means nothing to report" convention
+// budget.Service.SuggestRollover uses for an empty string.
+func TestMonthlyCategoryInsight_NoExpensesReturnsNil(t *testing.T) {
+	gormDB := setupTestDB(t)
+	user := newTestUser(t, gormDB)
+
+	reportSvc := report.NewService(gormDB)
+	insight, err := reportSvc.MonthlyCategoryInsight(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("MonthlyCategoryInsight: %v", err)
+	}
+	if insight != nil {
+		t.Errorf("insight = %+v, want nil", insight)
+	}
+}

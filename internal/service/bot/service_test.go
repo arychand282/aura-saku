@@ -100,6 +100,11 @@ type mockAIClient struct {
 	// call was given — lets a test assert bot.Service actually threaded
 	// real prior turns through, not just that it compiles.
 	lastHistory ai.ConversationContext
+
+	// suggestSavingsErr, when set, makes SuggestSavings fail — used to
+	// verify RunCategoryInsights still sends the deterministic part of its
+	// message when the AI suggestion call errors out.
+	suggestSavingsErr error
 }
 
 func (m *mockAIClient) call(history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
@@ -139,6 +144,18 @@ func (m *mockAIClient) AnswerClarification(ctx context.Context, originalText, cl
 // at the right message count.
 func (m *mockAIClient) Summarize(ctx context.Context, priorSummary string, turns []ai.ConversationTurn, preferredLanguage string) (string, *ai.UsageMetadata, error) {
 	return "mock summary", &ai.UsageMetadata{Model: "mock-model"}, nil
+}
+
+// mockSavingsSuggestion is the fixed text SuggestSavings returns on
+// success — a distinctive string so a test can assert it made it into the
+// final composed message.
+const mockSavingsSuggestion = "mock savings suggestion: cut back on your top category"
+
+func (m *mockAIClient) SuggestSavings(ctx context.Context, spendingSummary, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	if m.suggestSavingsErr != nil {
+		return "", nil, m.suggestSavingsErr
+	}
+	return mockSavingsSuggestion, &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
 func (m *mockAIClient) ProviderName() string { return "mock" }
@@ -1433,5 +1450,121 @@ func TestRunRecurringTransactions_ReminderOnlyNeverPostsATransaction(t *testing.
 	wantNext := past.AddDate(0, 1, 0)
 	if !rtAfter.NextRunAt.Equal(wantNext) {
 		t.Errorf("NextRunAt after the reminder fired = %v, want exactly one month after the backdated value (%v) — the schedule must still advance even though nothing was recorded", rtAfter.NextRunAt, wantNext)
+	}
+}
+
+// TestRunCategoryInsights covers the third scheduler job (see
+// cmd/server/main.go): a user with real category spending from LAST
+// calendar month gets a proactive recap — top categories, a side-by-side
+// comparison for whichever category grew the most since the month before,
+// and an AI-generated suggestion appended — exactly once, with a second
+// same-month call being a no-op (same idempotency guard as
+// RunBudgetRolloverNudges/RunRecurringTransactions).
+func TestRunCategoryInsights(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lastMonthHint := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 9).Format("2006-01-02")
+	priorMonthHint := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -2, 9).Format("2006-01-02")
+
+	// Last month: food 1,200,000 and entertainment 600,000. Prior month:
+	// entertainment 200,000 -> entertainment tripled (+200%), food is a
+	// brand-new category with no baseline.
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1_200_000, Currency: "IDR", CategoryName: "food", OccurredAtHint: lastMonthHint}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan bulan lalu 1200000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 600_000, Currency: "IDR", CategoryName: "entertainment", OccurredAtHint: lastMonthHint}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nonton bulan lalu 600000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 200_000, Currency: "IDR", CategoryName: "entertainment", OccurredAtHint: priorMonthHint}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nonton dua bulan lalu 200000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	countBefore := env.messenger.count(chatID)
+
+	monthKey := "category-insight:" + now.Format("2006-01")
+	t.Cleanup(func() {
+		env.redis.Del(ctx, fmt.Sprintf("aura:seen:%s:%d", monthKey, user.ID))
+	})
+
+	if err := svc.RunCategoryInsights(ctx); err != nil {
+		t.Fatalf("RunCategoryInsights (first call): %v", err)
+	}
+
+	got := env.messenger.last(chatID)
+	wantTotal := i18n.FormatMoney(models.LanguageID, 1_800_000, "IDR")
+	if !strings.Contains(got, wantTotal) {
+		t.Errorf("reply = %q, want it to mention the total %s", got, wantTotal)
+	}
+	if !strings.Contains(got, "food") || !strings.Contains(got, "entertainment") {
+		t.Errorf("reply = %q, want it to list both categories", got)
+	}
+	wantLastMonthAmount := i18n.FormatMoney(models.LanguageID, 600_000, "IDR")
+	wantPriorMonthAmount := i18n.FormatMoney(models.LanguageID, 200_000, "IDR")
+	if !strings.Contains(got, wantLastMonthAmount) || !strings.Contains(got, wantPriorMonthAmount) {
+		t.Errorf("reply = %q, want it to show BOTH months' actual amounts for the increased category (%s and %s), not just the percentage", got, wantLastMonthAmount, wantPriorMonthAmount)
+	}
+	if !strings.Contains(got, "200") {
+		t.Errorf("reply = %q, want it to mention the 200%% increase", got)
+	}
+	if !strings.Contains(got, mockSavingsSuggestion) {
+		t.Errorf("reply = %q, want it to include the AI-generated suggestion", got)
+	}
+	if countAfterFirst := env.messenger.count(chatID); countAfterFirst != countBefore+1 {
+		t.Fatalf("message count after first RunCategoryInsights = %d, want %d (exactly one recap sent)", countAfterFirst, countBefore+1)
+	}
+
+	// A second call in the same calendar month must NOT send again.
+	if err := svc.RunCategoryInsights(ctx); err != nil {
+		t.Fatalf("RunCategoryInsights (second call): %v", err)
+	}
+	if countAfterSecond := env.messenger.count(chatID); countAfterSecond != countBefore+1 {
+		t.Errorf("message count after a second same-month RunCategoryInsights = %d, want still %d (no duplicate recap)", countAfterSecond, countBefore+1)
+	}
+}
+
+// TestRunCategoryInsights_AIFailureStillSendsDeterministicPart covers the
+// resilience contract: if SuggestSavings errors out, the factual part of
+// the recap (which needs no AI call at all) must still send — a savings
+// tip is a nice-to-have, not something worth dropping the whole recap over.
+func TestRunCategoryInsights_AIFailureStillSendsDeterministicPart(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lastMonthHint := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 9).Format("2006-01-02")
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "food", OccurredAtHint: lastMonthHint}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan bulan lalu 500000"})
+	env.ai.suggestSavingsErr = errors.New("simulated AI outage")
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	monthKey := "category-insight:" + now.Format("2006-01")
+	t.Cleanup(func() {
+		env.redis.Del(ctx, fmt.Sprintf("aura:seen:%s:%d", monthKey, user.ID))
+	})
+
+	if err := svc.RunCategoryInsights(ctx); err != nil {
+		t.Fatalf("RunCategoryInsights: %v", err)
+	}
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 500_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want the deterministic recap to still send despite the AI failure", got)
+	}
+	if strings.Contains(got, mockSavingsSuggestion) {
+		t.Errorf("reply = %q, want no suggestion line when SuggestSavings failed", got)
 	}
 }

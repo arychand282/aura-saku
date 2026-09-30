@@ -163,6 +163,14 @@ type AIClient interface {
 	// just condense.
 	Summarize(ctx context.Context, priorSummary string, turns []ConversationTurn, preferredLanguage string) (string, *UsageMetadata, error)
 
+	// SuggestSavings writes one short, specific, actionable suggestion from
+	// spendingSummary — a plain-language description of a user's last-month
+	// category spending breakdown built by bot.Service.RunCategoryInsights
+	// from report.Service.MonthlyCategoryInsight — in preferredLanguage.
+	// Same "plain text completion, not a tool call" shape as Summarize:
+	// nothing to extract, just advise.
+	SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *UsageMetadata, error)
+
 	ProviderName() string
 }
 

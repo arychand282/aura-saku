@@ -303,6 +303,33 @@ func (c *Client) Summarize(ctx context.Context, priorSummary string, turns []ai.
 	return strings.TrimSpace(resp.Choices[0].Message.Content), usage, nil
 }
 
+// SuggestSavings is Summarize's sibling: same plain text-in/text-out shape
+// (no tools, no history needed), just a different system instruction and a
+// single spendingSummary message instead of a conversation to condense.
+func (c *Client) SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	messages := []chatMessage{
+		{Role: "system", Content: prompt.SavingsSuggestionSystemInstruction(preferredLanguage)},
+		{Role: "user", Content: spendingSummary},
+	}
+
+	start := time.Now()
+	resp, err := c.doChatRequest(ctx, chatRequest{Model: c.model, Messages: messages})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+		return "", nil, fmt.Errorf("empty savings suggestion response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), usage, nil
+}
+
 func (c *Client) transcribe(ctx context.Context, audioBytes []byte, mimeType string) (string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)

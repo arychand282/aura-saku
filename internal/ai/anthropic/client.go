@@ -302,3 +302,30 @@ func (c *Client) Summarize(ctx context.Context, priorSummary string, turns []ai.
 	}
 	return strings.TrimSpace(resp.Content[0].Text), usage, nil
 }
+
+// SuggestSavings is Summarize's sibling: same plain text-in/text-out shape
+// (no tools, no history needed), just a different system instruction and a
+// single spendingSummary message instead of a conversation to condense.
+func (c *Client) SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	start := time.Now()
+	resp, err := c.doRequest(ctx, messagesRequest{
+		Model:     c.model,
+		MaxTokens: 1024,
+		System:    prompt.SavingsSuggestionSystemInstruction(preferredLanguage),
+		Messages:  []message{{Role: "user", Content: spendingSummary}},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Content) == 0 || strings.TrimSpace(resp.Content[0].Text) == "" {
+		return "", nil, fmt.Errorf("empty savings suggestion response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.InputTokens,
+		CompletionTokens: resp.Usage.OutputTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Content[0].Text), usage, nil
+}

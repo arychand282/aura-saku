@@ -34,6 +34,9 @@ func (s *stubAIClient) Summarize(ctx context.Context, priorSummary string, turns
 	s.summarizeCalls++
 	return fmt.Sprintf("summary covering %d turns (prior: %q)", len(turns), priorSummary), &ai.UsageMetadata{Model: "stub"}, nil
 }
+func (s *stubAIClient) SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	return "stub savings suggestion", &ai.UsageMetadata{Model: "stub"}, nil
+}
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()

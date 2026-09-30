@@ -20,8 +20,9 @@ const (
 	RedisConnectFailed Code = "AURA-REDIS-001" // failed to open/ping the Redis connection
 	RedisOpFailed      Code = "AURA-REDIS-002" // a runtime Redis command failed (middleware fails open on this)
 
-	AIClientBuildFailed Code = "AURA-AI-001" // ai/factory.NewAIClient failed (unknown/misconfigured AI_PROVIDER)
-	AIParseFailed       Code = "AURA-AI-002" // AIClient.ParseTransactionText/TranscribeAndParseAudio returned an error
+	AIClientBuildFailed    Code = "AURA-AI-001" // ai/factory.NewAIClient failed (unknown/misconfigured AI_PROVIDER)
+	AIParseFailed          Code = "AURA-AI-002" // AIClient.ParseTransactionText/TranscribeAndParseAudio returned an error
+	AISuggestSavingsFailed Code = "AURA-AI-003" // AIClient.SuggestSavings failed for one user's monthly category insight (logged, the deterministic part of that message still sends)
 
 	ServerListenFailed   Code = "AURA-SRV-001" // fiber.App.Listen failed to bind
 	ServerShutdownFailed Code = "AURA-SRV-002" // graceful shutdown did not complete cleanly within the timeout
@@ -30,15 +31,16 @@ const (
 	TelegramSendFailed     Code = "AURA-TG-002" // sendMessage/sendChatAction to Telegram failed
 	TelegramDownloadFailed Code = "AURA-TG-003" // downloading a Telegram voice note file failed
 
-	SvcUserResolveFailed   Code = "AURA-SVC-001" // get-or-create User by TelegramChatID failed
-	SvcUndoFailed          Code = "AURA-SVC-002" // transaction.Service.UndoLast failed
-	SvcSyncFailed          Code = "AURA-SVC-003" // reconciliation.Service.Sync failed
-	SvcCreateTxFailed      Code = "AURA-SVC-004" // transaction.Service.CreateFromParsed failed
-	SvcBudgetEvalFailed    Code = "AURA-SVC-005" // budget.Service.EvaluateBudget failed
-	SvcReportQueryFailed   Code = "AURA-SVC-006" // report.Service.Summary/CategoryTotal failed for a spending-query reply
-	SvcConversationFailed  Code = "AURA-SVC-007" // conversation.Service Get/AppendMessage/MaybeSummarize failed
-	SvcRolloverNudgeFailed Code = "AURA-SVC-008" // bot.Service.RunBudgetRolloverNudges failed for one user (skipped, other users still processed)
-	SvcRecurringFailed     Code = "AURA-SVC-009" // recurring.Service create/list/cancel/advance failed, or bot.Service.RunRecurringTransactions failed for one row
+	SvcUserResolveFailed     Code = "AURA-SVC-001" // get-or-create User by TelegramChatID failed
+	SvcUndoFailed            Code = "AURA-SVC-002" // transaction.Service.UndoLast failed
+	SvcSyncFailed            Code = "AURA-SVC-003" // reconciliation.Service.Sync failed
+	SvcCreateTxFailed        Code = "AURA-SVC-004" // transaction.Service.CreateFromParsed failed
+	SvcBudgetEvalFailed      Code = "AURA-SVC-005" // budget.Service.EvaluateBudget failed
+	SvcReportQueryFailed     Code = "AURA-SVC-006" // report.Service.Summary/CategoryTotal failed for a spending-query reply
+	SvcConversationFailed    Code = "AURA-SVC-007" // conversation.Service Get/AppendMessage/MaybeSummarize failed
+	SvcRolloverNudgeFailed   Code = "AURA-SVC-008" // bot.Service.RunBudgetRolloverNudges failed for one user (skipped, other users still processed)
+	SvcRecurringFailed       Code = "AURA-SVC-009" // recurring.Service create/list/cancel/advance failed, or bot.Service.RunRecurringTransactions failed for one row
+	SvcCategoryInsightFailed Code = "AURA-SVC-010" // report.Service.MonthlyCategoryInsight failed for one user's end-of-month recap (skipped, other users still processed)
 
 	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )
