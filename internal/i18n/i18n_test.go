@@ -105,8 +105,9 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyClaimUsage, KeyClaimSuccess, KeyClaimInvalidCode, KeyClaimLimitReached,
 		KeyDashboardLink, KeyDashboardUnavailable,
 		KeyRecurringCreated, KeyRecurringCreateFailed, KeyRecurringPosted,
-		KeyRecurringListEmpty, KeyRecurringListItem,
+		KeyRecurringListEmpty, KeyRecurringListItem, KeyRecurringModeReminder,
 		KeyRecurringCancelUsage, KeyRecurringCancelSuccess, KeyRecurringCancelNotFound,
+		KeyBillReminderCreated, KeyBillReminderDue,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

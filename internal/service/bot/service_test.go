@@ -1322,3 +1322,116 @@ func TestRunRecurringTransactions_PostsWhenDueAndAdvancesSchedule(t *testing.T) 
 		t.Errorf("transaction count after a second RunRecurringTransactions call = %d, want still 1 (no duplicate posting)", txCount)
 	}
 }
+
+// TestHandleUpdate_BillReminderCreate_NaturalLanguage covers the
+// create_bill_reminder intent: a message asking to be REMINDED about a bill
+// (not auto-recorded) schedules a RecurringTransaction with ReminderOnly
+// set, and the confirmation reply is the reminder-specific one, not the
+// auto-record one.
+func TestHandleUpdate_BillReminderCreate_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 500_000, Currency: "IDR",
+		CategoryName: "utilities", Description: "listrik", DayOfMonth: 5, ReminderOnly: true,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ingetin bayar listrik 500000 tiap tanggal 5"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 500_000, "IDR")
+	if !strings.Contains(got, wantAmount) || !strings.Contains(got, "utilities") {
+		t.Errorf("reply = %q, want it to mention the amount %s and category", got, wantAmount)
+	}
+	// "kabari aku kalau sudah dibayar" only appears in KeyBillReminderCreated
+	// (the reminder confirmation), never in KeyRecurringCreated (the
+	// auto-record confirmation) — asserting on it catches the wrong branch
+	// firing.
+	if !strings.Contains(got, "kabari aku kalau sudah dibayar") {
+		t.Errorf("reply = %q, want the bill-reminder confirmation (KeyBillReminderCreated), not the auto-record one", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var rt models.RecurringTransaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&rt).Error; err != nil {
+		t.Fatalf("load recurring transaction: %v", err)
+	}
+	if !rt.ReminderOnly {
+		t.Error("expected ReminderOnly = true for a bill reminder created via create_bill_reminder")
+	}
+
+	// Listing should flag it as a reminder.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/recurring"})
+	listReply := env.messenger.last(chatID)
+	wantModeSuffix := i18n.T(models.LanguageID, i18n.KeyRecurringModeReminder)
+	if !strings.Contains(listReply, wantModeSuffix) {
+		t.Errorf("list reply = %q, want it to mention %q for a reminder-only row", listReply, wantModeSuffix)
+	}
+}
+
+// TestRunRecurringTransactions_ReminderOnlyNeverPostsATransaction covers
+// the other half of RunRecurringTransactions' branch: a due bill reminder
+// notifies the user and advances its own schedule exactly like an
+// auto-posting recurring transaction does, but must NEVER create a
+// Transaction row — the user is expected to log the actual payment
+// themselves.
+func TestRunRecurringTransactions_ReminderOnlyNeverPostsATransaction(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 500_000, Currency: "IDR",
+		CategoryName: "utilities", Description: "listrik", DayOfMonth: 5, ReminderOnly: true,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ingetin bayar listrik 500000 tiap tanggal 5"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var rt models.RecurringTransaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&rt).Error; err != nil {
+		t.Fatalf("load recurring transaction: %v", err)
+	}
+
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	if err := env.db.Model(&models.RecurringTransaction{}).Where("id = ?", rt.ID).Update("next_run_at", past).Error; err != nil {
+		t.Fatalf("backdate NextRunAt: %v", err)
+	}
+
+	countBefore := env.messenger.count(chatID)
+	if err := svc.RunRecurringTransactions(ctx); err != nil {
+		t.Fatalf("RunRecurringTransactions: %v", err)
+	}
+
+	var txCount int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&txCount)
+	if txCount != 0 {
+		t.Errorf("transaction count after a due bill reminder fired = %d, want 0 (a reminder must never auto-record)", txCount)
+	}
+
+	if got := env.messenger.count(chatID); got != countBefore+1 {
+		t.Fatalf("message count after the job ran = %d, want %d (user notified exactly once)", got, countBefore+1)
+	}
+	notifyReply := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 500_000, "IDR")
+	if !strings.Contains(notifyReply, wantAmount) {
+		t.Errorf("reminder notification = %q, want it to mention the amount %s", notifyReply, wantAmount)
+	}
+
+	var rtAfter models.RecurringTransaction
+	if err := env.db.First(&rtAfter, rt.ID).Error; err != nil {
+		t.Fatalf("reload recurring transaction: %v", err)
+	}
+	wantNext := past.AddDate(0, 1, 0)
+	if !rtAfter.NextRunAt.Equal(wantNext) {
+		t.Errorf("NextRunAt after the reminder fired = %v, want exactly one month after the backdated value (%v) — the schedule must still advance even though nothing was recorded", rtAfter.NextRunAt, wantNext)
+	}
+}

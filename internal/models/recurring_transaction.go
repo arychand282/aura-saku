@@ -7,12 +7,17 @@ import (
 )
 
 // RecurringTransaction is a user-defined transaction — rent, a subscription,
-// a salary deposit, and the like — that gets auto-recorded once a month
-// instead of requiring a fresh message every time. See
-// internal/service/recurring.Service (creation/cancellation/schedule math)
-// and internal/service/bot.Service.RunRecurringTransactions (the
-// internal/scheduler job that actually posts these as real Transaction
-// rows and notifies the user).
+// a salary deposit, and the like — that fires once a month instead of
+// requiring a fresh message every time. Two modes, both sharing the exact
+// same schedule (day-of-month, month-rollover/clamping math, NextRunAt
+// advancement — see internal/service/recurring.Service): if ReminderOnly is
+// false (the default, and the only behavior that existed before that field
+// did), it auto-records a real Transaction each time it fires. If true,
+// it's a bill reminder instead — RunRecurringTransactions only messages the
+// user ("this is due today") and records nothing, since the user still
+// wants to log the actual payment themselves. See
+// internal/service/bot.Service.RunRecurringTransactions (the
+// internal/scheduler job that acts on these) for both branches.
 type RecurringTransaction struct {
 	ID     uint `gorm:"primaryKey"`
 	UserID uint `gorm:"not null;index"`
@@ -44,6 +49,11 @@ type RecurringTransaction struct {
 	// query is "everything due now".
 	NextRunAt time.Time `gorm:"not null;index"`
 	IsActive  bool      `gorm:"not null;default:true;index"`
+
+	// ReminderOnly, see the type doc comment above: false auto-records,
+	// true just notifies. Defaults false so every row created before this
+	// field existed keeps its original auto-recording behavior unchanged.
+	ReminderOnly bool `gorm:"not null;default:false"`
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

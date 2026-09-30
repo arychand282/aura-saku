@@ -1,12 +1,14 @@
 // Package recurring owns scheduling for RecurringTransaction rows — a
-// user-defined transaction (rent, a subscription, a salary) that should be
-// auto-recorded once a month instead of requiring a fresh message every
-// time. This package only knows about the schedule (create/cancel/list/
-// which ones are due/advance the schedule); actually posting a due one as a
-// real Transaction and notifying the user lives in
-// bot.Service.RunRecurringTransactions (an internal/scheduler job), which
-// needs transaction.Service's category-resolution/FX-conversion logic and
-// the Messenger — neither of which belongs in this package.
+// user-defined transaction (rent, a subscription, a salary) or bill
+// reminder that fires once a month instead of requiring a fresh message
+// every time (see models.RecurringTransaction.ReminderOnly for the
+// auto-record vs. notify-only distinction). This package only knows about
+// the schedule (create/cancel/list/which ones are due/advance the
+// schedule); actually posting a due one as a real Transaction (or just
+// notifying, for a reminder) lives in bot.Service.RunRecurringTransactions
+// (an internal/scheduler job), which needs transaction.Service's
+// category-resolution/FX-conversion logic and the Messenger — neither of
+// which belongs in this package.
 package recurring
 
 import (
@@ -48,6 +50,7 @@ func (s *Service) Create(ctx context.Context, userID uint, parsed *ai.ParsedTran
 		DayOfMonth:   parsed.DayOfMonth,
 		NextRunAt:    nextOccurrenceAfter(time.Now().UTC(), parsed.DayOfMonth),
 		IsActive:     true,
+		ReminderOnly: parsed.ReminderOnly,
 	}
 	if err := s.db.WithContext(ctx).Create(rt).Error; err != nil {
 		return nil, fmt.Errorf("insert recurring transaction: %w", err)

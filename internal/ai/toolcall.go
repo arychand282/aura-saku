@@ -40,6 +40,12 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 		pt.Intent = IntentRecurringCreate
 		pt.DayOfMonth = argInt(args, "day_of_month")
 		return pt
+	case prompt.ToolCreateBillReminder:
+		pt := transactionFromArgs(args)
+		pt.Intent = IntentRecurringCreate
+		pt.DayOfMonth = argInt(args, "day_of_month")
+		pt.ReminderOnly = true
+		return pt
 	default:
 		return nil
 	}

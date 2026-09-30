@@ -264,8 +264,12 @@ func (s *Service) handleRecurring(ctx context.Context, user *models.User, msg *m
 
 	lines := make([]string, 0, len(list))
 	for _, rt := range list {
+		modeSuffix := ""
+		if rt.ReminderOnly {
+			modeSuffix = i18n.T(user.Language, i18n.KeyRecurringModeReminder)
+		}
 		lines = append(lines, i18n.T(user.Language, i18n.KeyRecurringListItem,
-			rt.ID, rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
+			rt.ID, rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02"), modeSuffix))
 	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
@@ -650,13 +654,16 @@ func (s *Service) handleTransactionDeletion(ctx context.Context, user *models.Us
 		deletedTx.Type, i18n.FormatMoney(user.Language, deletedTx.OriginalAmount, deletedTx.OriginalCurrency)))
 }
 
-// handleRecurringCreate schedules a new recurring transaction described by
-// parsed (ai.IntentRecurringCreate — e.g. "netflix 150rb setiap tanggal 5").
-// See recurring.Service.Create for the schedule math (never fires on the
-// creation day itself). Nothing is recorded as a Transaction right now —
-// only RunRecurringTransactions (an internal/scheduler job, see
-// cmd/server/main.go) ever creates one, once the schedule actually comes
-// due.
+// handleRecurringCreate schedules a new recurring transaction or bill
+// reminder described by parsed (ai.IntentRecurringCreate — e.g. "netflix
+// 150rb setiap tanggal 5", or "ingetin bayar listrik 500rb tiap tanggal 5"
+// with parsed.ReminderOnly set). See recurring.Service.Create for the
+// schedule math (never fires on the creation day itself) and
+// models.RecurringTransaction.ReminderOnly for the auto-record vs.
+// notify-only distinction. Nothing is recorded as a Transaction right now
+// either way — only RunRecurringTransactions (an internal/scheduler job,
+// see cmd/server/main.go) ever acts on one, once the schedule actually
+// comes due.
 func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
 	rt, err := s.recurSvc.Create(ctx, user.ID, parsed)
 	if err != nil {
@@ -665,7 +672,11 @@ func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, 
 		return
 	}
 
-	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreated,
+	replyKey := i18n.KeyRecurringCreated
+	if rt.ReminderOnly {
+		replyKey = i18n.KeyBillReminderCreated
+	}
+	s.reply(ctx, user, i18n.T(user.Language, replyKey,
 		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
 }
 
@@ -852,15 +863,18 @@ func (s *Service) RunBudgetRolloverNudges(ctx context.Context) error {
 	return nil
 }
 
-// RunRecurringTransactions posts every recurring transaction whose schedule
-// has come due (see recurring.Service.Due) as a real Transaction — reusing
-// transaction.Service.CreateFromParsed unchanged by reconstructing an
-// ai.ParsedTransaction from the stored RecurringTransaction fields, so
-// category resolution and FX conversion behave identically to a normal
-// message-triggered record. Intended to be registered as a scheduler.Job's
-// Run, not called from any user-facing path. One recurring transaction's
-// failure (a bad category, a DB hiccup) is logged and skipped rather than
-// aborting the whole run — every other due one must still get posted.
+// RunRecurringTransactions acts on every recurring transaction / bill
+// reminder whose schedule has come due (see recurring.Service.Due).
+// ReminderOnly rows (see models.RecurringTransaction) only get a
+// notification — nothing is recorded, since the user wants to log the
+// actual payment themselves. Every other row posts as a real Transaction,
+// reusing transaction.Service.CreateFromParsed unchanged by reconstructing
+// an ai.ParsedTransaction from the stored fields, so category resolution
+// and FX conversion behave identically to a normal message-triggered
+// record. Intended to be registered as a scheduler.Job's Run, not called
+// from any user-facing path. One row's failure (a bad category, a DB
+// hiccup) is logged and skipped rather than aborting the whole run — every
+// other due one must still get processed.
 func (s *Service) RunRecurringTransactions(ctx context.Context) error {
 	due, err := s.recurSvc.Due(ctx, time.Now().UTC())
 	if err != nil {
@@ -868,6 +882,16 @@ func (s *Service) RunRecurringTransactions(ctx context.Context) error {
 	}
 
 	for _, rt := range due {
+		if rt.ReminderOnly {
+			if err := s.recurSvc.Advance(ctx, rt); err != nil {
+				logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("advance bill reminder %d after notifying", rt.ID), err)
+			}
+			reply := i18n.T(rt.User.Language, i18n.KeyBillReminderDue,
+				rt.Type, i18n.FormatMoney(rt.User.Language, rt.Amount, rt.Currency), rt.CategoryName)
+			s.reply(ctx, &rt.User, reply)
+			continue
+		}
+
 		parsed := &ai.ParsedTransaction{
 			Intent:       ai.IntentRecord,
 			Type:         string(rt.Type),

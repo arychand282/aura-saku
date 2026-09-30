@@ -67,6 +67,15 @@ type ParsedTransaction struct {
 	// month" including February.
 	DayOfMonth int `json:"day_of_month,omitempty"`
 
+	// ReminderOnly, also only meaningful for IntentRecurringCreate,
+	// distinguishes the create_bill_reminder tool from
+	// create_recurring_transaction — both populate every other field
+	// identically. false (the zero value, so create_recurring_transaction
+	// needs no explicit default) auto-records a real transaction each time
+	// it fires; true only notifies the user, recording nothing, since the
+	// user still wants to log the actual payment themselves.
+	ReminderOnly bool `json:"reminder_only,omitempty"`
+
 	// TargetTransactionID identifies which of the user's existing
 	// transactions an IntentCorrect or IntentDelete result acts on, when
 	// known. Populated from a get_recent_transactions candidate a

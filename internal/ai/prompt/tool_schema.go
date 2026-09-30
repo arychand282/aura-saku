@@ -24,6 +24,7 @@ const (
 	ToolCorrectTransaction         = "correct_transaction"
 	ToolDeleteTransaction          = "delete_transaction"
 	ToolCreateRecurringTransaction = "create_recurring_transaction"
+	ToolCreateBillReminder         = "create_bill_reminder"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -120,7 +121,7 @@ func transactionProperties() map[string]ToolProperty {
 	}
 }
 
-// TransactionTools declares the six callable tools every native-function-
+// TransactionTools declares the seven callable tools every native-function-
 // calling provider offers the model on every request — the direct analog
 // of transaction_prompt.go's Step 1 intent list, except each entry's
 // Description here plays the exact role the "jika user menanyakan tentang
@@ -132,7 +133,7 @@ func TransactionTools() []Tool {
 	return []Tool{
 		{
 			Name:        ToolRecordTransaction,
-			Description: "Call this when the message reports a transaction that already happened — money spent, earned, invested, transferred, or received as a reward (e.g. \"lunch 25000\", \"gaji 5000000\", \"makan siang tadi 30rb\"). This is the default for anything describing something that happened. If the message lists SEVERAL separate transactions (e.g. an itemized list: \"bensin 300k, makan siang 300k, makan malam 100k\"), call this tool ONCE PER TRANSACTION, in the order mentioned — do not merge them into a single total, and do not drop any of them. Do NOT call this for a transaction the message says REPEATS on a schedule (\"tiap bulan\", \"setiap tanggal 5\", \"every month\") — use create_recurring_transaction instead.",
+			Description: "Call this when the message reports a transaction that already happened — money spent, earned, invested, transferred, or received as a reward (e.g. \"lunch 25000\", \"gaji 5000000\", \"makan siang tadi 30rb\"). This is the default for anything describing something that happened. If the message lists SEVERAL separate transactions (e.g. an itemized list: \"bensin 300k, makan siang 300k, makan malam 100k\"), call this tool ONCE PER TRANSACTION, in the order mentioned — do not merge them into a single total, and do not drop any of them. Do NOT call this for a transaction the message says REPEATS on a schedule (\"tiap bulan\", \"setiap tanggal 5\", \"every month\") — use create_recurring_transaction (auto-records each time) or create_bill_reminder (just notifies) instead.",
 			Properties:  transactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name"},
 		},
@@ -172,7 +173,13 @@ func TransactionTools() []Tool {
 		},
 		{
 			Name:        ToolCreateRecurringTransaction,
-			Description: "Call this when the message describes a transaction that REPEATS on a regular monthly schedule — rent, a subscription, a salary that arrives on the same day every month (e.g. \"netflix 150rb setiap tanggal 5\", \"gaji 5 juta tiap tanggal 25\", \"sewa kos 800rb per bulan tanggal 1\", \"internet bill 300k every month on the 10th\"). Only call this when the message ITSELF says the transaction repeats (\"tiap\"/\"setiap\"/\"per bulan\"/\"every month\"/\"monthly\") — a one-off mention of something that happens to sound recurring (\"bayar internet bulan ini 300rb\" with no repeating cadence stated) is a normal record_transaction instead. IMPORTANT: this does NOT record anything happening today — it only schedules future occurrences starting from the NEXT time that day of the month comes around, never the current one. Never call this together with record_transaction or any other tool for the same message — if the user separately wants this month's occurrence recorded too, that's a different message.",
+			Description: "Call this when the message describes a transaction that REPEATS on a regular monthly schedule AND wants it recorded automatically each time — rent, a subscription, a salary that arrives on the same day every month (e.g. \"netflix 150rb setiap tanggal 5\", \"gaji 5 juta tiap tanggal 25\", \"sewa kos 800rb per bulan tanggal 1\", \"internet bill 300k every month on the 10th\"). Only call this when the message ITSELF says the transaction repeats (\"tiap\"/\"setiap\"/\"per bulan\"/\"every month\"/\"monthly\") — a one-off mention of something that happens to sound recurring (\"bayar internet bulan ini 300rb\" with no repeating cadence stated) is a normal record_transaction instead. If the message instead asks to just be REMINDED/notified about the bill without recording it automatically (\"ingetin\", \"remind me\", \"kasih tau\" — they'll log the actual payment themselves), use create_bill_reminder instead. IMPORTANT: this does NOT record anything happening today — it only schedules future occurrences starting from the NEXT time that day of the month comes around, never the current one. Never call this together with record_transaction or any other tool for the same message — if the user separately wants this month's occurrence recorded too, that's a different message.",
+			Properties:  recurringTransactionProperties(),
+			Required:    []string{"type", "amount", "currency", "category_name", "day_of_month"},
+		},
+		{
+			Name:        ToolCreateBillReminder,
+			Description: "Call this when the message asks to be REMINDED/notified about a recurring bill or payment on a monthly schedule, WITHOUT it being recorded automatically — the user will log the actual payment themselves when it happens (e.g. \"ingetin bayar listrik 500rb tiap tanggal 5\", \"remind me about rent due the 1st, don't record it for me\", \"kasih tau kalau tagihan internet 300rb jatuh tempo tiap tanggal 10\"). Look for reminder language (\"ingetin\"/\"kasih tau\"/\"remind me\"/\"notify me\") — if the message just describes a repeating transaction with no reminder language, that's create_recurring_transaction instead (it auto-records; this only notifies). Never call this together with record_transaction, create_recurring_transaction, or any other tool for the same message.",
 			Properties:  recurringTransactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name", "day_of_month"},
 		},
@@ -194,7 +201,7 @@ func ToolCallingSystemInstruction(defaultCurrency string, today time.Time, prefe
 		`You are a financial transaction parser and spending-report assistant for an expense-tracking bot.
 Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
-Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
+Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
 
 Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.`,
 		today.UTC().Format("2006-01-02"),

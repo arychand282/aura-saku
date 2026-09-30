@@ -100,9 +100,13 @@ const (
 	KeyRecurringPosted         = "recurring_posted"
 	KeyRecurringListEmpty      = "recurring_list_empty"
 	KeyRecurringListItem       = "recurring_list_item"
+	KeyRecurringModeReminder   = "recurring_mode_reminder"
 	KeyRecurringCancelUsage    = "recurring_cancel_usage"
 	KeyRecurringCancelSuccess  = "recurring_cancel_success"
 	KeyRecurringCancelNotFound = "recurring_cancel_not_found"
+
+	KeyBillReminderCreated = "bill_reminder_created"
+	KeyBillReminderDue     = "bill_reminder_due"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -148,11 +152,15 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCreated:        "✅ Recurring %s of %s for \"%s\" set up — it'll auto-record on day %d of each month, starting %s.",
 		KeyRecurringCreateFailed:   "Something went wrong setting up that recurring transaction.",
 		KeyRecurringPosted:         "🔁 Recurring: %s of %s for \"%s\" was just recorded automatically.",
-		KeyRecurringListEmpty:      "You don't have any recurring transactions set up yet. Just tell me about one, e.g. \"netflix 150000 every month on the 5th\".",
-		KeyRecurringListItem:       "#%d: %s of %s for \"%s\" — day %d of each month, next: %s",
+		KeyRecurringListEmpty:      "You don't have any recurring transactions or bill reminders set up yet. Just tell me about one, e.g. \"netflix 150000 every month on the 5th\", or \"remind me to pay rent 800000 on the 1st\".",
+		KeyRecurringListItem:       "#%d: %s of %s for \"%s\" — day %d of each month, next: %s%s",
+		KeyRecurringModeReminder:   " (reminder only, not recorded automatically)",
 		KeyRecurringCancelUsage:    "Usage: /recurring to list, or /recurring cancel <id> to cancel one, e.g. /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Canceled recurring %s of %s for \"%s\".",
 		KeyRecurringCancelNotFound: "I couldn't find an active recurring transaction with that id. Use /recurring to see your list.",
+
+		KeyBillReminderCreated: "🔔 Reminder set for %s of %s for \"%s\" — I'll notify you on day %d of each month, starting %s. I won't record it automatically; let me know when you've paid it.",
+		KeyBillReminderDue:     "🔔 Reminder: your %s of %s for \"%s\" is due today.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                 "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -196,11 +204,15 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCreated:        "✅ %s berulang sebesar %s untuk \"%s\" sudah diatur — akan otomatis tercatat tiap tanggal %d, mulai %s.",
 		KeyRecurringCreateFailed:   "Terjadi kesalahan saat mengatur transaksi berulang itu.",
 		KeyRecurringPosted:         "🔁 Berulang: %s sebesar %s untuk \"%s\" baru saja dicatat otomatis.",
-		KeyRecurringListEmpty:      "Kamu belum punya transaksi berulang. Cukup ceritakan satu, misal \"netflix 150000 tiap tanggal 5\".",
-		KeyRecurringListItem:       "#%d: %s sebesar %s untuk \"%s\" — tanggal %d tiap bulan, berikutnya: %s",
+		KeyRecurringListEmpty:      "Kamu belum punya transaksi berulang atau pengingat tagihan. Cukup ceritakan satu, misal \"netflix 150000 tiap tanggal 5\", atau \"ingetin bayar sewa 800000 tiap tanggal 1\".",
+		KeyRecurringListItem:       "#%d: %s sebesar %s untuk \"%s\" — tanggal %d tiap bulan, berikutnya: %s%s",
+		KeyRecurringModeReminder:   " (hanya pengingat, tidak dicatat otomatis)",
 		KeyRecurringCancelUsage:    "Cara pakai: /recurring untuk melihat daftar, atau /recurring cancel <id> untuk membatalkan, contoh: /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Transaksi berulang %s sebesar %s untuk \"%s\" sudah dibatalkan.",
 		KeyRecurringCancelNotFound: "Aku tidak menemukan transaksi berulang aktif dengan id itu. Gunakan /recurring untuk melihat daftarmu.",
+
+		KeyBillReminderCreated: "🔔 Pengingat diatur untuk %s sebesar %s untuk \"%s\" — aku akan mengingatkanmu tiap tanggal %d, mulai %s. Aku tidak akan mencatatnya otomatis; kabari aku kalau sudah dibayar.",
+		KeyBillReminderDue:     "🔔 Pengingat: %s sebesar %s untuk \"%s\" jatuh tempo hari ini.",
 	},
 }
 
