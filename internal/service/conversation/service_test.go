@@ -26,6 +26,9 @@ func (s *stubAIClient) ParseTransactionText(ctx context.Context, userText, defau
 func (s *stubAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return nil, nil, fmt.Errorf("not used in this package's tests")
 }
+func (s *stubAIClient) AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType, defaultCurrency, preferredLanguage, caption string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return nil, nil, fmt.Errorf("not used in this package's tests")
+}
 func (s *stubAIClient) AnswerClarification(ctx context.Context, originalText, clarificationReply, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return nil, nil, fmt.Errorf("not used in this package's tests")
 }

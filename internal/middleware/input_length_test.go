@@ -24,7 +24,7 @@ func (f *fakeMessenger) ParseWebhookPayload(body []byte) (*messaging.IncomingMes
 }
 func (f *fakeMessenger) SendMessage(ctx context.Context, chatID int64, text string) error { return nil }
 func (f *fakeMessenger) SendTypingIndicator(ctx context.Context, chatID int64) error      { return nil }
-func (f *fakeMessenger) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+func (f *fakeMessenger) DownloadFile(ctx context.Context, fileID string, fallbackMimeType string) ([]byte, string, error) {
 	return nil, "", nil
 }
 func (f *fakeMessenger) PlatformName() string { return "fake" }

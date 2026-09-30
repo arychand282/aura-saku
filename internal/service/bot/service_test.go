@@ -61,7 +61,7 @@ func (m *mockMessenger) SendMessage(ctx context.Context, chatID int64, text stri
 
 func (m *mockMessenger) SendTypingIndicator(ctx context.Context, chatID int64) error { return nil }
 
-func (m *mockMessenger) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+func (m *mockMessenger) DownloadFile(ctx context.Context, fileID string, fallbackMimeType string) ([]byte, string, error) {
 	if m.downloadErr != nil {
 		return nil, "", m.downloadErr
 	}
@@ -134,6 +134,10 @@ func (m *mockAIClient) ParseTransactionText(ctx context.Context, userText, defau
 }
 
 func (m *mockAIClient) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType, defaultCurrency, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return m.call(history)
+}
+
+func (m *mockAIClient) AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType, defaultCurrency, preferredLanguage, caption string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return m.call(history)
 }
 
@@ -646,6 +650,128 @@ func TestHandleUpdate_TransactionInput_VoiceBypassesLengthCheck(t *testing.T) {
 
 	if got := env.ai.callCount(); got != 1 {
 		t.Errorf("AI calls for voice message = %d, want 1 (not blocked by text length)", got)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_Photo covers a receipt photo being
+// recorded the same way a text message would be — Source is "photo" and
+// RawInput carries the placeholder + caption (never the actual image
+// bytes), mirroring how a voice note's RawInput is "[voice note]" rather
+// than the transcript or audio bytes.
+func TestHandleUpdate_TransactionInput_Photo(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 150_000, Currency: "IDR", CategoryName: "groceries", Description: "Indomaret: beras, telur, susu",
+	}
+	env.messenger.downloadData = []byte("fake jpeg bytes")
+	env.messenger.downloadMime = "image/jpeg"
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsPhoto: true, PhotoFileID: "photo123", Caption: "buat kantor"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var tx models.Transaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&tx).Error; err != nil {
+		t.Fatalf("load recorded transaction: %v", err)
+	}
+	if tx.Source != models.SourcePhoto {
+		t.Errorf("Source = %q, want %q", tx.Source, models.SourcePhoto)
+	}
+	if tx.RawInput != "[receipt photo]: buat kantor" {
+		t.Errorf("RawInput = %q, want the placeholder + caption, never the actual image bytes", tx.RawInput)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_PhotoDownloadFailed covers a Telegram
+// download failure: the user gets KeyReceiptDownloadFailed and nothing is
+// recorded, mirroring the voice-note download-failure path exactly.
+func TestHandleUpdate_TransactionInput_PhotoDownloadFailed(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.messenger.downloadErr = fmt.Errorf("telegram getFile failed")
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsPhoto: true, PhotoFileID: "photo123"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyReceiptDownloadFailed)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+	if got := env.ai.callCount(); got != 0 {
+		t.Errorf("AI calls after a download failure = %d, want 0", got)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_PhotoAmbiguous covers an unreadable or
+// non-receipt photo: the model's ambiguous result must produce the
+// clarification question, not a hallucinated transaction.
+func TestHandleUpdate_TransactionInput_PhotoAmbiguous(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{IsAmbiguous: true, ClarificationQuestion: "I couldn't read that receipt — how much was it?"}
+	env.messenger.downloadData = []byte("fake blurry jpeg")
+	env.messenger.downloadMime = "image/jpeg"
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsPhoto: true, PhotoFileID: "photo123"})
+
+	if got := env.messenger.last(chatID); got != "I couldn't read that receipt — how much was it?" {
+		t.Errorf("reply = %q, want the clarification question verbatim", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("transaction count = %d, want 0 for an ambiguous parse", count)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_PhotoBypassesLengthCheck confirms a
+// photo with no caption is never subject to the text-length guardrail
+// (there's no text at all to measure), mirroring voice's own bypass.
+func TestHandleUpdate_TransactionInput_PhotoBypassesLengthCheck(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, MaxInputChars: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 1000, Currency: "IDR", CategoryName: "Food", Description: "x"}
+	env.messenger.downloadData = []byte("fake jpeg")
+	env.messenger.downloadMime = "image/jpeg"
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsPhoto: true, PhotoFileID: "photo123"})
+
+	if got := env.ai.callCount(); got != 1 {
+		t.Errorf("AI calls for a captionless photo = %d, want 1 (not blocked by text length)", got)
+	}
+}
+
+// TestHandleUpdate_TransactionInput_PhotoCaptionTooLong confirms a photo's
+// CAPTION is still subject to the length guardrail, unlike the photo itself
+// — a very long caption is real user-typed text like any other message.
+func TestHandleUpdate_TransactionInput_PhotoCaptionTooLong(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 3, MaxInputChars: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+
+	svc.HandleUpdate(context.Background(), &messaging.IncomingMessage{ChatID: chatID, IsPhoto: true, PhotoFileID: "photo123", Caption: "this caption is way over the ten character limit"})
+
+	if got := env.ai.callCount(); got != 0 {
+		t.Errorf("AI calls for an over-limit caption = %d, want 0 (blocked)", got)
+	}
+	want := i18n.T(models.LanguageID, i18n.KeyInputTooLong, 10)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
 	}
 }
 

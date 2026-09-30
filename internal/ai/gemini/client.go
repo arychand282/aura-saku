@@ -290,6 +290,18 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 	return c.generate(ctx, instruction, parts, history)
 }
 
+func (c *Client) AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, caption string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+	parts := []genPart{
+		{Text: prompt.ReceiptAnalysisInstruction(caption)},
+		{InlineData: &inlineData{
+			MimeType: mimeType,
+			Data:     base64.StdEncoding.EncodeToString(imageBytes),
+		}},
+	}
+	return c.generate(ctx, instruction, parts, history)
+}
+
 func (c *Client) AnswerClarification(ctx context.Context, originalText string, clarificationReply string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	instruction := toolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
 	parts := []genPart{

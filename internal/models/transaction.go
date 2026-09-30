@@ -21,6 +21,7 @@ type TransactionSource string
 const (
 	SourceText      TransactionSource = "text"
 	SourceVoice     TransactionSource = "voice"
+	SourcePhoto     TransactionSource = "photo"
 	SourceSync      TransactionSource = "sync_adjustment"
 	SourceRecurring TransactionSource = "recurring"
 )

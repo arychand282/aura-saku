@@ -95,7 +95,7 @@ func TestCatalogCompleteness(t *testing.T) {
 	keys := []string{
 		KeyWelcome, KeyUndoNone, KeyUndoFailed, KeyUndoSuccess,
 		KeySyncUsage, KeySyncFailed, KeySyncMatched, KeySyncDiscrepancy,
-		KeyVoiceDownloadFailed, KeyVoiceUnsupported, KeyAITrouble,
+		KeyVoiceDownloadFailed, KeyVoiceUnsupported, KeyReceiptDownloadFailed, KeyAITrouble,
 		KeyTransactionSaveFailed, KeyTransactionRecorded, KeyTransactionCorrected,
 		KeyBalance, KeyQuerySpendingTotal, KeyQuerySpendingByCategory, KeyQueryCategoryNotFound,
 		KeyQuerySpendingByBucket, KeyQuerySpendingBreakdownItem, KeyQuerySpendingScopeNone, KeyUncategorizedLabel,

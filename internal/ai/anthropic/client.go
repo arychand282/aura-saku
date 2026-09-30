@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,9 +63,34 @@ var _ ai.ChainedCorrector = (*Client)(nil)
 
 func (c *Client) ProviderName() string { return "anthropic" }
 
+// Content is `any` (not `string`) so a message can carry either plain text
+// (the existing shape, unchanged for every current caller) or an array of
+// content blocks for a multimodal user turn (AnalyzeReceiptImage) — no
+// `omitempty` subtlety to worry about here since this field always
+// serializes regardless of value, unlike openai.chatMessage.Content, which
+// needed a custom MarshalJSON for exactly that reason.
 type message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// textBlock/imageBlock/imageSource are Content's array-of-blocks shape for
+// a multimodal message — Anthropic's Messages API expects
+// [{"type":"text",...},{"type":"image","source":{...}}].
+type textBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type imageBlock struct {
+	Type   string      `json:"type"`
+	Source imageSource `json:"source"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 // toolDef/inputSchema/propertySchema mirror the subset of Anthropic's
@@ -266,6 +292,22 @@ func (c *Client) AnswerClarification(ctx context.Context, originalText string, c
 
 func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	return nil, nil, apperror.ErrProviderAudioUnsupported
+}
+
+func (c *Client) AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, caption string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+	userMsg := message{
+		Role: "user",
+		Content: []any{
+			textBlock{Type: "text", Text: prompt.ReceiptAnalysisInstruction(caption)},
+			imageBlock{Type: "image", Source: imageSource{
+				Type:      "base64",
+				MediaType: mimeType,
+				Data:      base64.StdEncoding.EncodeToString(imageBytes),
+			}},
+		},
+	}
+	return c.converse(ctx, systemPrompt, []message{userMsg}, history)
 }
 
 // Summarize sends priorSummary plus turns as a plain text-in/text-out

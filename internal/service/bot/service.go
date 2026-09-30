@@ -115,6 +115,11 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 	content := msg.Text
 	if msg.IsVoice {
 		content = "[voice note]"
+	} else if msg.IsPhoto {
+		content = "[receipt photo]"
+		if msg.Caption != "" {
+			content += ": " + msg.Caption
+		}
 	}
 	if conv, convErr := s.convSvc.GetOrCreate(ctx, user.ID); convErr != nil {
 		logger.Error(logger.SvcConversationFailed, fmt.Sprintf("get or create conversation for user %d", user.ID), convErr)
@@ -598,7 +603,17 @@ func (s *Service) handleDashboard(ctx context.Context, user *models.User, msg *m
 // at all — moved here so the user actually finds out why nothing happened,
 // the same fix already applied to daily-quota enforcement.
 func (s *Service) enforceInputLength(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) bool {
-	if msg.IsVoice || s.cfg.MaxInputChars <= 0 || len(msg.Text) <= s.cfg.MaxInputChars {
+	if msg.IsVoice || s.cfg.MaxInputChars <= 0 {
+		return false
+	}
+	// A photo has no text of its own to check — its optional caption stands
+	// in for msg.Text here, and an empty caption always passes (nothing to
+	// be too long).
+	text := msg.Text
+	if msg.IsPhoto {
+		text = msg.Caption
+	}
+	if len(text) <= s.cfg.MaxInputChars {
 		return false
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyInputTooLong, s.cfg.MaxInputChars))
@@ -691,7 +706,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	if msg.IsVoice {
 		source = models.SourceVoice
 		requestType = "audio_transcribe"
-		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID)
+		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.VoiceFileID, "audio/ogg")
 		if dlErr != nil {
 			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download voice file for user %d", user.ID), dlErr)
 			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyVoiceDownloadFailed))
@@ -699,6 +714,20 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		}
 		raw = "[voice note]"
 		parsedList, usageMeta, err = s.aiClient.TranscribeAndParseAudio(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage, history)
+	} else if msg.IsPhoto {
+		source = models.SourcePhoto
+		requestType = "image_analyze"
+		data, mimeType, dlErr := s.messenger.DownloadFile(ctx, msg.PhotoFileID, "image/jpeg")
+		if dlErr != nil {
+			logger.Error(logger.TelegramDownloadFailed, fmt.Sprintf("download receipt photo for user %d", user.ID), dlErr)
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyReceiptDownloadFailed))
+			return
+		}
+		raw = "[receipt photo]"
+		if msg.Caption != "" {
+			raw += ": " + msg.Caption
+		}
+		parsedList, usageMeta, err = s.aiClient.AnalyzeReceiptImage(ctx, data, mimeType, user.DefaultCurrency, preferredLanguage, msg.Caption, history)
 	} else {
 		source = models.SourceText
 		requestType = "text_parse"

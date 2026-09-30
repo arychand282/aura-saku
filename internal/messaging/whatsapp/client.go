@@ -31,6 +31,6 @@ func (c *Client) SendTypingIndicator(ctx context.Context, chatID int64) error {
 	return apperror.ErrNotImplemented
 }
 
-func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+func (c *Client) DownloadFile(ctx context.Context, fileID string, fallbackMimeType string) ([]byte, string, error) {
 	return nil, "", apperror.ErrNotImplemented
 }

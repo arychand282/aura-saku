@@ -70,6 +70,13 @@ func (c *Client) ParseWebhookPayload(body []byte) (*messaging.IncomingMessage, e
 		return incoming, nil
 	}
 
+	if len(msg.Photo) > 0 {
+		incoming.IsPhoto = true
+		incoming.PhotoFileID = msg.Photo[len(msg.Photo)-1].FileID // largest resolution
+		incoming.Caption = msg.Caption
+		return incoming, nil
+	}
+
 	incoming.Text = msg.Text
 	if strings.HasPrefix(msg.Text, "/") {
 		fields := strings.SplitN(msg.Text, " ", 2)
@@ -131,7 +138,7 @@ type getFileResponse struct {
 	} `json:"result"`
 }
 
-func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+func (c *Client) DownloadFile(ctx context.Context, fileID string, fallbackMimeType string) ([]byte, string, error) {
 	getFileURL := fmt.Sprintf("%s?file_id=%s", c.apiURL("getFile"), fileID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getFileURL, nil)
 	if err != nil {
@@ -179,7 +186,7 @@ func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, strin
 
 	mimeType := dlResp.Header.Get("Content-Type")
 	if mimeType == "" {
-		mimeType = "audio/ogg" // Telegram voice notes are OGG/Opus by default
+		mimeType = fallbackMimeType
 	}
 	return data, mimeType, nil
 }

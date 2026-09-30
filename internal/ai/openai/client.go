@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,14 +52,54 @@ func (c *Client) ProviderName() string { return "openai" }
 
 // chatMessage covers every role this client sends: system/user (Role +
 // Content), an assistant turn replaying a prior tool call (Role +
-// ToolCalls, no Content), and a tool-result turn (Role: "tool" +
-// ToolCallID + Content) — see chain.go for the only place that last shape
-// is used.
+// ToolCalls, no Content), a tool-result turn (Role: "tool" + ToolCallID +
+// Content) — see chain.go for the only place that last shape is used — and
+// a multimodal user turn (Role + ContentParts, for AnalyzeReceiptImage).
+// ContentParts and Content are mutually exclusive; MarshalJSON below picks
+// whichever is set so a plain Content field keeps producing a plain JSON
+// string exactly as before (this must be exact — chain.go's tool-call-replay
+// messages depend on the existing behavior where both being empty/nil omits
+// "content" entirely; encoding/json's built-in omitempty on an `any` field
+// can't be trusted to do this correctly, since it only checks whether the
+// interface itself is nil, not whether a boxed empty string is "empty" — a
+// naive `Content any` widening would have started emitting `"content":""`
+// for the assistant-replaying-a-tool-call shape).
 type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role         string
+	Content      string
+	ContentParts []visionContentPart
+	ToolCalls    []toolCall
+	ToolCallID   string
+}
+
+func (m chatMessage) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Role       string      `json:"role"`
+		Content    interface{} `json:"content,omitempty"`
+		ToolCalls  []toolCall  `json:"tool_calls,omitempty"`
+		ToolCallID string      `json:"tool_call_id,omitempty"`
+	}
+	w := wire{Role: m.Role, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID}
+	switch {
+	case m.ContentParts != nil:
+		w.Content = m.ContentParts
+	case m.Content != "":
+		w.Content = m.Content
+	}
+	return json.Marshal(w)
+}
+
+// visionContentPart is one part of a multimodal user message's content
+// array — OpenAI's Chat Completions API expects "content" to be an array of
+// these (rather than a plain string) when an image is included.
+type visionContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+}
+
+type imageURLPart struct {
+	URL string `json:"url"`
 }
 
 // toolDef/functionDef/functionParameters/propertySchema mirror the subset
@@ -153,8 +194,16 @@ func historyToMessages(turns []ai.ConversationTurn) []chatMessage {
 // The zero value ConversationContext{} behaves exactly as this method did
 // before history existed.
 func (c *Client) chat(ctx context.Context, systemPrompt, userContent string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	return c.chatWithMessage(ctx, systemPrompt, chatMessage{Role: "user", Content: userContent}, history)
+}
+
+// chatWithMessage is chat's more general form, taking a pre-built final
+// user chatMessage instead of a plain string — the one caller that needs
+// this is AnalyzeReceiptImage, whose user turn is a multimodal
+// (ContentParts) message rather than plain text.
+func (c *Client) chatWithMessage(ctx context.Context, systemPrompt string, userMsg chatMessage, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
 	messages := append([]chatMessage{{Role: "system", Content: systemPrompt + prompt.ConversationSummaryPreamble(history.Summary)}}, historyToMessages(history.Recent)...)
-	messages = append(messages, chatMessage{Role: "user", Content: userContent})
+	messages = append(messages, userMsg)
 
 	reqBody := chatRequest{
 		Model:    c.model,
@@ -267,6 +316,19 @@ func (c *Client) TranscribeAndParseAudio(ctx context.Context, audioBytes []byte,
 		return nil, nil, fmt.Errorf("transcribe audio: %w", err)
 	}
 	return c.ParseTransactionText(ctx, transcript, defaultCurrency, preferredLanguage, history)
+}
+
+func (c *Client) AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, caption string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
+	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage)
+	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(imageBytes))
+	userMsg := chatMessage{
+		Role: "user",
+		ContentParts: []visionContentPart{
+			{Type: "text", Text: prompt.ReceiptAnalysisInstruction(caption)},
+			{Type: "image_url", ImageURL: &imageURLPart{URL: dataURL}},
+		},
+	}
+	return c.chatWithMessage(ctx, systemPrompt, userMsg, history)
 }
 
 // Summarize sends priorSummary plus turns as a plain text-in/text-out

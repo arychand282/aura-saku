@@ -207,6 +207,18 @@ type AIClient interface {
 	// same history parameter.
 	TranscribeAndParseAudio(ctx context.Context, audioBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, error)
 
+	// AnalyzeReceiptImage handles a receipt photo: a vision-capable call
+	// extracts and records the transaction it shows. Unlike audio, every
+	// current provider supports this natively, so there's no
+	// capability-unsupported sentinel error for it. caption is the optional
+	// text the user attached to the photo (empty if none) — treated as
+	// extra context, not a separate input. Same one-or-more-results
+	// contract as every other parse method, though in practice a receipt
+	// should yield exactly one result (see each provider's own per-call
+	// instruction, which explicitly asks for one record_transaction call
+	// per receipt regardless of how many line items it lists).
+	AnalyzeReceiptImage(ctx context.Context, imageBytes []byte, mimeType string, defaultCurrency string, preferredLanguage string, caption string, history ConversationContext) ([]*ParsedTransaction, *UsageMetadata, error)
+
 	// AnswerClarification re-parses given the original ambiguous context
 	// plus the user's clarifying reply. Same one-or-more-results contract as
 	// ParseTransactionText, though a clarification reply is answering one

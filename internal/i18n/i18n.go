@@ -67,6 +67,7 @@ const (
 	KeySyncDiscrepancy            = "sync_discrepancy"
 	KeyVoiceDownloadFailed        = "voice_download_failed"
 	KeyVoiceUnsupported           = "voice_unsupported"
+	KeyReceiptDownloadFailed      = "receipt_download_failed"
 	KeyAITrouble                  = "ai_trouble"
 	KeyTransactionSaveFailed      = "transaction_save_failed"
 	KeyTransactionRecorded        = "transaction_recorded"
@@ -159,6 +160,7 @@ var catalog = map[models.Language]map[string]string{
 		KeySyncDiscrepancy:            "Found a %.2f discrepancy (your balance: %.2f, recorded: %.2f). I've logged an adjustment entry to keep things accurate — use /undo if that's wrong.",
 		KeyVoiceDownloadFailed:        "Sorry, I couldn't download your voice note. Please try again.",
 		KeyVoiceUnsupported:           "Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
+		KeyReceiptDownloadFailed:      "Sorry, I couldn't download your receipt photo. Please try again.",
 		KeyAITrouble:                  "Sorry, I had trouble processing that. Please try again in a moment. If it keeps happening, report error code %s to the developer.",
 		KeyTransactionSaveFailed:      "Something went wrong saving your transaction.",
 		KeyTransactionRecorded:        "Recorded: %s of %s for \"%s\".",
@@ -249,6 +251,7 @@ var catalog = map[models.Language]map[string]string{
 		KeySyncDiscrepancy:            "Ditemukan selisih %.2f (saldomu: %.2f, tercatat: %.2f). Aku sudah mencatat entri penyesuaian agar catatan tetap akurat — gunakan /undo jika itu salah.",
 		KeyVoiceDownloadFailed:        "Maaf, aku tidak bisa mengunduh voice note-mu. Silakan coba lagi.",
 		KeyVoiceUnsupported:           "Voice note tidak didukung oleh AI provider saat ini (%s). Silakan ketik transaksimu, atau minta admin mengganti AI_PROVIDER.",
+		KeyReceiptDownloadFailed:      "Maaf, aku tidak bisa mengunduh foto struk-mu. Silakan coba lagi.",
 		KeyAITrouble:                  "Maaf, aku kesulitan memproses pesan itu. Silakan coba lagi sebentar. Jika terus terjadi, laporkan kode error %s ke developer.",
 		KeyTransactionSaveFailed:      "Terjadi kesalahan saat menyimpan transaksimu.",
 		KeyTransactionRecorded:        "Tercatat: %s sebesar %s untuk \"%s\".",
