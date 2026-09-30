@@ -57,37 +57,45 @@ func Name(lang models.Language) string {
 // below — T() falls back to English for a missing translation, but that
 // fallback existing is a safety net, not something to rely on.
 const (
-	KeyWelcome                    = "welcome"
-	KeyUndoNone                   = "undo_none"
-	KeyUndoFailed                 = "undo_failed"
-	KeyUndoSuccess                = "undo_success"
-	KeySyncUsage                  = "sync_usage"
-	KeySyncFailed                 = "sync_failed"
-	KeySyncMatched                = "sync_matched"
-	KeySyncDiscrepancy            = "sync_discrepancy"
-	KeyVoiceDownloadFailed        = "voice_download_failed"
-	KeyVoiceUnsupported           = "voice_unsupported"
-	KeyReceiptDownloadFailed      = "receipt_download_failed"
-	KeyAITrouble                  = "ai_trouble"
-	KeyTransactionSaveFailed      = "transaction_save_failed"
-	KeyTransactionRecorded        = "transaction_recorded"
-	KeyTransactionCorrected       = "transaction_corrected"
-	KeyBalance                    = "balance"
-	KeyQuerySpendingTotal         = "query_spending_total"
-	KeyQuerySpendingByCategory    = "query_spending_by_category"
-	KeyQueryCategoryNotFound      = "query_category_not_found"
-	KeyQuerySpendingByBucket      = "query_spending_by_bucket"
-	KeyQuerySpendingBreakdownItem = "query_spending_bucket_item"
-	KeyQuerySpendingScopeNone     = "query_spending_bucket_none"
-	KeyUncategorizedLabel         = "uncategorized_label"
-	KeyQuerySpendingListHeader    = "query_spending_list_header"
-	KeyQuerySpendingListHeaderAll = "query_spending_list_header_all"
-	KeyQuerySpendingListItem      = "query_spending_list_item"
-	KeyQuerySpendingListMore      = "query_spending_list_more"
-	KeyQuerySpendingListEmptyAll  = "query_spending_list_empty_all"
-	KeyLanguageUsage              = "language_usage"
-	KeyLanguageSet                = "language_set"
-	KeyInputTooLong               = "input_too_long"
+	KeyWelcome               = "welcome"
+	KeyUndoNone              = "undo_none"
+	KeyUndoFailed            = "undo_failed"
+	KeyUndoSuccess           = "undo_success"
+	KeySyncUsage             = "sync_usage"
+	KeySyncFailed            = "sync_failed"
+	KeySyncMatched           = "sync_matched"
+	KeySyncDiscrepancy       = "sync_discrepancy"
+	KeyVoiceDownloadFailed   = "voice_download_failed"
+	KeyVoiceUnsupported      = "voice_unsupported"
+	KeyReceiptDownloadFailed = "receipt_download_failed"
+	KeyAITrouble             = "ai_trouble"
+	KeyTransactionSaveFailed = "transaction_save_failed"
+	KeyTransactionRecorded   = "transaction_recorded"
+	KeyTransactionCorrected  = "transaction_corrected"
+	// KeyTransactionRecordedWithDescription/KeyTransactionCorrectedWithDescription
+	// are used instead of the plain versions above whenever the parsed
+	// transaction has a non-empty Description — a receipt photo's own
+	// summary of what was purchased is genuinely useful to show, not just
+	// the bare type/amount/category, and any other source's description
+	// (when the model provides one) benefits the same way.
+	KeyTransactionRecordedWithDescription  = "transaction_recorded_with_description"
+	KeyTransactionCorrectedWithDescription = "transaction_corrected_with_description"
+	KeyBalance                             = "balance"
+	KeyQuerySpendingTotal                  = "query_spending_total"
+	KeyQuerySpendingByCategory             = "query_spending_by_category"
+	KeyQueryCategoryNotFound               = "query_category_not_found"
+	KeyQuerySpendingByBucket               = "query_spending_by_bucket"
+	KeyQuerySpendingBreakdownItem          = "query_spending_bucket_item"
+	KeyQuerySpendingScopeNone              = "query_spending_bucket_none"
+	KeyUncategorizedLabel                  = "uncategorized_label"
+	KeyQuerySpendingListHeader             = "query_spending_list_header"
+	KeyQuerySpendingListHeaderAll          = "query_spending_list_header_all"
+	KeyQuerySpendingListItem               = "query_spending_list_item"
+	KeyQuerySpendingListMore               = "query_spending_list_more"
+	KeyQuerySpendingListEmptyAll           = "query_spending_list_empty_all"
+	KeyLanguageUsage                       = "language_usage"
+	KeyLanguageSet                         = "language_set"
+	KeyInputTooLong                        = "input_too_long"
 
 	KeyBudgetNoIncome      = "budget_no_income"
 	KeyBudgetNeedsExceeded = "budget_needs_exceeded"
@@ -150,37 +158,39 @@ const (
 
 var catalog = map[models.Language]map[string]string{
 	models.LanguageEN: {
-		KeyWelcome:                    "Welcome to Aura-Saku! Send me something like \"lunch 25000\" to record an expense, or a voice note. Use /language en or /language id to change my reply language anytime.",
-		KeyUndoNone:                   "You don't have any transactions to undo yet.",
-		KeyUndoFailed:                 "Something went wrong undoing your last transaction.",
-		KeyUndoSuccess:                "Undone: %s of %s.",
-		KeySyncUsage:                  "Usage: /sync <actual balance>, e.g. /sync 1500000",
-		KeySyncFailed:                 "Something went wrong syncing your balance.",
-		KeySyncMatched:                "Balance synced — matches your recorded balance of %.2f.",
-		KeySyncDiscrepancy:            "Found a %.2f discrepancy (your balance: %.2f, recorded: %.2f). I've logged an adjustment entry to keep things accurate — use /undo if that's wrong.",
-		KeyVoiceDownloadFailed:        "Sorry, I couldn't download your voice note. Please try again.",
-		KeyVoiceUnsupported:           "Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
-		KeyReceiptDownloadFailed:      "Sorry, I couldn't download your receipt photo. Please try again.",
-		KeyAITrouble:                  "Sorry, I had trouble processing that. Please try again in a moment. If it keeps happening, report error code %s to the developer.",
-		KeyTransactionSaveFailed:      "Something went wrong saving your transaction.",
-		KeyTransactionRecorded:        "Recorded: %s of %s for \"%s\".",
-		KeyTransactionCorrected:       "Corrected: %s of %s for \"%s\" (previous entry undone).",
-		KeyBalance:                    "Your current balance is %s.",
-		KeyQuerySpendingTotal:         "You've spent %s %s.",
-		KeyQuerySpendingByCategory:    "You've spent %s on %s %s.",
-		KeyQueryCategoryNotFound:      "I couldn't find a category matching \"%s\" — no spending recorded under that name %s.",
-		KeyQuerySpendingByBucket:      "You've spent %s on %s %s:",
-		KeyQuerySpendingBreakdownItem: "%d. %s: %s (%.0f%% of total)",
-		KeyQuerySpendingScopeNone:     "You haven't spent anything on %s %s.",
-		KeyUncategorizedLabel:         "Uncategorized",
-		KeyQuerySpendingListHeader:    "Here's what you spent on %s %s:",
-		KeyQuerySpendingListHeaderAll: "Here's what you spent %s:",
-		KeyQuerySpendingListItem:      "%d. %s — %s: %s (%s)",
-		KeyQuerySpendingListMore:      "...and %d more — say \"show me more\" to see the rest.",
-		KeyQuerySpendingListEmptyAll:  "You don't have any expenses %s.",
-		KeyLanguageUsage:              "Usage: /language <en|id>, e.g. /language id",
-		KeyLanguageSet:                "Language set to English.",
-		KeyInputTooLong:               "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
+		KeyWelcome:                             "Welcome to Aura-Saku! Send me something like \"lunch 25000\" to record an expense, or a voice note. Use /language en or /language id to change my reply language anytime.",
+		KeyUndoNone:                            "You don't have any transactions to undo yet.",
+		KeyUndoFailed:                          "Something went wrong undoing your last transaction.",
+		KeyUndoSuccess:                         "Undone: %s of %s.",
+		KeySyncUsage:                           "Usage: /sync <actual balance>, e.g. /sync 1500000",
+		KeySyncFailed:                          "Something went wrong syncing your balance.",
+		KeySyncMatched:                         "Balance synced — matches your recorded balance of %.2f.",
+		KeySyncDiscrepancy:                     "Found a %.2f discrepancy (your balance: %.2f, recorded: %.2f). I've logged an adjustment entry to keep things accurate — use /undo if that's wrong.",
+		KeyVoiceDownloadFailed:                 "Sorry, I couldn't download your voice note. Please try again.",
+		KeyVoiceUnsupported:                    "Voice notes aren't supported by the current AI provider (%s). Please type your transaction instead, or ask an admin to switch AI_PROVIDER.",
+		KeyReceiptDownloadFailed:               "Sorry, I couldn't download your receipt photo. Please try again.",
+		KeyAITrouble:                           "Sorry, I had trouble processing that. Please try again in a moment. If it keeps happening, report error code %s to the developer.",
+		KeyTransactionSaveFailed:               "Something went wrong saving your transaction.",
+		KeyTransactionRecorded:                 "Recorded: %s of %s for \"%s\".",
+		KeyTransactionCorrected:                "Corrected: %s of %s for \"%s\" (previous entry undone).",
+		KeyTransactionRecordedWithDescription:  "Recorded: %s of %s for \"%s\" — %s.",
+		KeyTransactionCorrectedWithDescription: "Corrected: %s of %s for \"%s\" — %s (previous entry undone).",
+		KeyBalance:                             "Your current balance is %s.",
+		KeyQuerySpendingTotal:                  "You've spent %s %s.",
+		KeyQuerySpendingByCategory:             "You've spent %s on %s %s.",
+		KeyQueryCategoryNotFound:               "I couldn't find a category matching \"%s\" — no spending recorded under that name %s.",
+		KeyQuerySpendingByBucket:               "You've spent %s on %s %s:",
+		KeyQuerySpendingBreakdownItem:          "%d. %s: %s (%.0f%% of total)",
+		KeyQuerySpendingScopeNone:              "You haven't spent anything on %s %s.",
+		KeyUncategorizedLabel:                  "Uncategorized",
+		KeyQuerySpendingListHeader:             "Here's what you spent on %s %s:",
+		KeyQuerySpendingListHeaderAll:          "Here's what you spent %s:",
+		KeyQuerySpendingListItem:               "%d. %s — %s: %s (%s)",
+		KeyQuerySpendingListMore:               "...and %d more — say \"show me more\" to see the rest.",
+		KeyQuerySpendingListEmptyAll:           "You don't have any expenses %s.",
+		KeyLanguageUsage:                       "Usage: /language <en|id>, e.g. /language id",
+		KeyLanguageSet:                         "Language set to English.",
+		KeyInputTooLong:                        "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
 
 		KeyBudgetNoIncome:      "No income recorded yet this period — log your income (e.g. \"salary 5000000\") to enable budget limit tracking.",
 		KeyBudgetNeedsExceeded: "Needs spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
@@ -241,37 +251,39 @@ var catalog = map[models.Language]map[string]string{
 		KeyMySubscriptionFree:   "You're on the Free tier. Send /subscribe (or just tell me you want to upgrade) to go Pro for unlimited daily use.",
 	},
 	models.LanguageID: {
-		KeyWelcome:                    "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
-		KeyUndoNone:                   "Kamu belum punya transaksi yang bisa dibatalkan.",
-		KeyUndoFailed:                 "Terjadi kesalahan saat membatalkan transaksi terakhirmu.",
-		KeyUndoSuccess:                "Dibatalkan: %s sebesar %s.",
-		KeySyncUsage:                  "Cara pakai: /sync <saldo sebenarnya>, contoh: /sync 1500000",
-		KeySyncFailed:                 "Terjadi kesalahan saat menyinkronkan saldomu.",
-		KeySyncMatched:                "Saldo cocok — sesuai dengan catatan sebesar %.2f.",
-		KeySyncDiscrepancy:            "Ditemukan selisih %.2f (saldomu: %.2f, tercatat: %.2f). Aku sudah mencatat entri penyesuaian agar catatan tetap akurat — gunakan /undo jika itu salah.",
-		KeyVoiceDownloadFailed:        "Maaf, aku tidak bisa mengunduh voice note-mu. Silakan coba lagi.",
-		KeyVoiceUnsupported:           "Voice note tidak didukung oleh AI provider saat ini (%s). Silakan ketik transaksimu, atau minta admin mengganti AI_PROVIDER.",
-		KeyReceiptDownloadFailed:      "Maaf, aku tidak bisa mengunduh foto struk-mu. Silakan coba lagi.",
-		KeyAITrouble:                  "Maaf, aku kesulitan memproses pesan itu. Silakan coba lagi sebentar. Jika terus terjadi, laporkan kode error %s ke developer.",
-		KeyTransactionSaveFailed:      "Terjadi kesalahan saat menyimpan transaksimu.",
-		KeyTransactionRecorded:        "Tercatat: %s sebesar %s untuk \"%s\".",
-		KeyTransactionCorrected:       "Dikoreksi: %s sebesar %s untuk \"%s\" (entri sebelumnya dibatalkan).",
-		KeyBalance:                    "Saldo kamu saat ini adalah %s.",
-		KeyQuerySpendingTotal:         "Kamu sudah menghabiskan %s %s.",
-		KeyQuerySpendingByCategory:    "Kamu sudah menghabiskan %s untuk %s %s.",
-		KeyQueryCategoryNotFound:      "Aku tidak menemukan kategori yang cocok dengan \"%s\" — tidak ada pengeluaran tercatat dengan nama itu %s.",
-		KeyQuerySpendingByBucket:      "Kamu sudah menghabiskan %s untuk %s %s:",
-		KeyQuerySpendingBreakdownItem: "%d. %s: %s (%.0f%% dari total)",
-		KeyQuerySpendingScopeNone:     "Kamu belum ada pengeluaran untuk %s %s.",
-		KeyUncategorizedLabel:         "Tanpa kategori",
-		KeyQuerySpendingListHeader:    "Berikut pengeluaranmu untuk %s %s:",
-		KeyQuerySpendingListHeaderAll: "Berikut pengeluaranmu %s:",
-		KeyQuerySpendingListItem:      "%d. %s — %s: %s (%s)",
-		KeyQuerySpendingListMore:      "...dan %d lainnya — ketik \"lanjutkan\" untuk lihat selanjutnya.",
-		KeyQuerySpendingListEmptyAll:  "Kamu belum ada pengeluaran %s.",
-		KeyLanguageUsage:              "Cara pakai: /language <en|id>, contoh: /language id",
-		KeyLanguageSet:                "Bahasa diatur ke Bahasa Indonesia.",
-		KeyInputTooLong:               "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",
+		KeyWelcome:                             "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
+		KeyUndoNone:                            "Kamu belum punya transaksi yang bisa dibatalkan.",
+		KeyUndoFailed:                          "Terjadi kesalahan saat membatalkan transaksi terakhirmu.",
+		KeyUndoSuccess:                         "Dibatalkan: %s sebesar %s.",
+		KeySyncUsage:                           "Cara pakai: /sync <saldo sebenarnya>, contoh: /sync 1500000",
+		KeySyncFailed:                          "Terjadi kesalahan saat menyinkronkan saldomu.",
+		KeySyncMatched:                         "Saldo cocok — sesuai dengan catatan sebesar %.2f.",
+		KeySyncDiscrepancy:                     "Ditemukan selisih %.2f (saldomu: %.2f, tercatat: %.2f). Aku sudah mencatat entri penyesuaian agar catatan tetap akurat — gunakan /undo jika itu salah.",
+		KeyVoiceDownloadFailed:                 "Maaf, aku tidak bisa mengunduh voice note-mu. Silakan coba lagi.",
+		KeyVoiceUnsupported:                    "Voice note tidak didukung oleh AI provider saat ini (%s). Silakan ketik transaksimu, atau minta admin mengganti AI_PROVIDER.",
+		KeyReceiptDownloadFailed:               "Maaf, aku tidak bisa mengunduh foto struk-mu. Silakan coba lagi.",
+		KeyAITrouble:                           "Maaf, aku kesulitan memproses pesan itu. Silakan coba lagi sebentar. Jika terus terjadi, laporkan kode error %s ke developer.",
+		KeyTransactionSaveFailed:               "Terjadi kesalahan saat menyimpan transaksimu.",
+		KeyTransactionRecorded:                 "Tercatat: %s sebesar %s untuk \"%s\".",
+		KeyTransactionCorrected:                "Dikoreksi: %s sebesar %s untuk \"%s\" (entri sebelumnya dibatalkan).",
+		KeyTransactionRecordedWithDescription:  "Tercatat: %s sebesar %s untuk \"%s\" — %s.",
+		KeyTransactionCorrectedWithDescription: "Dikoreksi: %s sebesar %s untuk \"%s\" — %s (entri sebelumnya dibatalkan).",
+		KeyBalance:                             "Saldo kamu saat ini adalah %s.",
+		KeyQuerySpendingTotal:                  "Kamu sudah menghabiskan %s %s.",
+		KeyQuerySpendingByCategory:             "Kamu sudah menghabiskan %s untuk %s %s.",
+		KeyQueryCategoryNotFound:               "Aku tidak menemukan kategori yang cocok dengan \"%s\" — tidak ada pengeluaran tercatat dengan nama itu %s.",
+		KeyQuerySpendingByBucket:               "Kamu sudah menghabiskan %s untuk %s %s:",
+		KeyQuerySpendingBreakdownItem:          "%d. %s: %s (%.0f%% dari total)",
+		KeyQuerySpendingScopeNone:              "Kamu belum ada pengeluaran untuk %s %s.",
+		KeyUncategorizedLabel:                  "Tanpa kategori",
+		KeyQuerySpendingListHeader:             "Berikut pengeluaranmu untuk %s %s:",
+		KeyQuerySpendingListHeaderAll:          "Berikut pengeluaranmu %s:",
+		KeyQuerySpendingListItem:               "%d. %s — %s: %s (%s)",
+		KeyQuerySpendingListMore:               "...dan %d lainnya — ketik \"lanjutkan\" untuk lihat selanjutnya.",
+		KeyQuerySpendingListEmptyAll:           "Kamu belum ada pengeluaran %s.",
+		KeyLanguageUsage:                       "Cara pakai: /language <en|id>, contoh: /language id",
+		KeyLanguageSet:                         "Bahasa diatur ke Bahasa Indonesia.",
+		KeyInputTooLong:                        "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",
 
 		KeyBudgetNoIncome:      "Belum ada pemasukan tercatat periode ini — catat pemasukanmu (misal \"gaji 5000000\") untuk mengaktifkan pelacakan batas anggaran.",
 		KeyBudgetNeedsExceeded: "Pengeluaran Needs sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",

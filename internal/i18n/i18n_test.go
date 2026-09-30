@@ -97,6 +97,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeySyncUsage, KeySyncFailed, KeySyncMatched, KeySyncDiscrepancy,
 		KeyVoiceDownloadFailed, KeyVoiceUnsupported, KeyReceiptDownloadFailed, KeyAITrouble,
 		KeyTransactionSaveFailed, KeyTransactionRecorded, KeyTransactionCorrected,
+		KeyTransactionRecordedWithDescription, KeyTransactionCorrectedWithDescription,
 		KeyBalance, KeyQuerySpendingTotal, KeyQuerySpendingByCategory, KeyQueryCategoryNotFound,
 		KeyQuerySpendingByBucket, KeyQuerySpendingBreakdownItem, KeyQuerySpendingScopeNone, KeyUncategorizedLabel,
 		KeyQuerySpendingListHeader, KeyQuerySpendingListHeaderAll, KeyQuerySpendingListItem,

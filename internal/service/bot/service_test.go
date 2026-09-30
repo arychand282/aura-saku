@@ -685,6 +685,12 @@ func TestHandleUpdate_TransactionInput_Photo(t *testing.T) {
 	if tx.RawInput != "[receipt photo]: buat kantor" {
 		t.Errorf("RawInput = %q, want the placeholder + caption, never the actual image bytes", tx.RawInput)
 	}
+
+	wantLine := i18n.T(models.LanguageID, i18n.KeyTransactionRecordedWithDescription,
+		"expense", i18n.FormatMoney(models.LanguageID, 150_000, "IDR"), "groceries", "Indomaret: beras, telur, susu")
+	if got := env.messenger.last(chatID); !strings.HasPrefix(got, wantLine) {
+		t.Errorf("reply = %q, want it to start with %q (the receipt's own description, not just the bare amount/category)", got, wantLine)
+	}
 }
 
 // TestHandleUpdate_TransactionInput_PhotoDownloadFailed covers a Telegram

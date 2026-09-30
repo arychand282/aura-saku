@@ -863,6 +863,21 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 // repeating it per line would just be noise. A stray non-record item
 // (the model violating the "only record_transaction repeats" instruction)
 // is skipped rather than mis-recorded.
+// transactionConfirmationLine builds one "Recorded"/"Corrected" confirmation
+// line, appending the parsed transaction's own description as a natural
+// clause whenever the model provided one — a receipt photo's summary of
+// what was actually purchased ("Belanja snack di Alfamart...") is genuinely
+// more useful than just the bare type/amount/category, and this benefits
+// any other source too whenever its description happens to be non-empty.
+// baseKey/withDescriptionKey are a matched pair differing only in whether
+// the sentence ends with that extra clause.
+func transactionConfirmationLine(lang models.Language, baseKey, withDescriptionKey string, txType models.TransactionType, amount, category, description string) string {
+	if description == "" {
+		return i18n.T(lang, baseKey, txType, amount, category)
+	}
+	return i18n.T(lang, withDescriptionKey, txType, amount, category, description)
+}
+
 func (s *Service) handleTransactionRecordBatch(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsedList []*ai.ParsedTransaction, source models.TransactionSource, raw string) {
 	var (
 		lines      []string
@@ -885,8 +900,8 @@ func (s *Service) handleTransactionRecordBatch(ctx context.Context, user *models
 			continue
 		}
 
-		lines = append(lines, i18n.T(user.Language, i18n.KeyTransactionRecorded,
-			createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName))
+		lines = append(lines, transactionConfirmationLine(user.Language, i18n.KeyTransactionRecorded, i18n.KeyTransactionRecordedWithDescription,
+			createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName, parsed.Description))
 		if anyExpense == nil && createdTx.Type == models.TxExpense {
 			anyExpense = createdTx
 		}
@@ -928,13 +943,13 @@ func (s *Service) handleTransactionCorrection(ctx context.Context, user *models.
 	// Nothing existed to correct (e.g. this was the user's very first
 	// message) — recording it fresh is still the right outcome, so reply
 	// as a normal record rather than claiming a correction happened.
-	replyKey := i18n.KeyTransactionRecorded
+	baseKey, withDescriptionKey := i18n.KeyTransactionRecorded, i18n.KeyTransactionRecordedWithDescription
 	if undoneTx != nil {
-		replyKey = i18n.KeyTransactionCorrected
+		baseKey, withDescriptionKey = i18n.KeyTransactionCorrected, i18n.KeyTransactionCorrectedWithDescription
 	}
 
-	reply := i18n.T(user.Language, replyKey,
-		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName)
+	reply := transactionConfirmationLine(user.Language, baseKey, withDescriptionKey,
+		createdTx.Type, i18n.FormatMoney(user.Language, createdTx.OriginalAmount, createdTx.OriginalCurrency), parsed.CategoryName, parsed.Description)
 	reply = s.appendBudgetWarnings(ctx, user, createdTx, reply)
 
 	s.reply(ctx, user, reply)
