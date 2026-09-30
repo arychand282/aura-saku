@@ -128,6 +128,16 @@ type ParsedTransaction struct {
 	// empty means "no category filter, total everything".
 	QueryPeriod   string `json:"query_period,omitempty"`
 	QueryCategory string `json:"query_category,omitempty"`
+
+	// QueryBucket is IntentQuery's Needs/Wants/Savings counterpart to
+	// QueryCategory — set when the message asks about spending in a budget
+	// bucket as a whole ("how much did I spend on Wants") rather than a
+	// single named category. One of the BudgetBucket values, lowercase;
+	// empty means no bucket filter. The bot layer also treats QueryCategory
+	// as a bucket name if it happens to match one, as a safety net for a
+	// parse that puts a bucket word here instead — see
+	// bot.Service.handleSpendingQuery.
+	QueryBucket string `json:"query_bucket,omitempty"`
 }
 
 type UsageMetadata struct {

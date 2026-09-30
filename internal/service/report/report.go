@@ -225,6 +225,51 @@ func (s *Service) MonthlyCategoryInsight(ctx context.Context, userID uint) (*Cat
 	return insight, nil
 }
 
+// BucketBreakdown is BucketSpending's result: a budget bucket's total spend
+// over the period, plus a per-category breakdown within it — used to answer
+// "how much did I spend on Wants" with the same level of detail a budget
+// warning already flagged, not just a single number.
+type BucketBreakdown struct {
+	Total      float64
+	Categories []CategoryTotal
+}
+
+// BucketSpending sums expense transactions within a single Needs/Wants/
+// Savings bucket over the given period, broken down by category — the
+// bucket-scoped counterpart to CategoryTotal. Resolves each transaction's
+// bucket the same way budget.Service.sumSpendByBucket does: its own
+// AI-classified override first, falling back to its category's static
+// default bucket (kept as its own copy of that expression here rather than
+// a cross-package dependency for one SQL fragment, same reasoning as
+// startOfMonth above).
+func (s *Service) BucketSpending(ctx context.Context, userID uint, period string, bucket models.BudgetBucket) (*BucketBreakdown, error) {
+	start, end, err := PeriodRange(period)
+	if err != nil {
+		return nil, err
+	}
+
+	const bucketExpr = "COALESCE(transactions.bucket, categories.bucket, 'none')"
+
+	var rows []CategoryTotal
+	result := s.db.WithContext(ctx).Table("transactions").
+		Select("categories.name as category_name, COALESCE(SUM(transactions.converted_amount), 0) as total").
+		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
+		Where("transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at BETWEEN ? AND ? AND "+bucketExpr+" = ?",
+			userID, models.TxExpense, start, end, string(bucket)).
+		Group("categories.name").
+		Order("total DESC").
+		Scan(&rows)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	breakdown := &BucketBreakdown{Categories: rows}
+	for _, row := range rows {
+		breakdown.Total += row.Total
+	}
+	return breakdown, nil
+}
+
 // CategoryTotal sums expense transactions in the given period whose category
 // name matches categoryQuery (case-insensitive partial match, e.g. "food"
 // matches a "Food" category). matched=false means no category exists

@@ -173,6 +173,70 @@ func TestCategoryTotal_NotFound(t *testing.T) {
 	}
 }
 
+// TestBucketSpending covers the bucket-scoped breakdown used to answer "how
+// much did I spend on Wants" style questions: only expenses whose resolved
+// bucket (per-transaction override, else category default) matches the
+// requested bucket are included, broken down by category, with an unrelated
+// Needs expense correctly excluded from a Wants query.
+func TestBucketSpending(t *testing.T) {
+	gormDB := setupTestDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 200_000, Currency: "IDR", CategoryName: "entertainment", Bucket: "wants",
+	}, models.SourceText, "movie night 200000"); err != nil {
+		t.Fatalf("create wants expense 1: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "shopping", Bucket: "wants",
+	}, models.SourceText, "new shoes 100000"); err != nil {
+		t.Fatalf("create wants expense 2: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "rent", Bucket: "needs",
+	}, models.SourceText, "rent 500000"); err != nil {
+		t.Fatalf("create needs expense: %v", err)
+	}
+
+	reportSvc := report.NewService(gormDB)
+	breakdown, err := reportSvc.BucketSpending(ctx, user.ID, "monthly", models.BucketWants)
+	if err != nil {
+		t.Fatalf("BucketSpending: %v", err)
+	}
+	if breakdown.Total != 300_000 {
+		t.Errorf("breakdown.Total = %.2f, want 300000.00 (excluding the Needs rent expense)", breakdown.Total)
+	}
+	if len(breakdown.Categories) != 2 {
+		t.Fatalf("len(breakdown.Categories) = %d, want 2", len(breakdown.Categories))
+	}
+	if breakdown.Categories[0].CategoryName != "entertainment" || breakdown.Categories[0].Total != 200_000 {
+		t.Errorf("breakdown.Categories[0] = %+v, want {entertainment 200000}", breakdown.Categories[0])
+	}
+}
+
+// TestBucketSpending_NoExpensesReturnsZero covers a bucket with no matching
+// expenses at all this period: a zero total and an empty (not nil-panicking)
+// category list, distinct from an error.
+func TestBucketSpending_NoExpensesReturnsZero(t *testing.T) {
+	gormDB := setupTestDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	reportSvc := report.NewService(gormDB)
+	breakdown, err := reportSvc.BucketSpending(ctx, user.ID, "monthly", models.BucketSavings)
+	if err != nil {
+		t.Fatalf("BucketSpending: %v", err)
+	}
+	if breakdown.Total != 0 {
+		t.Errorf("breakdown.Total = %.2f, want 0", breakdown.Total)
+	}
+	if len(breakdown.Categories) != 0 {
+		t.Errorf("len(breakdown.Categories) = %d, want 0", len(breakdown.Categories))
+	}
+}
+
 // dateInMonthsAgo returns an OccurredAtHint (YYYY-MM-DD) for the 10th of
 // the calendar month monthsAgo months before now — enough to land solidly
 // inside that month regardless of today's actual day-of-month.

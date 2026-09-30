@@ -977,6 +977,11 @@ func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, t
 func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction) {
 	periodLabel := i18n.PeriodLabel(user.Language, parsed.QueryPeriod)
 
+	if bucket, ok := resolveQueryBucket(parsed); ok {
+		s.handleBucketSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel, bucket)
+		return
+	}
+
 	if parsed.QueryCategory != "" {
 		total, matched, err := s.reportSvc.CategoryTotal(ctx, user.ID, parsed.QueryPeriod, parsed.QueryCategory)
 		if err != nil {
@@ -999,6 +1004,76 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
+}
+
+// resolveQueryBucket decides whether a query_spending parse is actually
+// asking about a whole Needs/Wants/Savings bucket rather than one specific
+// category. It checks ParsedTransaction.QueryBucket first (the field meant
+// for this), then falls back to treating QueryCategory as a bucket name if
+// it happens to match one — a bucket word ("wants", "keinginan") sometimes
+// lands in QueryCategory instead of the newer QueryBucket field despite the
+// prompt's guidance, and CategoryTotal would never match a real category
+// named "wants" anyway, so this fallback costs nothing and avoids a
+// needless "category not found" reply for a perfectly answerable question.
+func resolveQueryBucket(parsed *ai.ParsedTransaction) (models.BudgetBucket, bool) {
+	candidates := []string{parsed.QueryBucket, parsed.QueryCategory}
+	for _, raw := range candidates {
+		switch models.BudgetBucket(strings.ToLower(strings.TrimSpace(raw))) {
+		case models.BucketNeeds:
+			return models.BucketNeeds, true
+		case models.BucketWants:
+			return models.BucketWants, true
+		case models.BucketSavings:
+			return models.BucketSavings, true
+		}
+	}
+	return "", false
+}
+
+// bucketDisplayName renders a BudgetBucket the same way every other
+// budget-related message already does — Needs/Wants/Savings kept in English
+// even in the Indonesian catalog (see KeyBudgetShow's own ID template) since
+// these are the bot's own fixed 50/30/20 vocabulary, not free-text content.
+func bucketDisplayName(bucket models.BudgetBucket) string {
+	switch bucket {
+	case models.BucketNeeds:
+		return "Needs"
+	case models.BucketWants:
+		return "Wants"
+	case models.BucketSavings:
+		return "Savings"
+	default:
+		return string(bucket)
+	}
+}
+
+// handleBucketSpendingQuery answers a "how much did I spend on Wants" style
+// question (or a short confirmation resolving to one — see
+// resolveQueryBucket) with a per-category breakdown within that bucket, the
+// same shape RunCategoryInsights already uses for the proactive monthly
+// recap, rather than a single opaque total.
+func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.User, period, periodLabel string, bucket models.BudgetBucket) {
+	breakdown, err := s.reportSvc.BucketSpending(ctx, user.ID, period, bucket)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("bucket spending query for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+
+	label := bucketDisplayName(bucket)
+	if breakdown.Total <= 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingBucketNone, label, periodLabel))
+		return
+	}
+
+	lines := []string{i18n.T(user.Language, i18n.KeyQuerySpendingByBucket,
+		i18n.FormatMoney(user.Language, breakdown.Total, user.DefaultCurrency), label, periodLabel)}
+	for i, c := range breakdown.Categories {
+		percent := c.Total / breakdown.Total * 100
+		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBucketItem,
+			i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
+	}
+	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
 // recentTransactionsLookupLimit bounds how many of the user's recent

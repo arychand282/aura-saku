@@ -175,7 +175,12 @@ func TransactionTools() []Tool {
 				},
 				"query_category": {
 					Type:        "string",
-					Description: "Optional category filter, in English (e.g. \"berapa aku keluar buat makan bulan ini?\" -> \"food\"). Leave empty for spending in general.",
+					Description: "Optional category filter, in English (e.g. \"berapa aku keluar buat makan bulan ini?\" -> \"food\"). Leave empty for spending in general. ALSO set this (or query_bucket, whichever fits) when the current message is a short confirmation (\"iya\", \"iya tolong\", \"yes please\", \"boleh\", \"ya udah\") replying to the ASSISTANT'S OWN PREVIOUS MESSAGE offering to break spending down by a specific category or budget bucket — resolve it from that offer, a confirmation like this is never asking for a plain total.",
+				},
+				"query_bucket": {
+					Type:        "string",
+					Description: "Set this instead of query_category when the message asks about spending in a 50/30/20 budget bucket AS A WHOLE, not one specific category — e.g. \"berapa pengeluaran kebutuhanku?\" (needs), \"how much did I spend on wants?\", or a confirmation replying to the assistant's own previous message that just flagged/offered a Needs/Wants/Savings breakdown (see query_category's note on resolving such confirmations). Leave empty otherwise.",
+					Enum:        []string{"needs", "wants", "savings"},
 				},
 			},
 			Required: []string{"query_period"},
@@ -247,7 +252,9 @@ Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
 Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder, create_savings_goal, delete_recurring_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message — with exactly ONE exception: delete_recurring_transaction MAY be paired with create_recurring_transaction or create_bill_reminder in the same message when the message describes an UPDATE to an existing recurring transaction/bill reminder rather than a plain cancellation (see each of those three tools' own description for exactly when). If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
 
-Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.`,
+Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.
+
+The same history check applies to a short confirmation with no content of its own ("iya", "iya tolong", "yes please", "boleh") — it almost always answers a question YOU (the assistant) just asked in the previous turn, not a fresh request in isolation. If your previous message offered to break down spending by a specific category or budget bucket, treat this confirmation as a query_spending call for that exact category/bucket (see query_spending's query_category and query_bucket fields), never as a generic total.`,
 		today.UTC().Format("2006-01-02"),
 		defaultCurrency,
 		toolCallingLanguageName(preferredLanguage),

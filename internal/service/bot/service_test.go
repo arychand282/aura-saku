@@ -739,6 +739,93 @@ func TestHandleUpdate_SpendingQuery_CategoryNotFound(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_BucketBreakdown covers the bug found while
+// testing a real chat: the bot offers to break down spending by a budget
+// bucket (e.g. "Wants exceeded 30%, want a breakdown?"), the user confirms
+// with a short "iya tolong", and the reply must be the actual per-category
+// breakdown WITHIN that bucket — not a generic total-spend reply. Since
+// mockAIClient doesn't do real classification, this exercises the
+// resolveQueryBucket/handleBucketSpendingQuery path directly by setting
+// QueryBucket the way the fixed prompt now instructs the model to for such
+// a confirmation, and confirms an unrelated Needs expense is excluded.
+func TestHandleUpdate_SpendingQuery_BucketBreakdown(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 200_000, Currency: "IDR", CategoryName: "entertainment", Bucket: "wants", Description: "nonton",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nonton 200000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "shopping", Bucket: "wants", Description: "sepatu",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "beli sepatu 100000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "rent", Bucket: "needs", Description: "sewa",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "sewa 500000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:      ai.IntentQuery,
+		QueryPeriod: ai.PeriodMonthly,
+		QueryBucket: "wants",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "iya tolong"})
+
+	got := env.messenger.last(chatID)
+	wantTotal := i18n.FormatMoney(models.LanguageID, 300_000, "IDR")
+	if !strings.Contains(got, wantTotal) {
+		t.Errorf("reply = %q, want it to contain the Wants total %s (excluding the Needs rent expense)", got, wantTotal)
+	}
+	if !strings.Contains(got, "entertainment") || !strings.Contains(got, "shopping") {
+		t.Errorf("reply = %q, want it to list both Wants categories (entertainment, shopping)", got)
+	}
+	if strings.Contains(got, "rent") {
+		t.Errorf("reply = %q, must not include the Needs-bucketed rent expense", got)
+	}
+	if strings.Contains(got, i18n.FormatMoney(models.LanguageID, 500_000, "IDR")) {
+		t.Errorf("reply = %q, must not mention the rent amount", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_BucketBreakdown_CategoryFieldFallback covers
+// the safety net in resolveQueryBucket: some parses put the bucket word in
+// QueryCategory instead of the newer QueryBucket field, and "wants" would
+// never match a real category name via CategoryTotal anyway, so it must
+// still resolve to the bucket breakdown rather than a "category not found"
+// reply.
+func TestHandleUpdate_SpendingQuery_BucketBreakdown_CategoryFieldFallback(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 150_000, Currency: "IDR", CategoryName: "entertainment", Bucket: "wants",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nonton 150000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:        ai.IntentQuery,
+		QueryPeriod:   ai.PeriodMonthly,
+		QueryCategory: "wants",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "keinginan aku berapa bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	want := i18n.FormatMoney(models.LanguageID, 150_000, "IDR")
+	if !strings.Contains(got, want) {
+		t.Errorf("reply = %q, want it to contain the Wants total %s, not a \"category not found\" reply", got, want)
+	}
+	if strings.Contains(got, "tidak menemukan kategori") {
+		t.Errorf("reply = %q, must not fall back to the category-not-found reply for a bucket name", got)
+	}
+}
+
 // TestHandleUpdate_Sync_NoArgumentShowsBalance covers /sync with no
 // argument reporting the calculated balance directly, instead of falling
 // into the usage-instructions reply.
