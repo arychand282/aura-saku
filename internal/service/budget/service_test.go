@@ -2,6 +2,7 @@ package budget_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"aura-saku/internal/ai"
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/config"
 	"aura-saku/internal/db"
 	"aura-saku/internal/models"
@@ -166,6 +168,146 @@ func TestEvaluateBudget_TransactionBucketOverridesCategory(t *testing.T) {
 	}
 	if status.NeedsSpent != 480_000 {
 		t.Errorf("NeedsSpent = %.2f, want 480000.00 (the Needs-overridden shopping expense)", status.NeedsSpent)
+	}
+}
+
+// TestCurrentBudget_DefaultsTo503020 covers the auto-creation path: a user
+// with no budget row yet gets the standard 50/30/20 split, matching
+// EvaluateBudget's own getOrCreateActiveBudget fallback.
+func TestCurrentBudget_DefaultsTo503020(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	budgetSvc := budget.NewService(gormDB)
+	b, err := budgetSvc.CurrentBudget(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CurrentBudget: %v", err)
+	}
+	if b.NeedsPercent != 50 || b.WantsPercent != 30 || b.SavingsPercent != 20 {
+		t.Errorf("CurrentBudget = %+v, want the default 50/30/20 split", b)
+	}
+	if !b.IsActive {
+		t.Error("expected the auto-created budget to be active")
+	}
+}
+
+// TestSetBudget_ReplacesActiveAllocationAndDeactivatesOld covers the core
+// contract: setting a new allocation deactivates the previous active
+// budget (preserving history, not deleting it) rather than mutating it in
+// place, and EvaluateBudget immediately picks up the new percentages.
+func TestSetBudget_ReplacesActiveAllocationAndDeactivatesOld(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	budgetSvc := budget.NewService(gormDB)
+	original, err := budgetSvc.CurrentBudget(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CurrentBudget (seed default): %v", err)
+	}
+
+	updated, err := budgetSvc.SetBudget(ctx, user.ID, 60, 20, 20)
+	if err != nil {
+		t.Fatalf("SetBudget: %v", err)
+	}
+	if updated.NeedsPercent != 60 || updated.WantsPercent != 20 || updated.SavingsPercent != 20 {
+		t.Errorf("SetBudget result = %+v, want {60 20 20}", updated)
+	}
+	if !updated.IsActive {
+		t.Error("expected the new budget to be active")
+	}
+
+	var originalAfter models.Budget
+	if err := gormDB.First(&originalAfter, original.ID).Error; err != nil {
+		t.Fatalf("reload original budget: %v", err)
+	}
+	if originalAfter.IsActive {
+		t.Error("expected the previous budget to be deactivated, not left active")
+	}
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "salary 1000000"); err != nil {
+		t.Fatalf("create income: %v", err)
+	}
+
+	status, err := budgetSvc.EvaluateBudget(ctx, user.ID, models.LanguageEN)
+	if err != nil {
+		t.Fatalf("EvaluateBudget: %v", err)
+	}
+	if status.NeedsLimit != 600_000 {
+		t.Errorf("NeedsLimit = %.2f, want 600000.00 (60%% of 1,000,000 under the new allocation)", status.NeedsLimit)
+	}
+}
+
+// TestSetBudget_RejectsInvalidPercentages covers validation: a negative
+// percentage and a set that doesn't sum to 100 must both be rejected with
+// ErrInvalidBudgetPercentages, and must never write a new active budget row.
+func TestSetBudget_RejectsInvalidPercentages(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	budgetSvc := budget.NewService(gormDB)
+
+	if _, err := budgetSvc.SetBudget(ctx, user.ID, 50, 30, 30); !errors.Is(err, apperror.ErrInvalidBudgetPercentages) {
+		t.Errorf("SetBudget(50,30,30) err = %v, want ErrInvalidBudgetPercentages (sums to 110)", err)
+	}
+	if _, err := budgetSvc.SetBudget(ctx, user.ID, -10, 60, 50); !errors.Is(err, apperror.ErrInvalidBudgetPercentages) {
+		t.Errorf("SetBudget(-10,60,50) err = %v, want ErrInvalidBudgetPercentages (negative)", err)
+	}
+
+	var count int64
+	gormDB.Model(&models.Budget{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("budget row count after only-invalid SetBudget calls = %d, want 0", count)
 	}
 }
 

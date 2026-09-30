@@ -101,14 +101,17 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyLanguageUsage, KeyLanguageSet,
 		KeyBudgetNoIncome, KeyBudgetNeedsExceeded, KeyBudgetWantsExceeded,
 		KeyBudgetWantsPace, KeyBudgetRollover,
+		KeyBudgetSetUsage, KeyBudgetSetInvalid, KeyBudgetSetFailed, KeyBudgetSetSuccess, KeyBudgetShow,
 		KeyQuotaExceededWithReward, KeyQuotaExceededNoReward,
 		KeyClaimUsage, KeyClaimSuccess, KeyClaimInvalidCode, KeyClaimLimitReached,
 		KeyDashboardLink, KeyDashboardUnavailable,
 		KeyRecurringCreated, KeyRecurringCreateFailed, KeyRecurringPosted,
 		KeyRecurringListEmpty, KeyRecurringListItem, KeyRecurringModeReminder,
-		KeyRecurringCancelUsage, KeyRecurringCancelSuccess, KeyRecurringCancelNotFound,
+		KeyRecurringCancelUsage, KeyRecurringCancelSuccess, KeyRecurringCancelNotFound, KeyRecurringUpdatedFrom,
 		KeyBillReminderCreated, KeyBillReminderDue,
 		KeyCategoryInsightHeader, KeyCategoryInsightItem, KeyCategoryInsightWarning,
+		KeyGoalUsage, KeyGoalCreated, KeyGoalCreateFailed, KeyGoalNone,
+		KeyGoalProgress, KeyGoalProgressToGo, KeyGoalProgressDeadline, KeyGoalReached, KeyGoalCancelSuccess,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

@@ -12,23 +12,32 @@ import (
 )
 
 const toolGetRecentTransactions = "get_recent_transactions"
+const toolGetRecurringTransactions = "get_recurring_transactions"
 
 // maxChainRounds bounds how many times ParseCorrectionChained will call the
 // API in a single request — see the identical constant/comment on
 // gemini.Client.ParseCorrectionChained.
 const maxChainRounds = 4
 
-// correctionChainTools is the shared 4 tools (transactionTools) plus a 5th
-// one only this method offers: get_recent_transactions. Deliberately NOT
-// added to the shared prompt.TransactionTools() list every provider uses —
-// see gemini/chain.go's identical comment for why.
+// correctionChainTools is the shared tools (transactionTools) plus two more
+// only this method offers: get_recent_transactions and
+// get_recurring_transactions. Deliberately NOT added to the shared
+// prompt.TransactionTools() list every provider uses — see
+// gemini/chain.go's identical comment for why.
 func correctionChainTools() []toolDef {
 	tools := transactionTools()
-	return append(tools, toolDef{
-		Name:        toolGetRecentTransactions,
-		Description: "Call this BEFORE correct_transaction whenever the transaction being fixed might not be the single most recent one — e.g. several transactions were just recorded from one message, or the correction refers to something further back by category/amount/description — or when the correction message doesn't restate every field of the original (e.g. \"eh salah, harusnya 1 juta aja\" only gives a corrected amount, not a category). Returns the user's recent transactions, each with an id — pass the matching one's id back as correct_transaction's target_transaction_id, and use its other fields to fill in whatever correct_transaction still needs. Takes no parameters. Skip this only when it's obviously the single most recent transaction AND the correction message already states type/amount/currency/category on its own.",
-		InputSchema: inputSchema{Type: "object", Properties: map[string]propertySchema{}},
-	})
+	return append(tools,
+		toolDef{
+			Name:        toolGetRecentTransactions,
+			Description: "Call this BEFORE correct_transaction whenever the transaction being fixed might not be the single most recent one — e.g. several transactions were just recorded from one message, or the correction refers to something further back by category/amount/description — or when the correction message doesn't restate every field of the original (e.g. \"eh salah, harusnya 1 juta aja\" only gives a corrected amount, not a category). Returns the user's recent transactions, each with an id — pass the matching one's id back as correct_transaction's target_transaction_id, and use its other fields to fill in whatever correct_transaction still needs. Takes no parameters. Skip this only when it's obviously the single most recent transaction AND the correction message already states type/amount/currency/category on its own.",
+			InputSchema: inputSchema{Type: "object", Properties: map[string]propertySchema{}},
+		},
+		toolDef{
+			Name:        toolGetRecurringTransactions,
+			Description: "Call this BEFORE delete_recurring_transaction to find the id of the recurring transaction/bill reminder the message wants canceled. Returns the user's active recurring transactions and bill reminders, each with an id, type, amount, category, description, day_of_month, and whether it's reminder_only — match the message against these by category/amount/description. Takes no parameters. Call this even when there's only one active one, so the id used is real rather than guessed.",
+			InputSchema: inputSchema{Type: "object", Properties: map[string]propertySchema{}},
+		},
+	)
 }
 
 // chainMessage is chain.go's own message type, distinct from converse()'s
@@ -86,7 +95,7 @@ type chainRequest struct {
 // response; get_recent_transactions never mixes with that, so a chaining
 // round is detected as "any get_recent_transactions block present" and
 // everything else in that round is deferred to the next.
-func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, lookup ai.RecentTransactionsLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
+func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCurrency, preferredLanguage string, txLookup ai.RecentTransactionsLookup, recurringLookup ai.RecurringTransactionsLookup, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, []ai.ChainStep, error) {
 	systemPrompt := prompt.ToolCallingSystemInstruction(defaultCurrency, time.Now(), preferredLanguage) + prompt.ConversationSummaryPreamble(history.Summary)
 	tools := correctionChainTools()
 
@@ -129,13 +138,39 @@ func (c *Client) ParseCorrectionChained(ctx context.Context, userText, defaultCu
 		}
 
 		if lookupBlock := findBlockByName(toolBlocks, toolGetRecentTransactions); lookupBlock != nil {
-			results, lookupErr := lookup(ctx)
+			results, lookupErr := txLookup(ctx)
 			if lookupErr != nil {
 				return nil, nil, steps, fmt.Errorf("get_recent_transactions lookup: %w", lookupErr)
 			}
 			steps = append(steps, ai.ChainStep{ToolCalled: lookupBlock.Name, Args: lookupBlock.Input, Results: results})
 
 			resultJSON, jsonErr := json.Marshal(ai.RecentTransactionsToMap(results))
+			if jsonErr != nil {
+				return nil, nil, steps, fmt.Errorf("marshal tool result: %w", jsonErr)
+			}
+			input := lookupBlock.Input
+			if input == nil {
+				input = map[string]interface{}{}
+			}
+			messages = append(messages,
+				chainMessage{Role: "assistant", Content: []toolUseBlock{
+					{Type: "tool_use", ID: lookupBlock.ID, Name: lookupBlock.Name, Input: input},
+				}},
+				chainMessage{Role: "user", Content: []toolResultBlock{
+					{Type: "tool_result", ToolUseID: lookupBlock.ID, Content: string(resultJSON)},
+				}},
+			)
+			continue
+		}
+
+		if lookupBlock := findBlockByName(toolBlocks, toolGetRecurringTransactions); lookupBlock != nil {
+			results, lookupErr := recurringLookup(ctx)
+			if lookupErr != nil {
+				return nil, nil, steps, fmt.Errorf("get_recurring_transactions lookup: %w", lookupErr)
+			}
+			steps = append(steps, ai.ChainStep{ToolCalled: lookupBlock.Name, Args: lookupBlock.Input, RecurringResults: results})
+
+			resultJSON, jsonErr := json.Marshal(ai.RecurringTransactionsToMap(results))
 			if jsonErr != nil {
 				return nil, nil, steps, fmt.Errorf("marshal tool result: %w", jsonErr)
 			}

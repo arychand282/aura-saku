@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
+	"aura-saku/internal/service/savingsgoal"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
@@ -86,7 +87,8 @@ func main() {
 		SummarizeThreshold: cfg.ConversationSummarizeThreshold,
 	})
 	recurSvc := recurring.NewService(gormDB)
-	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, bot.Config{
+	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
+	botSvc := bot.NewService(gormDB, redisClient, telegramClient, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, bot.Config{
 		FreeTierDailyQuota:    cfg.FreeTierDailyQuota,
 		MaxInputChars:         cfg.MaxInputChars,
 		RewardAffiliateURL:    cfg.RewardAffiliateURL,

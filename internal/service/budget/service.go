@@ -4,13 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
 
+	"aura-saku/internal/apperror"
 	"aura-saku/internal/i18n"
 	"aura-saku/internal/models"
 )
+
+// percentSumTolerance absorbs float rounding (e.g. three thirds entered as
+// 33.33/33.33/33.34) without rejecting an otherwise-valid allocation over a
+// fraction of a percentage point.
+const percentSumTolerance = 0.01
 
 // Status is the shape returned by EvaluateBudget — the post-entry feedback
 // shown to the user and surfaced on the dashboard.
@@ -117,6 +124,76 @@ func (s *Service) SuggestRollover(ctx context.Context, userID uint, lang models.
 	return i18n.T(lang, i18n.KeyBudgetRollover, surplus), nil
 }
 
+// CurrentBudget returns the user's active budget allocation, auto-creating
+// the default 50/30/20 split on first use — same lookup EvaluateBudget
+// itself relies on, exported so the bot's /budget (no arguments) command
+// can show it without duplicating the get-or-create logic.
+func (s *Service) CurrentBudget(ctx context.Context, userID uint) (*models.Budget, error) {
+	return s.getOrCreateActiveBudget(ctx, userID)
+}
+
+// SetBudget replaces the user's active allocation with new percentages,
+// effective immediately for the current calendar month's evaluation. The
+// three percentages must each be non-negative and sum to 100 (within
+// percentSumTolerance) — internal/models.Budget's own doc comment notes
+// the DB layer deliberately doesn't enforce this via a CHECK constraint, so
+// this is the one place that validation actually happens.
+//
+// The previous active budget (if any) is deactivated rather than deleted
+// or updated in place, preserving a history of allocation changes over
+// time rather than silently overwriting it — mirrors how a correction
+// replaces a transaction (undo the old, create the new) rather than
+// mutating it.
+func (s *Service) SetBudget(ctx context.Context, userID uint, needsPercent, wantsPercent, savingsPercent float64) (*models.Budget, error) {
+	if needsPercent < 0 || wantsPercent < 0 || savingsPercent < 0 {
+		return nil, apperror.ErrInvalidBudgetPercentages
+	}
+	if math.Abs(needsPercent+wantsPercent+savingsPercent-100) > percentSumTolerance {
+		return nil, apperror.ErrInvalidBudgetPercentages
+	}
+
+	newBudget := &models.Budget{
+		UserID:         userID,
+		NeedsPercent:   needsPercent,
+		WantsPercent:   wantsPercent,
+		SavingsPercent: savingsPercent,
+		PeriodStart:    startOfMonth(time.Now().UTC()),
+		IsActive:       true,
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Model(&models.Budget{}).
+			Where("user_id = ? AND is_active = ?", userID, true).
+			Update("is_active", false).Error; err != nil {
+			return fmt.Errorf("deactivate previous budget: %w", err)
+		}
+		if err := txDB.Create(newBudget).Error; err != nil {
+			return fmt.Errorf("insert new budget: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newBudget, nil
+}
+
+// SavingsSince sums everything that counts as "savings" from start to now —
+// the exact same definition EvaluateBudget's Needs/Wants/Savings split
+// already uses (expense transactions explicitly bucketed "savings", plus
+// the full amount of every investment-type transaction), via the same
+// sumSpendByBucket this package already relies on internally. Exported so
+// internal/service/savingsgoal.Service.Progress can track a goal against
+// real savings activity without duplicating this aggregation or inventing
+// a second, possibly-inconsistent definition of "savings".
+func (s *Service) SavingsSince(ctx context.Context, userID uint, start time.Time) (float64, error) {
+	byBucket, err := s.sumSpendByBucket(ctx, userID, start, time.Now().UTC())
+	if err != nil {
+		return 0, fmt.Errorf("sum savings since %s: %w", start.Format("2006-01-02"), err)
+	}
+	return byBucket[models.BucketSavings], nil
+}
+
 func (s *Service) getOrCreateActiveBudget(ctx context.Context, userID uint) (*models.Budget, error) {
 	var b models.Budget
 	err := s.db.WithContext(ctx).
@@ -171,7 +248,7 @@ func (s *Service) sumSpendByBucket(ctx context.Context, userID uint, start, end 
 	}
 	var rows []row
 	err := s.db.WithContext(ctx).Table("transactions").
-		Select(bucketExpr + " as bucket, COALESCE(SUM(transactions.converted_amount), 0) as total").
+		Select(bucketExpr+" as bucket, COALESCE(SUM(transactions.converted_amount), 0) as total").
 		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
 		Where("transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at BETWEEN ? AND ?",
 			userID, models.TxExpense, start, end).

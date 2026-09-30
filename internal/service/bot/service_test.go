@@ -27,6 +27,7 @@ import (
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
+	"aura-saku/internal/service/savingsgoal"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
@@ -206,8 +207,9 @@ func setupTestEnv(t *testing.T, cfg bot.Config) (*bot.Service, *testEnv) {
 	reportSvc := report.NewService(gormDB)
 	convSvc := conversation.NewService(gormDB, aiClient, conversation.Config{RecentLimit: 10, SummarizeThreshold: 20})
 	recurSvc := recurring.NewService(gormDB)
+	goalSvc := savingsgoal.NewService(gormDB, budgetSvc)
 
-	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, cfg)
+	svc := bot.NewService(gormDB, redisClient, messenger, aiClient, txSvc, budgetSvc, reconSvc, usageSvc, reportSvc, convSvc, recurSvc, goalSvc, cfg)
 
 	return svc, &testEnv{db: gormDB, redis: redisClient, messenger: messenger, ai: aiClient}
 }
@@ -232,6 +234,7 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.RecurringTransaction{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.SavingsGoal{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.BalanceReconciliation{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Account{})
@@ -324,6 +327,68 @@ func TestHandleUpdate_DashboardIssuesLoginLink(t *testing.T) {
 	got := env.messenger.last(chatID)
 	if !strings.Contains(got, "https://dash.example.com/auth/verify?token=") {
 		t.Errorf("reply = %q, want it to contain the dashboard login link", got)
+	}
+}
+
+// TestHandleUpdate_Budget_ShowSetAndValidate covers /budget end to end: no
+// argument shows the default 50/30/20 split, three valid arguments replace
+// it (and EvaluateBudget picks up the change immediately), and invalid
+// input (wrong argument count, non-numeric, doesn't sum to 100) is rejected
+// without changing the stored allocation.
+func TestHandleUpdate_Budget_ShowSetAndValidate(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// No arguments -> shows the auto-created default.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget"})
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "50") || !strings.Contains(got, "30") || !strings.Contains(got, "20") {
+		t.Errorf("show reply = %q, want it to mention the default 50/30/20 split", got)
+	}
+
+	// Wrong argument count -> usage message.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget", CommandArgs: "50 30"})
+	wantUsage := i18n.T(models.LanguageID, i18n.KeyBudgetSetUsage)
+	if got := env.messenger.last(chatID); got != wantUsage {
+		t.Errorf("wrong-arg-count reply = %q, want %q", got, wantUsage)
+	}
+
+	// Non-numeric argument -> usage message.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget", CommandArgs: "fifty 30 20"})
+	if got := env.messenger.last(chatID); got != wantUsage {
+		t.Errorf("non-numeric reply = %q, want %q", got, wantUsage)
+	}
+
+	// Doesn't sum to 100 -> invalid message, not silently accepted.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget", CommandArgs: "50 30 30"})
+	wantInvalid := i18n.T(models.LanguageID, i18n.KeyBudgetSetInvalid)
+	if got := env.messenger.last(chatID); got != wantInvalid {
+		t.Errorf("sum!=100 reply = %q, want %q", got, wantInvalid)
+	}
+
+	// Valid set -> success, and takes effect immediately.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget", CommandArgs: "60 20 20"})
+	setReply := env.messenger.last(chatID)
+	if !strings.Contains(setReply, "60") {
+		t.Errorf("set reply = %q, want it to confirm the new 60%% Needs allocation", setReply)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/budget"})
+	showReply := env.messenger.last(chatID)
+	if !strings.Contains(showReply, "60") {
+		t.Errorf("show reply after set = %q, want it to reflect the new 60%% Needs allocation", showReply)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var activeCount int64
+	env.db.Model(&models.Budget{}).Where("user_id = ? AND is_active = ?", user.ID, true).Count(&activeCount)
+	if activeCount != 1 {
+		t.Errorf("active budget row count = %d, want exactly 1 (the invalid attempts must not have created extra rows)", activeCount)
 	}
 }
 
@@ -1566,5 +1631,261 @@ func TestRunCategoryInsights_AIFailureStillSendsDeterministicPart(t *testing.T) 
 	}
 	if strings.Contains(got, mockSavingsSuggestion) {
 		t.Errorf("reply = %q, want no suggestion line when SuggestSavings failed", got)
+	}
+}
+
+// TestHandleUpdate_SavingsGoal_CreateProgressAndReach covers the new
+// create_savings_goal intent end to end: natural-language creation, /goal
+// showing progress computed from real savings/investment activity, and the
+// goal-reached message once enough has been saved.
+func TestHandleUpdate_SavingsGoal_CreateProgressAndReach(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// No goal yet -> /goal reports none.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	wantNone := i18n.T(models.LanguageID, i18n.KeyGoalNone)
+	if got := env.messenger.last(chatID); got != wantNone {
+		t.Errorf("no-goal reply = %q, want %q", got, wantNone)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentSavingsGoalCreate, GoalName: "laptop baru", Amount: 10_000_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku mau nabung 10 juta buat laptop baru"})
+
+	createReply := env.messenger.last(chatID)
+	wantTarget := i18n.FormatMoney(models.LanguageID, 10_000_000, "IDR")
+	if !strings.Contains(createReply, wantTarget) || !strings.Contains(createReply, "laptop baru") {
+		t.Errorf("create reply = %q, want it to mention the target %s and name", createReply, wantTarget)
+	}
+
+	// Progress with nothing saved yet -> 0%.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	progressReply := env.messenger.last(chatID)
+	if !strings.Contains(progressReply, "laptop baru") || !strings.Contains(progressReply, "0%") {
+		t.Errorf("progress reply = %q, want it to mention the goal name and 0%%", progressReply)
+	}
+
+	// Record an investment (counts as savings) covering half the target.
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "investment", Amount: 5_000_000, Currency: "IDR", CategoryName: "mutual fund"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "invest 5000000"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	halfwayReply := env.messenger.last(chatID)
+	wantSaved := i18n.FormatMoney(models.LanguageID, 5_000_000, "IDR")
+	if !strings.Contains(halfwayReply, wantSaved) || !strings.Contains(halfwayReply, "50%") {
+		t.Errorf("halfway progress reply = %q, want it to mention %s saved and 50%%", halfwayReply, wantSaved)
+	}
+
+	// Record another investment reaching the full target.
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "investment", Amount: 5_000_000, Currency: "IDR", CategoryName: "mutual fund"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "invest 5000000 lagi"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	reachedReply := env.messenger.last(chatID)
+	wantReached := i18n.T(models.LanguageID, i18n.KeyGoalReached)
+	if !strings.Contains(reachedReply, wantReached) {
+		t.Errorf("reached reply = %q, want it to include %q", reachedReply, wantReached)
+	}
+}
+
+// TestHandleUpdate_SavingsGoal_ReplaceAndCancel covers creating a second
+// goal (replacing the first, not stacking) and /goal cancel.
+func TestHandleUpdate_SavingsGoal_ReplaceAndCancel(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSavingsGoalCreate, GoalName: "laptop", Amount: 10_000_000, Currency: "IDR"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "nabung 10 juta buat laptop"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSavingsGoalCreate, GoalName: "liburan", Amount: 3_000_000, Currency: "IDR"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ganti rencana, nabung 3 juta buat liburan"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	progressReply := env.messenger.last(chatID)
+	if !strings.Contains(progressReply, "liburan") || strings.Contains(progressReply, "laptop") {
+		t.Errorf("progress reply = %q, want only the replacement goal (liburan), not the original (laptop)", progressReply)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var activeCount int64
+	env.db.Model(&models.SavingsGoal{}).Where("user_id = ? AND is_active = ?", user.ID, true).Count(&activeCount)
+	if activeCount != 1 {
+		t.Errorf("active goal count = %d, want exactly 1", activeCount)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal", CommandArgs: "cancel"})
+	cancelReply := env.messenger.last(chatID)
+	if !strings.Contains(cancelReply, "liburan") {
+		t.Errorf("cancel reply = %q, want it to name the canceled goal", cancelReply)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
+	wantNone := i18n.T(models.LanguageID, i18n.KeyGoalNone)
+	if got := env.messenger.last(chatID); got != wantNone {
+		t.Errorf("post-cancel progress reply = %q, want %q", got, wantNone)
+	}
+}
+
+// TestHandleUpdate_RecurringDelete_NaturalLanguage covers the new
+// delete_recurring_transaction intent (ai.IntentRecurringDelete): a natural-
+// language cancellation targeting a SPECIFIC recurring transaction by id
+// (as a chained-tool-calling provider's get_recurring_transactions match
+// would supply) must cancel exactly that one, leaving a second active
+// recurring transaction untouched — mockAIClient doesn't implement
+// ChainedCorrector, so this exercises the same target-honoring
+// dispatch/service code regardless of which AIClient method produced the
+// TargetRecurringTransactionID, mirroring
+// TestHandleUpdate_Correction_TargetsSpecificTransactionNotJustLatest.
+func TestHandleUpdate_RecurringDelete_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 150_000, Currency: "IDR",
+		CategoryName: "entertainment", Description: "netflix", DayOfMonth: 5,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "netflix 150000 setiap tanggal 5"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 800_000, Currency: "IDR",
+		CategoryName: "rent", Description: "sewa kos", DayOfMonth: 1,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "sewa kos 800000 tiap tanggal 1"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var netflix models.RecurringTransaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "netflix").First(&netflix).Error; err != nil {
+		t.Fatalf("load netflix recurring transaction: %v", err)
+	}
+
+	// Cancel by natural language, targeting netflix specifically (not the
+	// most recently created one, "sewa kos").
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentRecurringDelete, TargetRecurringTransactionID: netflix.ID}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "batalin netflix"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 150_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to mention the canceled amount %s", got, wantAmount)
+	}
+
+	var netflixAfter models.RecurringTransaction
+	if err := env.db.First(&netflixAfter, netflix.ID).Error; err != nil {
+		t.Fatalf("reload netflix recurring transaction: %v", err)
+	}
+	if netflixAfter.IsActive {
+		t.Error("netflix recurring transaction should be deactivated after natural-language cancellation")
+	}
+
+	var rentCount int64
+	env.db.Model(&models.RecurringTransaction{}).Where("user_id = ? AND description = ? AND is_active = ?", user.ID, "sewa kos", true).Count(&rentCount)
+	if rentCount != 1 {
+		t.Error("the rent recurring transaction should still be active — this is exactly the bug class being guarded against")
+	}
+
+	// Canceling an id that doesn't belong to this user (or doesn't exist)
+	// must report "not found", not silently succeed.
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentRecurringDelete, TargetRecurringTransactionID: 999_999_999}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "batalin yang gak ada"})
+	wantNotFound := i18n.T(models.LanguageID, i18n.KeyRecurringCancelNotFound)
+	if got := env.messenger.last(chatID); got != wantNotFound {
+		t.Errorf("nonexistent-id cancel reply = %q, want %q", got, wantNotFound)
+	}
+}
+
+// TestHandleUpdate_RecurringUpdate_DeleteAndCreatePair covers the "update"
+// pattern: there's no dedicated update tool, so a chained-tool-calling
+// provider represents "ubah netflix jadi 200rb" as BOTH an
+// IntentRecurringDelete and an IntentRecurringCreate result from the SAME
+// message (confirmed live against the real Gemini API). bot.Service must
+// treat that pair as one atomic update — cancel the old schedule AND
+// create the new one — rather than only looking at the first result and
+// silently dropping the second (which would cancel netflix with nothing to
+// replace it). A second, unrelated recurring transaction must stay
+// untouched throughout.
+func TestHandleUpdate_RecurringUpdate_DeleteAndCreatePair(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 150_000, Currency: "IDR",
+		CategoryName: "entertainment", Description: "netflix", DayOfMonth: 5,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "netflix 150000 setiap tanggal 5"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 800_000, Currency: "IDR",
+		CategoryName: "rent", Description: "sewa kos", DayOfMonth: 1,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "sewa kos 800000 tiap tanggal 1"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var netflix models.RecurringTransaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "netflix").First(&netflix).Error; err != nil {
+		t.Fatalf("load netflix recurring transaction: %v", err)
+	}
+
+	// Simulate the chained-tool-calling response to "ubah netflix jadi
+	// 200rb": both a delete (targeting netflix's real id) and a create
+	// (describing the same schedule with the new amount) in one result set.
+	env.ai.parseResults = []*ai.ParsedTransaction{
+		{Intent: ai.IntentRecurringDelete, TargetRecurringTransactionID: netflix.ID},
+		{Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 200_000, Currency: "IDR", CategoryName: "entertainment", Description: "netflix", DayOfMonth: 5},
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ubah netflix jadi 200rb"})
+	env.ai.parseResults = nil
+
+	got := env.messenger.last(chatID)
+	wantNewAmount := i18n.FormatMoney(models.LanguageID, 200_000, "IDR")
+	wantOldAmount := i18n.FormatMoney(models.LanguageID, 150_000, "IDR")
+	if !strings.Contains(got, wantNewAmount) {
+		t.Errorf("update reply = %q, want it to mention the new amount %s", got, wantNewAmount)
+	}
+	if !strings.Contains(got, wantOldAmount) {
+		t.Errorf("update reply = %q, want it to mention the previous amount %s for contrast", got, wantOldAmount)
+	}
+
+	var netflixOld models.RecurringTransaction
+	if err := env.db.First(&netflixOld, netflix.ID).Error; err != nil {
+		t.Fatalf("reload original netflix row: %v", err)
+	}
+	if netflixOld.IsActive {
+		t.Error("the original netflix recurring transaction should be deactivated after an update, not left active")
+	}
+
+	var activeNetflix models.RecurringTransaction
+	if err := env.db.Where("user_id = ? AND description = ? AND is_active = ?", user.ID, "netflix", true).First(&activeNetflix).Error; err != nil {
+		t.Fatalf("load the new active netflix recurring transaction: %v", err)
+	}
+	if activeNetflix.Amount != 200_000 {
+		t.Errorf("new active netflix amount = %.2f, want 200000.00", activeNetflix.Amount)
+	}
+	if activeNetflix.ID == netflix.ID {
+		t.Error("the update should have created a NEW row, not reactivated/mutated the old one")
+	}
+
+	var rentCount int64
+	env.db.Model(&models.RecurringTransaction{}).Where("user_id = ? AND description = ? AND is_active = ?", user.ID, "sewa kos", true).Count(&rentCount)
+	if rentCount != 1 {
+		t.Error("the unrelated rent recurring transaction should still be active and untouched by netflix's update")
 	}
 }

@@ -20,6 +20,7 @@ func RunMigrations(gormDB *gorm.DB) error {
 		&models.Transaction{},
 		&models.RecurringTransaction{},
 		&models.Budget{},
+		&models.SavingsGoal{},
 		&models.BalanceReconciliation{},
 		&models.AIUsageLog{},
 		&models.QuotaUsage{},

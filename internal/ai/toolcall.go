@@ -46,6 +46,19 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 		pt.DayOfMonth = argInt(args, "day_of_month")
 		pt.ReminderOnly = true
 		return pt
+	case prompt.ToolCreateSavingsGoal:
+		return &ParsedTransaction{
+			Intent:           IntentSavingsGoalCreate,
+			GoalName:         argString(args, "name"),
+			Amount:           argFloat(args, "target_amount"),
+			Currency:         argString(args, "currency"),
+			GoalDeadlineHint: argString(args, "deadline_hint"),
+		}
+	case prompt.ToolDeleteRecurringTransaction:
+		return &ParsedTransaction{
+			Intent:                       IntentRecurringDelete,
+			TargetRecurringTransactionID: argUint(args, "target_recurring_transaction_id"),
+		}
 	default:
 		return nil
 	}

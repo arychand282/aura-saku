@@ -84,6 +84,11 @@ const (
 	KeyBudgetWantsExceeded = "budget_wants_exceeded"
 	KeyBudgetWantsPace     = "budget_wants_pace"
 	KeyBudgetRollover      = "budget_rollover"
+	KeyBudgetSetUsage      = "budget_set_usage"
+	KeyBudgetSetInvalid    = "budget_set_invalid"
+	KeyBudgetSetFailed     = "budget_set_failed"
+	KeyBudgetSetSuccess    = "budget_set_success"
+	KeyBudgetShow          = "budget_show"
 
 	KeyQuotaExceededWithReward = "quota_exceeded_with_reward"
 	KeyQuotaExceededNoReward   = "quota_exceeded_no_reward"
@@ -104,6 +109,7 @@ const (
 	KeyRecurringCancelUsage    = "recurring_cancel_usage"
 	KeyRecurringCancelSuccess  = "recurring_cancel_success"
 	KeyRecurringCancelNotFound = "recurring_cancel_not_found"
+	KeyRecurringUpdatedFrom    = "recurring_updated_from"
 
 	KeyBillReminderCreated = "bill_reminder_created"
 	KeyBillReminderDue     = "bill_reminder_due"
@@ -111,6 +117,16 @@ const (
 	KeyCategoryInsightHeader  = "category_insight_header"
 	KeyCategoryInsightItem    = "category_insight_item"
 	KeyCategoryInsightWarning = "category_insight_warning"
+
+	KeyGoalUsage            = "goal_usage"
+	KeyGoalCreated          = "goal_created"
+	KeyGoalCreateFailed     = "goal_create_failed"
+	KeyGoalNone             = "goal_none"
+	KeyGoalProgress         = "goal_progress"
+	KeyGoalProgressToGo     = "goal_progress_to_go"
+	KeyGoalProgressDeadline = "goal_progress_deadline"
+	KeyGoalReached          = "goal_reached"
+	KeyGoalCancelSuccess    = "goal_cancel_success"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -142,6 +158,11 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsExceeded: "Wants spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
 		KeyBudgetWantsPace:     "Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
 		KeyBudgetRollover:      "You had a surplus of %.2f last month — consider moving it into savings or investments.",
+		KeyBudgetSetUsage:      "Usage: /budget <needs%> <wants%> <savings%> — must sum to 100, e.g. /budget 50 30 20. Send /budget with no arguments to see your current allocation.",
+		KeyBudgetSetInvalid:    "Those percentages must each be zero or more and sum to exactly 100.",
+		KeyBudgetSetFailed:     "Something went wrong updating your budget allocation.",
+		KeyBudgetSetSuccess:    "✅ Budget updated: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — effective this period.",
+		KeyBudgetShow:          "Your current budget allocation: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Use /budget <needs> <wants> <savings> to change it.",
 
 		KeyQuotaExceededWithReward: "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or earn %d more today: %s\nAfter visiting, send /claim %s here to unlock them.",
 		KeyQuotaExceededNoReward:   "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or try again tomorrow.",
@@ -162,6 +183,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCancelUsage:    "Usage: /recurring to list, or /recurring cancel <id> to cancel one, e.g. /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Canceled recurring %s of %s for \"%s\".",
 		KeyRecurringCancelNotFound: "I couldn't find an active recurring transaction with that id. Use /recurring to see your list.",
+		KeyRecurringUpdatedFrom:    "(previously %s)",
 
 		KeyBillReminderCreated: "🔔 Reminder set for %s of %s for \"%s\" — I'll notify you on day %d of each month, starting %s. I won't record it automatically; let me know when you've paid it.",
 		KeyBillReminderDue:     "🔔 Reminder: your %s of %s for \"%s\" is due today.",
@@ -169,6 +191,16 @@ var catalog = map[models.Language]map[string]string{
 		KeyCategoryInsightHeader:  "📊 Your top spending categories last month (total: %s):",
 		KeyCategoryInsightItem:    "%d. %s: %s (%.0f%% of total)",
 		KeyCategoryInsightWarning: "⚠️ %s increased the most compared to the month before — %s last month vs %s the month before (up %.0f%%). Consider limiting this category to save more.",
+
+		KeyGoalUsage:            "Usage: /goal to see your progress, or /goal cancel to cancel your current goal.",
+		KeyGoalCreated:          "🎯 New goal: save %s for \"%s\"%s. Check your progress anytime with /goal.",
+		KeyGoalCreateFailed:     "Something went wrong setting up that savings goal.",
+		KeyGoalNone:             "You don't have an active savings goal yet. Just tell me about one, e.g. \"I want to save 10000000 for a laptop by December\".",
+		KeyGoalProgress:         "🎯 \"%s\": %s of %s saved (%.0f%%).",
+		KeyGoalProgressToGo:     "%s to go.",
+		KeyGoalProgressDeadline: "Deadline: %s.",
+		KeyGoalReached:          "🎉 You've reached your goal! Great job — set a new one anytime, or just keep going.",
+		KeyGoalCancelSuccess:    "Canceled your goal: \"%s\".",
 	},
 	models.LanguageID: {
 		KeyWelcome:                 "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -198,6 +230,11 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsExceeded: "Pengeluaran Wants sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
 		KeyBudgetWantsPace:     "Laju pengeluaran Wants-mu diperkirakan mencapai %.2f di akhir bulan, melebihi alokasi %.2f — pertimbangkan untuk mengurangi pengeluaran.",
 		KeyBudgetRollover:      "Kamu punya surplus %.2f bulan lalu — pertimbangkan untuk memindahkannya ke tabungan atau investasi.",
+		KeyBudgetSetUsage:      "Cara pakai: /budget <needs%> <wants%> <savings%> — harus berjumlah 100, contoh: /budget 50 30 20. Kirim /budget tanpa argumen untuk melihat alokasi saat ini.",
+		KeyBudgetSetInvalid:    "Persentase harus masing-masing nol atau lebih dan berjumlah tepat 100.",
+		KeyBudgetSetFailed:     "Terjadi kesalahan saat memperbarui alokasi budgetmu.",
+		KeyBudgetSetSuccess:    "✅ Budget diperbarui: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — berlaku mulai periode ini.",
+		KeyBudgetShow:          "Alokasi budgetmu saat ini: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Gunakan /budget <needs> <wants> <savings> untuk mengubahnya.",
 
 		KeyQuotaExceededWithReward: "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau dapatkan %d tambahan hari ini: %s\nSetelah mengunjungi link itu, kirim /claim %s di sini untuk membukanya.",
 		KeyQuotaExceededNoReward:   "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau coba lagi besok.",
@@ -218,6 +255,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCancelUsage:    "Cara pakai: /recurring untuk melihat daftar, atau /recurring cancel <id> untuk membatalkan, contoh: /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Transaksi berulang %s sebesar %s untuk \"%s\" sudah dibatalkan.",
 		KeyRecurringCancelNotFound: "Aku tidak menemukan transaksi berulang aktif dengan id itu. Gunakan /recurring untuk melihat daftarmu.",
+		KeyRecurringUpdatedFrom:    "(sebelumnya %s)",
 
 		KeyBillReminderCreated: "🔔 Pengingat diatur untuk %s sebesar %s untuk \"%s\" — aku akan mengingatkanmu tiap tanggal %d, mulai %s. Aku tidak akan mencatatnya otomatis; kabari aku kalau sudah dibayar.",
 		KeyBillReminderDue:     "🔔 Pengingat: %s sebesar %s untuk \"%s\" jatuh tempo hari ini.",
@@ -225,6 +263,16 @@ var catalog = map[models.Language]map[string]string{
 		KeyCategoryInsightHeader:  "📊 Kategori pengeluaran terbesarmu bulan lalu (total: %s):",
 		KeyCategoryInsightItem:    "%d. %s: %s (%.0f%% dari total)",
 		KeyCategoryInsightWarning: "⚠️ %s naik paling banyak dibanding bulan sebelumnya — %s bulan lalu vs %s bulan sebelumnya (naik %.0f%%). Pertimbangkan untuk membatasi kategori ini agar bisa menabung lebih banyak.",
+
+		KeyGoalUsage:            "Cara pakai: /goal untuk melihat progressmu, atau /goal cancel untuk membatalkan goal saat ini.",
+		KeyGoalCreated:          "🎯 Goal baru: menabung %s untuk \"%s\"%s. Cek progressmu kapan saja dengan /goal.",
+		KeyGoalCreateFailed:     "Terjadi kesalahan saat mengatur goal tabunganmu.",
+		KeyGoalNone:             "Kamu belum punya goal tabungan aktif. Cukup ceritakan satu, misal \"aku mau nabung 10000000 buat laptop sampai desember\".",
+		KeyGoalProgress:         "🎯 \"%s\": %s dari %s terkumpul (%.0f%%).",
+		KeyGoalProgressToGo:     "%s lagi.",
+		KeyGoalProgressDeadline: "Target: %s.",
+		KeyGoalReached:          "🎉 Kamu sudah mencapai goal-mu! Kerja bagus — atur goal baru kapan saja, atau terus lanjutkan.",
+		KeyGoalCancelSuccess:    "Goal \"%s\" sudah dibatalkan.",
 	},
 }
 

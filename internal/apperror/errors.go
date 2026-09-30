@@ -16,4 +16,7 @@ var (
 	ErrInvalidPeriod            = errors.New("invalid period, must be one of: daily, weekly, monthly, yearly")
 	ErrUnhandledUpdateType      = errors.New("webhook update has no actionable message (e.g. an edited message, callback query, or chat-member change)")
 	ErrRecurringNotFound        = errors.New("no active recurring transaction found with that id for this user")
+	ErrInvalidBudgetPercentages = errors.New("budget percentages must each be non-negative and sum to 100")
+	ErrInvalidSavingsGoal       = errors.New("savings goal target amount must be positive and have a name")
+	ErrNoActiveSavingsGoal      = errors.New("no active savings goal for this user")
 )

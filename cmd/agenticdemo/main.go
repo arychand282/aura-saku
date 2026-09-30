@@ -46,9 +46,17 @@ func fakeRecentTransactions(ctx context.Context) ([]*ai.RecentTransaction, error
 	}, nil
 }
 
+func fakeRecurringTransactions(ctx context.Context) ([]*ai.RecurringCandidate, error) {
+	fmt.Println("  [lookup fired: this demo fakes it; bot.Service wires the real recurring.Service.ListActive instead]")
+	return []*ai.RecurringCandidate{
+		{ID: 1, Type: "expense", Amount: 150000, Currency: "IDR", CategoryName: "entertainment", Description: "netflix", DayOfMonth: 5, ReminderOnly: false},
+		{ID: 2, Type: "expense", Amount: 800000, Currency: "IDR", CategoryName: "rent", Description: "sewa kos", DayOfMonth: 1, ReminderOnly: true},
+	}, nil
+}
+
 func run(c *gemini.Client, label, msg string) {
 	fmt.Printf("=== %s ===\nMSG: %s\n", label, msg)
-	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeRecentTransactions, ai.ConversationContext{})
+	results, _, steps, err := c.ParseCorrectionChained(context.Background(), msg, "IDR", "id", fakeRecentTransactions, fakeRecurringTransactions, ai.ConversationContext{})
 	for i, s := range steps {
 		fmt.Printf("  round %d: called %s(%v)\n", i+1, s.ToolCalled, s.Args)
 	}
@@ -68,4 +76,6 @@ func main() {
 	run(c, "CORRECTION TARGETING A NON-LATEST TRANSACTION (should chain, target_transaction_id=2)", "eh yang makan siang tadi salah, harusnya 350rb bukan 300rb")
 	run(c, "DELETE A NON-LATEST TRANSACTION (should chain, delete_transaction target_transaction_id=2)", "hapus transaksi makan siang tadi")
 	run(c, "DELETE THE OBVIOUSLY-LATEST TRANSACTION (may or may not chain, delete_transaction target_transaction_id=3 or omitted)", "eh batalin transaksi makan malam tadi")
+	run(c, "CANCEL A RECURRING TRANSACTION BY NAME (should chain, delete_recurring_transaction target_recurring_transaction_id=1)", "batalin netflix")
+	run(c, "CANCEL A BILL REMINDER BY CATEGORY (should chain, delete_recurring_transaction target_recurring_transaction_id=2)", "stop pengingat sewa kos")
 }

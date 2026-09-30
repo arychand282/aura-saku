@@ -2,18 +2,21 @@ package ai
 
 import (
 	"context"
+	"strings"
 )
 
 // Intent values for ParsedTransaction.Intent. Empty string is treated the
 // same as IntentRecord, so every prompt/response that predates the "query"
 // intent (and any provider test fixture) keeps working unchanged.
 const (
-	IntentRecord          = "record"
-	IntentQuery           = "query"
-	IntentBalance         = "balance"
-	IntentCorrect         = "correct"
-	IntentDelete          = "delete"
-	IntentRecurringCreate = "recurring_create"
+	IntentRecord            = "record"
+	IntentQuery             = "query"
+	IntentBalance           = "balance"
+	IntentCorrect           = "correct"
+	IntentDelete            = "delete"
+	IntentRecurringCreate   = "recurring_create"
+	IntentRecurringDelete   = "recurring_delete"
+	IntentSavingsGoalCreate = "savings_goal_create"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -76,6 +79,16 @@ type ParsedTransaction struct {
 	// user still wants to log the actual payment themselves.
 	ReminderOnly bool `json:"reminder_only,omitempty"`
 
+	// GoalName/GoalDeadlineHint are only populated for
+	// IntentSavingsGoalCreate — the target amount and currency reuse
+	// Amount/Currency above rather than duplicating them. GoalName is the
+	// user's own free-text label (kept in their language, unlike
+	// CategoryName). GoalDeadlineHint is an ISO 8601 date (YYYY-MM-DD,
+	// same convention as OccurredAtHint) or empty if no deadline was
+	// mentioned — a goal doesn't need one.
+	GoalName         string `json:"goal_name,omitempty"`
+	GoalDeadlineHint string `json:"goal_deadline_hint,omitempty"`
+
 	// TargetTransactionID identifies which of the user's existing
 	// transactions an IntentCorrect or IntentDelete result acts on, when
 	// known. Populated from a get_recent_transactions candidate a
@@ -85,6 +98,15 @@ type ParsedTransaction struct {
 	// DeleteTransaction) falls back to the single most recent transaction,
 	// the original behavior from before this field existed.
 	TargetTransactionID uint `json:"target_transaction_id,omitempty"`
+
+	// TargetRecurringTransactionID is IntentRecurringDelete's counterpart to
+	// TargetTransactionID above — identifies which of the user's active
+	// recurring transactions/bill reminders to cancel, populated from a
+	// get_recurring_transactions candidate. Zero means unspecified — the
+	// caller (recurring.Service.Cancel, called the same way /recurring
+	// cancel <id> already does) has no single-most-recent fallback for this
+	// one, since a delete with no target simply can't proceed.
+	TargetRecurringTransactionID uint `json:"target_recurring_transaction_id,omitempty"`
 
 	// Bucket is the AI's per-transaction Needs/Wants/Savings classification
 	// from the actual message context (e.g. "replacing broken shoes" reads
@@ -195,10 +217,22 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		}
 	case IntentBalance, IntentDelete:
 		return true
+	case IntentRecurringDelete:
+		// Unlike IntentDelete (a regular transaction), there's no
+		// "most recent" fallback concept for a recurring schedule — a
+		// missing target simply can't proceed, so this is required rather
+		// than optional.
+		return pt.TargetRecurringTransactionID > 0
 	case IntentRecurringCreate:
 		if pt.DayOfMonth < 1 || pt.DayOfMonth > 31 {
 			return false
 		}
+	case IntentSavingsGoalCreate:
+		// A goal has no Type (expense/income/...) at all, so this must
+		// return directly rather than falling through to the shared
+		// Type/Amount switch below, which would otherwise reject every
+		// goal for having an empty Type.
+		return strings.TrimSpace(pt.GoalName) != "" && pt.Amount > 0
 	}
 
 	switch pt.Type {

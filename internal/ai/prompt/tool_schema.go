@@ -25,6 +25,8 @@ const (
 	ToolDeleteTransaction          = "delete_transaction"
 	ToolCreateRecurringTransaction = "create_recurring_transaction"
 	ToolCreateBillReminder         = "create_bill_reminder"
+	ToolCreateSavingsGoal          = "create_savings_goal"
+	ToolDeleteRecurringTransaction = "delete_recurring_transaction"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -83,6 +85,31 @@ func recurringTransactionProperties() map[string]ToolProperty {
 	return props
 }
 
+// savingsGoalProperties declares create_savings_goal's own fields — a goal
+// has no Type/CategoryName/Bucket at all (it isn't a transaction), so this
+// is deliberately NOT built on transactionProperties() like the other
+// tools above.
+func savingsGoalProperties() map[string]ToolProperty {
+	return map[string]ToolProperty{
+		"name": {
+			Type:        "string",
+			Description: "A short label for what this goal is for, kept in the user's OWN words/language (e.g. \"laptop baru\", \"dana darurat\", \"liburan ke Bali\") — shown back to the user verbatim, unlike category_name this is never translated to English.",
+		},
+		"target_amount": {
+			Type:        "number",
+			Description: "The total amount the user wants to save toward this goal. A positive number — never guess one that wasn't stated or clearly implied.",
+		},
+		"currency": {
+			Type:        "string",
+			Description: "ISO 4217 code (e.g. IDR, USD, EUR, SGD). If not mentioned, use the caller-provided default currency.",
+		},
+		"deadline_hint": {
+			Type:        "string",
+			Description: "ISO 8601 date (YYYY-MM-DD) the user wants to reach this goal by, computed from today's date and any relative/named time language (\"by December\", \"sampai akhir tahun\", \"in 6 months\", \"sebelum lebaran\"). Leave empty if no deadline is mentioned at all — a goal doesn't need one.",
+		},
+	}
+}
+
 // transactionProperties is shared by record_transaction, correct_transaction,
 // and create_recurring_transaction — each describes a transaction using the
 // exact same fields as a fresh record.
@@ -121,7 +148,7 @@ func transactionProperties() map[string]ToolProperty {
 	}
 }
 
-// TransactionTools declares the seven callable tools every native-function-
+// TransactionTools declares the nine callable tools every native-function-
 // calling provider offers the model on every request — the direct analog
 // of transaction_prompt.go's Step 1 intent list, except each entry's
 // Description here plays the exact role the "jika user menanyakan tentang
@@ -173,15 +200,32 @@ func TransactionTools() []Tool {
 		},
 		{
 			Name:        ToolCreateRecurringTransaction,
-			Description: "Call this when the message describes a transaction that REPEATS on a regular monthly schedule AND wants it recorded automatically each time — rent, a subscription, a salary that arrives on the same day every month (e.g. \"netflix 150rb setiap tanggal 5\", \"gaji 5 juta tiap tanggal 25\", \"sewa kos 800rb per bulan tanggal 1\", \"internet bill 300k every month on the 10th\"). Only call this when the message ITSELF says the transaction repeats (\"tiap\"/\"setiap\"/\"per bulan\"/\"every month\"/\"monthly\") — a one-off mention of something that happens to sound recurring (\"bayar internet bulan ini 300rb\" with no repeating cadence stated) is a normal record_transaction instead. If the message instead asks to just be REMINDED/notified about the bill without recording it automatically (\"ingetin\", \"remind me\", \"kasih tau\" — they'll log the actual payment themselves), use create_bill_reminder instead. IMPORTANT: this does NOT record anything happening today — it only schedules future occurrences starting from the NEXT time that day of the month comes around, never the current one. Never call this together with record_transaction or any other tool for the same message — if the user separately wants this month's occurrence recorded too, that's a different message.",
+			Description: "Call this when the message describes a transaction that REPEATS on a regular monthly schedule AND wants it recorded automatically each time — rent, a subscription, a salary that arrives on the same day every month (e.g. \"netflix 150rb setiap tanggal 5\", \"gaji 5 juta tiap tanggal 25\", \"sewa kos 800rb per bulan tanggal 1\", \"internet bill 300k every month on the 10th\"). Only call this when the message ITSELF says the transaction repeats (\"tiap\"/\"setiap\"/\"per bulan\"/\"every month\"/\"monthly\") — a one-off mention of something that happens to sound recurring (\"bayar internet bulan ini 300rb\" with no repeating cadence stated) is a normal record_transaction instead. If the message instead asks to just be REMINDED/notified about the bill without recording it automatically (\"ingetin\", \"remind me\", \"kasih tau\" — they'll log the actual payment themselves), use create_bill_reminder instead. IMPORTANT: this does NOT record anything happening today — it only schedules future occurrences starting from the NEXT time that day of the month comes around, never the current one. Never call this together with record_transaction for the same message — if the user separately wants this month's occurrence recorded too, that's a different message. EXCEPTION: if the message describes an UPDATE to an EXISTING recurring transaction/bill reminder (e.g. \"ubah netflix jadi 200rb\", \"netflix ganti jadi 200rb per bulan\", \"pindahin tanggal sewa ke tanggal 10\") — there is no dedicated update tool, so call delete_recurring_transaction (for the old one) AND this tool (describing the new/changed schedule in full) TOGETHER in the same message; that combination replaces the old one instead of leaving two active.",
 			Properties:  recurringTransactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name", "day_of_month"},
 		},
 		{
 			Name:        ToolCreateBillReminder,
-			Description: "Call this when the message asks to be REMINDED/notified about a recurring bill or payment on a monthly schedule, WITHOUT it being recorded automatically — the user will log the actual payment themselves when it happens (e.g. \"ingetin bayar listrik 500rb tiap tanggal 5\", \"remind me about rent due the 1st, don't record it for me\", \"kasih tau kalau tagihan internet 300rb jatuh tempo tiap tanggal 10\"). Look for reminder language (\"ingetin\"/\"kasih tau\"/\"remind me\"/\"notify me\") — if the message just describes a repeating transaction with no reminder language, that's create_recurring_transaction instead (it auto-records; this only notifies). Never call this together with record_transaction, create_recurring_transaction, or any other tool for the same message.",
+			Description: "Call this when the message asks to be REMINDED/notified about a recurring bill or payment on a monthly schedule, WITHOUT it being recorded automatically — the user will log the actual payment themselves when it happens (e.g. \"ingetin bayar listrik 500rb tiap tanggal 5\", \"remind me about rent due the 1st, don't record it for me\", \"kasih tau kalau tagihan internet 300rb jatuh tempo tiap tanggal 10\"). Look for reminder language (\"ingetin\"/\"kasih tau\"/\"remind me\"/\"notify me\") — if the message just describes a repeating transaction with no reminder language, that's create_recurring_transaction instead (it auto-records; this only notifies). Never call this together with record_transaction or create_recurring_transaction for the same message. EXCEPTION: if the message describes an UPDATE to an EXISTING recurring transaction/bill reminder — there is no dedicated update tool, so call delete_recurring_transaction (for the old one) AND this tool (describing the new/changed schedule) TOGETHER in the same message to replace it, exactly like create_recurring_transaction's own exception.",
 			Properties:  recurringTransactionProperties(),
 			Required:    []string{"type", "amount", "currency", "category_name", "day_of_month"},
+		},
+		{
+			Name:        ToolCreateSavingsGoal,
+			Description: "Call this when the message describes wanting to SAVE UP toward a specific target amount for a specific purpose — a savings goal (e.g. \"aku mau nabung 10 juta buat laptop sampai desember\", \"I want to save 5,000,000 for an emergency fund\", \"target nabung liburan 3 juta di bulan Juni\"). This creates a new goal to track progress against, REPLACING any existing active goal — only one goal is active at a time. Do NOT call this for a one-off savings/investment transaction that already happened with no target/goal mentioned (\"nabung 500rb hari ini\" alone) — that's a normal record_transaction with type=investment or bucket=savings instead; only use this when the message frames it as a target/goal to save TOWARD.",
+			Properties:  savingsGoalProperties(),
+			Required:    []string{"name", "target_amount", "currency"},
+		},
+		{
+			Name:        ToolDeleteRecurringTransaction,
+			Description: "Call this when the message asks to CANCEL / stop / delete one of the user's existing RECURRING transactions or bill reminders entirely — a repeating schedule, not a one-off transaction (e.g. \"batalin netflix\", \"cancel my rent reminder\", \"stop the gym subscription\", \"hapus tagihan internet yang berulang\"). Use delete_transaction instead for a one-off past transaction. IMPORTANT: identify WHICH recurring transaction to cancel — call get_recurring_transactions first and set target_recurring_transaction_id to whichever candidate matches what the message describes (by category/amount/description); do this even when there's only one active one, so the id is real rather than guessed. Never call this together with record_transaction or delete_transaction for the same message. EXCEPTION: if the message describes an UPDATE to an existing recurring transaction/bill reminder rather than canceling it outright (e.g. \"ubah netflix jadi 200rb\", \"ganti tanggal sewa ke tanggal 10\") — there is no dedicated update tool, so call this tool for the OLD schedule's id AND create_recurring_transaction or create_bill_reminder (describing the new/changed schedule in full) TOGETHER in the same message; that combination replaces the old one instead of just deleting it with nothing to replace it.",
+			Properties: map[string]ToolProperty{
+				"target_recurring_transaction_id": {
+					Type:        "number",
+					Description: "The id of the specific recurring transaction or bill reminder being canceled, taken from a prior get_recurring_transactions lookup. Required — never leave this at 0 or guess one.",
+				},
+			},
+			Required: []string{"target_recurring_transaction_id"},
 		},
 	}
 }
@@ -201,7 +245,7 @@ func ToolCallingSystemInstruction(defaultCurrency string, today time.Time, prefe
 		`You are a financial transaction parser and spending-report assistant for an expense-tracking bot.
 Today's date is %s (YYYY-MM-DD). The user's default currency is %s.
 
-Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message. If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
+Decide which tool (if any) matches the user's message. Call record_transaction once per DISTINCT transaction the message describes — most messages describe exactly one, but call it multiple times for a message listing several (see its own description for an example). Every OTHER tool (query_spending, get_balance, correct_transaction, delete_transaction, create_recurring_transaction, create_bill_reminder, create_savings_goal, delete_recurring_transaction) may be called AT MOST ONCE per message — never call more than one of those, and never mix them with record_transaction in the same message — with exactly ONE exception: delete_recurring_transaction MAY be paired with create_recurring_transaction or create_bill_reminder in the same message when the message describes an UPDATE to an existing recurring transaction/bill reminder rather than a plain cancellation (see each of those three tools' own description for exactly when). If the message is missing the amount, or is too vague to safely call any tool (e.g. no discernible transaction and no discernible question), do NOT call a tool — instead reply with a short, polite question asking for the missing detail, written in %s regardless of what language the user's message was in. Do NOT invent values to force a call just to avoid asking.
 
 Before treating a vague or incomplete message as its own isolated case, check the recent conversation history above: a user will often split one transaction across several consecutive messages instead of sending it all at once (e.g. "beli baju", then "sama sepatu", then "totalnya 320rb" — three messages describing one combined purchase). If the current message plausibly completes or adds to an unfinished transaction from those recent messages, combine them into a single record_transaction call instead of parsing the current message alone or asking a clarifying question that ignores what was already said. Only fall back to asking for clarification if the message still can't be resolved even combined with that recent context.`,
 		today.UTC().Format("2006-01-02"),

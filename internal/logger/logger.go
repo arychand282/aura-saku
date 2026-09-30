@@ -41,6 +41,7 @@ const (
 	SvcRolloverNudgeFailed   Code = "AURA-SVC-008" // bot.Service.RunBudgetRolloverNudges failed for one user (skipped, other users still processed)
 	SvcRecurringFailed       Code = "AURA-SVC-009" // recurring.Service create/list/cancel/advance failed, or bot.Service.RunRecurringTransactions failed for one row
 	SvcCategoryInsightFailed Code = "AURA-SVC-010" // report.Service.MonthlyCategoryInsight failed for one user's end-of-month recap (skipped, other users still processed)
+	SvcGoalFailed            Code = "AURA-SVC-011" // savingsgoal.Service create/progress/cancel failed
 
 	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )

@@ -26,6 +26,7 @@ import (
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
 	"aura-saku/internal/service/report"
+	"aura-saku/internal/service/savingsgoal"
 	"aura-saku/internal/service/transaction"
 	"aura-saku/internal/service/usage"
 )
@@ -69,10 +70,11 @@ type Service struct {
 	reportSvc   *report.Service
 	convSvc     *conversation.Service
 	recurSvc    *recurring.Service
+	goalSvc     *savingsgoal.Service
 	cfg         Config
 }
 
-func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, recurSvc *recurring.Service, cfg Config) *Service {
+func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Messenger, aiClient ai.AIClient, txSvc *transaction.Service, budgetSvc *budget.Service, reconSvc *reconciliation.Service, usageSvc *usage.Service, reportSvc *report.Service, convSvc *conversation.Service, recurSvc *recurring.Service, goalSvc *savingsgoal.Service, cfg Config) *Service {
 	return &Service{
 		db:          db,
 		redisClient: redisClient,
@@ -85,6 +87,7 @@ func NewService(db *gorm.DB, redisClient *redis.Client, messenger messaging.Mess
 		reportSvc:   reportSvc,
 		convSvc:     convSvc,
 		recurSvc:    recurSvc,
+		goalSvc:     goalSvc,
 		cfg:         cfg,
 	}
 }
@@ -134,6 +137,10 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleDashboard(ctx, user, msg)
 	case "/recurring":
 		s.handleRecurring(ctx, user, msg)
+	case "/budget":
+		s.handleBudget(ctx, user, msg)
+	case "/goal":
+		s.handleGoal(ctx, user, msg)
 	default:
 		s.handleTransactionInput(ctx, user, msg)
 	}
@@ -301,6 +308,140 @@ func (s *Service) handleRecurringCancel(ctx context.Context, user *models.User, 
 		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName))
 }
 
+// handleRecurringDelete cancels a recurring transaction or bill reminder
+// described by parsed (ai.IntentRecurringDelete — e.g. "batalin netflix"),
+// identified via get_recurring_transactions by a chained-tool-calling
+// AIClient (see ai.ChainedCorrector). Reuses the exact same
+// recurring.Service.Cancel and reply text as the command-based
+// /recurring cancel <id> — this is the same action, just reached by
+// naming the target instead of looking up its id first.
+func (s *Service) handleRecurringDelete(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	rt, err := s.recurSvc.Cancel(ctx, user.ID, parsed.TargetRecurringTransactionID)
+	if err != nil {
+		if errors.Is(err, apperror.ErrRecurringNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelNotFound))
+			return
+		}
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("delete recurring transaction via natural language for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCancelSuccess,
+		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName))
+}
+
+// recurringUpdatePair detects the "update" pattern a chained-tool-calling
+// provider produces when a message describes changing an existing
+// recurring transaction/bill reminder (e.g. "ubah netflix jadi 200rb") —
+// there's no dedicated update tool, so the model instead chains a
+// delete_recurring_transaction call with a create_recurring_transaction/
+// create_bill_reminder call in the SAME message (see the explicit
+// exception carved into internal/ai/prompt/tool_schema.go's "at most once
+// per message" rule for exactly this pair). Returns ok=false unless
+// parsedList contains EXACTLY one of each — any other shape (including two
+// of the same kind, which shouldn't happen given each tool is still capped
+// at one call) falls through to the normal single-intent dispatch instead
+// of risking a wrong guess about which pair to treat as an update.
+func recurringUpdatePair(parsedList []*ai.ParsedTransaction) (deleted, created *ai.ParsedTransaction, ok bool) {
+	for _, pt := range parsedList {
+		switch pt.Intent {
+		case ai.IntentRecurringDelete:
+			if deleted != nil {
+				return nil, nil, false
+			}
+			deleted = pt
+		case ai.IntentRecurringCreate:
+			if created != nil {
+				return nil, nil, false
+			}
+			created = pt
+		}
+	}
+	return deleted, created, deleted != nil && created != nil
+}
+
+// handleRecurringUpdate stitches a delete_recurring_transaction +
+// create_recurring_transaction/create_bill_reminder pair (see
+// recurringUpdatePair) into one atomic-from-the-user's-view operation: the
+// old schedule is canceled, the new one (describing whatever changed —
+// amount, day of month, or even switching between auto-record and
+// reminder-only) is created, and a single combined reply is sent instead of
+// two separate ones. A failure to find/cancel the old schedule (e.g. it was
+// already canceled by the time this ran) is logged but does NOT block
+// creating the new one — the create is the part the user actually asked
+// for; losing track of an already-gone old row is not worth failing over.
+func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, deleted, created *ai.ParsedTransaction) {
+	oldRt, cancelErr := s.recurSvc.Cancel(ctx, user.ID, deleted.TargetRecurringTransactionID)
+	if cancelErr != nil && !errors.Is(cancelErr, apperror.ErrRecurringNotFound) {
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("cancel old recurring transaction during update for user %d", user.ID), cancelErr)
+	}
+
+	newRt, err := s.recurSvc.Create(ctx, user.ID, created)
+	if err != nil {
+		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("create updated recurring transaction for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
+		return
+	}
+
+	replyKey := i18n.KeyRecurringCreated
+	if newRt.ReminderOnly {
+		replyKey = i18n.KeyBillReminderCreated
+	}
+	reply := i18n.T(user.Language, replyKey,
+		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), newRt.CategoryName, newRt.DayOfMonth, newRt.NextRunAt.Format("2006-01-02"))
+
+	if cancelErr == nil && oldRt != nil {
+		reply += "\n" + i18n.T(user.Language, i18n.KeyRecurringUpdatedFrom, i18n.FormatMoney(user.Language, oldRt.Amount, oldRt.Currency))
+	}
+
+	s.reply(ctx, user, reply)
+}
+
+// handleBudget is /budget's dispatcher: no argument shows the user's
+// current Needs/Wants/Savings allocation; three numeric arguments set a
+// new one. A plain command rather than a natural-language AI tool — unlike
+// a transaction, there's no ambiguity to parse out of "50 30 20", and
+// getting a financial-settings change wrong via AI misparsing would be a
+// worse failure mode than requiring exact syntax here.
+func (s *Service) handleBudget(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	args := strings.Fields(msg.CommandArgs)
+	if len(args) == 0 {
+		b, err := s.budgetSvc.CurrentBudget(ctx, user.ID)
+		if err != nil {
+			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("get current budget for user %d", user.ID), err)
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetFailed))
+			return
+		}
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetShow, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+		return
+	}
+
+	if len(args) != 3 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetUsage))
+		return
+	}
+	needs, errN := strconv.ParseFloat(args[0], 64)
+	wants, errW := strconv.ParseFloat(args[1], 64)
+	savings, errS := strconv.ParseFloat(args[2], 64)
+	if errN != nil || errW != nil || errS != nil {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetUsage))
+		return
+	}
+
+	b, err := s.budgetSvc.SetBudget(ctx, user.ID, needs, wants, savings)
+	if err != nil {
+		if errors.Is(err, apperror.ErrInvalidBudgetPercentages) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetInvalid))
+			return
+		}
+		logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("set budget for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetFailed))
+		return
+	}
+
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetSuccess, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+}
+
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	code := strings.TrimSpace(msg.CommandArgs)
 	if code == "" {
@@ -458,18 +599,17 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		requestType = "text_parse"
 		raw = msg.Text
 		if chained, ok := s.aiClient.(ai.ChainedCorrector); ok {
-			// See internal/ai/chain.go: a correction that doesn't restate
-			// every field ("eh salah, harusnya 1 juta aja"), or a correction/
-			// deletion that targets something other than the single most
-			// recent transaction, can't be safely resolved from the message
-			// alone, so a chained-tool-calling provider can call
-			// get_recent_transactions first — backed here by the real
-			// transaction.Service.RecentTransactions — before deciding how
-			// to fill in the correction (or which transaction to delete) and
-			// which transaction it acts on. Falls back to ParseTransactionText
-			// below for providers that
-			// don't implement this optional capability.
-			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.recentTransactionsLookup(user.ID), history)
+			// See internal/ai/chain.go: a correction/deletion that doesn't
+			// restate every field, or that targets something other than the
+			// single most recent transaction/recurring schedule, can't be
+			// safely resolved from the message alone, so a
+			// chained-tool-calling provider can call get_recent_transactions
+			// or get_recurring_transactions first — backed here by the real
+			// transaction.Service.RecentTransactions / recurring.Service.ListActive
+			// — before deciding what to act on. Falls back to
+			// ParseTransactionText below for providers that don't implement
+			// this optional capability.
+			parsedList, usageMeta, _, err = chained.ParseCorrectionChained(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, s.recentTransactionsLookup(user.ID), s.recurringTransactionsLookup(user.ID), history)
 		} else {
 			parsedList, usageMeta, err = s.aiClient.ParseTransactionText(ctx, msg.Text, user.DefaultCurrency, preferredLanguage, history)
 		}
@@ -504,10 +644,22 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 	go s.usageSvc.RecordAICall(context.Background(), user.ID, models.AIProvider(s.aiClient.ProviderName()), requestType, usageMeta)
 
-	// Every intent other than "record" is guaranteed singular (see
-	// ai.AIClient's doc comment and the "at most once per message"
-	// instruction in internal/ai/prompt/tool_schema.go) — only the first
-	// result needs inspecting to route non-record intents.
+	// Every intent other than "record" is guaranteed singular EXCEPT for
+	// one deliberate pair: there's no dedicated "update" tool for a
+	// recurring transaction/bill reminder (see
+	// internal/ai/prompt/tool_schema.go's exception carved into the
+	// otherwise-strict "at most once per message" rule), so an update
+	// message ("ubah netflix jadi 200rb") produces BOTH an
+	// IntentRecurringDelete and an IntentRecurringCreate result together.
+	// That combination must be checked before falling back to inspecting
+	// only parsedList[0] for every other (genuinely singular) intent —
+	// otherwise the delete would be applied and the create silently
+	// dropped, canceling the old schedule with nothing to replace it.
+	if deleted, created, ok := recurringUpdatePair(parsedList); ok {
+		s.handleRecurringUpdate(ctx, user, deleted, created)
+		return
+	}
+
 	first := parsedList[0]
 
 	if first.IsAmbiguous {
@@ -537,6 +689,16 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentRecurringCreate {
 		s.handleRecurringCreate(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentSavingsGoalCreate {
+		s.handleSavingsGoalCreate(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentRecurringDelete {
+		s.handleRecurringDelete(ctx, user, first)
 		return
 	}
 
@@ -680,6 +842,110 @@ func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, 
 		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.Format("2006-01-02")))
 }
 
+// handleSavingsGoalCreate creates (or replaces — only one goal is active at
+// a time, see models.SavingsGoal's doc comment) a savings goal described by
+// parsed (ai.IntentSavingsGoalCreate — e.g. "aku mau nabung 10 juta buat
+// laptop sampai desember").
+func (s *Service) handleSavingsGoalCreate(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	deadline := parseDeadlineHint(parsed.GoalDeadlineHint)
+
+	goal, err := s.goalSvc.Create(ctx, user.ID, parsed.GoalName, parsed.Amount, parsed.Currency, deadline)
+	if err != nil {
+		logger.Error(logger.SvcGoalFailed, fmt.Sprintf("create savings goal for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreateFailed))
+		return
+	}
+
+	deadlineClause := ""
+	if goal.Deadline != nil {
+		deadlineClause = " by " + goal.Deadline.Format("2006-01-02")
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreated,
+		i18n.FormatMoney(user.Language, goal.TargetAmount, goal.Currency), goal.Name, deadlineClause))
+}
+
+// parseDeadlineHint interprets an IntentSavingsGoalCreate deadline hint —
+// same ISO 8601 (YYYY-MM-DD) convention as a transaction's OccurredAtHint —
+// into a concrete UTC midnight, or nil if empty/unparseable. Unlike
+// resolveOccurredAt (transaction.Service), there's no "assume today"
+// fallback: a goal legitimately has no deadline at all, so an empty/bad
+// hint just means "no deadline" rather than defaulting to some date.
+func parseDeadlineHint(hint string) *time.Time {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return nil
+	}
+	parsed, err := time.Parse("2006-01-02", hint)
+	if err != nil {
+		return nil
+	}
+	parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC)
+	return &parsed
+}
+
+// handleGoal is /goal's dispatcher: no argument shows progress on the
+// user's active goal (or KeyGoalNone if there isn't one); "cancel" cancels
+// it. A plain command for viewing/canceling, mirroring /recurring and
+// /budget — creation alone goes through natural language (see
+// handleSavingsGoalCreate) since a name + amount + optional deadline is far
+// more naturally phrased as a sentence than command arguments, unlike
+// /budget's exact numeric percentages.
+func (s *Service) handleGoal(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	args := strings.Fields(msg.CommandArgs)
+	if len(args) == 1 && strings.EqualFold(args[0], "cancel") {
+		s.handleGoalCancel(ctx, user)
+		return
+	}
+	if len(args) > 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalUsage))
+		return
+	}
+
+	progress, err := s.goalSvc.Progress(ctx, user.ID)
+	if err != nil {
+		if errors.Is(err, apperror.ErrNoActiveSavingsGoal) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalNone))
+			return
+		}
+		logger.Error(logger.SvcGoalFailed, fmt.Sprintf("get savings goal progress for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreateFailed))
+		return
+	}
+
+	lines := []string{i18n.T(user.Language, i18n.KeyGoalProgress,
+		progress.Goal.Name,
+		i18n.FormatMoney(user.Language, progress.Saved, progress.Goal.Currency),
+		i18n.FormatMoney(user.Language, progress.Goal.TargetAmount, progress.Goal.Currency),
+		progress.Saved/progress.Goal.TargetAmount*100)}
+
+	if progress.Saved >= progress.Goal.TargetAmount {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyGoalReached))
+	} else {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyGoalProgressToGo,
+			i18n.FormatMoney(user.Language, progress.Goal.TargetAmount-progress.Saved, progress.Goal.Currency)))
+	}
+	if progress.Goal.Deadline != nil {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyGoalProgressDeadline, progress.Goal.Deadline.Format("2006-01-02")))
+	}
+
+	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// handleGoalCancel backs "/goal cancel".
+func (s *Service) handleGoalCancel(ctx context.Context, user *models.User) {
+	goal, err := s.goalSvc.Cancel(ctx, user.ID)
+	if err != nil {
+		if errors.Is(err, apperror.ErrNoActiveSavingsGoal) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalNone))
+			return
+		}
+		logger.Error(logger.SvcGoalFailed, fmt.Sprintf("cancel savings goal for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreateFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCancelSuccess, goal.Name))
+}
+
 // appendBudgetWarnings appends any Needs/Wants budget warnings triggered by
 // tx to reply — shared by the normal record-success reply and the
 // correction-success reply. Only expenses can trip a Needs/Wants guardrail,
@@ -777,6 +1043,36 @@ func (s *Service) recentTransactionsLookup(userID uint) ai.RecentTransactionsLoo
 				Bucket:       bucket,
 				Description:  tx.Description,
 				OccurredAt:   tx.OccurredAt.Format("2006-01-02"),
+			})
+		}
+		return results, nil
+	}
+}
+
+// recurringTransactionsLookup backs a chained-tool-calling AIClient's
+// get_recurring_transactions tool (see ai.ChainedCorrector) with the real
+// recurring.Service.ListActive, mapped onto the provider-agnostic
+// ai.RecurringCandidate shape — including the real database ID, so the
+// model can echo back exactly which recurring transaction or bill reminder
+// a cancellation message targets.
+func (s *Service) recurringTransactionsLookup(userID uint) ai.RecurringTransactionsLookup {
+	return func(ctx context.Context) ([]*ai.RecurringCandidate, error) {
+		rows, err := s.recurSvc.ListActive(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+
+		results := make([]*ai.RecurringCandidate, 0, len(rows))
+		for _, rt := range rows {
+			results = append(results, &ai.RecurringCandidate{
+				ID:           rt.ID,
+				Type:         string(rt.Type),
+				Amount:       rt.Amount,
+				Currency:     rt.Currency,
+				CategoryName: rt.CategoryName,
+				Description:  rt.Description,
+				DayOfMonth:   rt.DayOfMonth,
+				ReminderOnly: rt.ReminderOnly,
 			})
 		}
 		return results, nil
