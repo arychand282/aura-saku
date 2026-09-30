@@ -679,6 +679,48 @@ func TestHandleUpdate_SpendingQuery_OverallTotal(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_OverallTotal_IncludesCategoryBreakdown
+// covers "habis buat apa saja?" (spent on what?) style follow-ups to a plain
+// total query: since there's no category/bucket filter, the reply must list
+// each category's own amount underneath the headline total, not just the
+// single number — reusing the same TopCategories query the monthly recap
+// already relies on.
+func TestHandleUpdate_SpendingQuery_OverallTotal_IncludesCategoryBreakdown(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "Food", Description: "groceries",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "belanja 300000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "Transport", Description: "gas",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bensin 100000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:      ai.IntentQuery,
+		QueryPeriod: ai.PeriodMonthly,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "habis buat apa saja?"})
+
+	got := env.messenger.last(chatID)
+	wantTotal := i18n.FormatMoney(models.LanguageID, 400_000, "IDR")
+	if !strings.Contains(got, wantTotal) {
+		t.Errorf("reply = %q, want it to contain the overall total %s", got, wantTotal)
+	}
+	if !strings.Contains(got, "food") || !strings.Contains(got, "transport") {
+		t.Errorf("reply = %q, want it to list both categories (food, transport)", got)
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 300_000, "IDR")) ||
+		!strings.Contains(got, i18n.FormatMoney(models.LanguageID, 100_000, "IDR")) {
+		t.Errorf("reply = %q, want it to show each category's own amount", got)
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_CategoryTotal covers the optional category
 // filter, including that the match is case-insensitive against the stored
 // category name.

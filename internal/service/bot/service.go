@@ -974,6 +974,12 @@ func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, t
 // Only expense totals are reported ("how much did I spend"), not income/
 // investment/transfer — matches the question this intent was built to
 // answer; a broader "how much did I earn" query is out of scope for now.
+//
+// A plain total query (no category/bucket filter) is followed by a
+// per-category breakdown (TopCategories, capped at 5) rather than just the
+// bare number — "habis buat apa saja?" (spent on what?) is effectively the
+// same question as "how much did I spend", just expecting more detail in
+// the answer, and the breakdown query already existed for other features.
 func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction) {
 	periodLabel := i18n.PeriodLabel(user.Language, parsed.QueryPeriod)
 
@@ -1003,7 +1009,31 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
 		return
 	}
-	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, totals[string(models.TxExpense)], user.DefaultCurrency), periodLabel))
+	expenseTotal := totals[string(models.TxExpense)]
+	headline := i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, expenseTotal, user.DefaultCurrency), periodLabel)
+	if expenseTotal <= 0 {
+		// Nothing to break down — avoid a division by zero below and a
+		// breakdown list that would just be empty anyway.
+		s.reply(ctx, user, headline)
+		return
+	}
+
+	topCategories, err := s.reportSvc.TopCategories(ctx, user.ID, parsed.QueryPeriod)
+	if err != nil {
+		// The breakdown is a nice-to-have on top of the total, not the
+		// question's core answer — log and still send the total rather than
+		// failing the whole reply over it.
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("top-categories breakdown for user %d", user.ID), err)
+		s.reply(ctx, user, headline)
+		return
+	}
+
+	lines := []string{headline}
+	for i, c := range topCategories {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
+			i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), c.Total/expenseTotal*100))
+	}
+	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
 // resolveQueryBucket decides whether a query_spending parse is actually
@@ -1070,7 +1100,7 @@ func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.Us
 		i18n.FormatMoney(user.Language, breakdown.Total, user.DefaultCurrency), label, periodLabel)}
 	for i, c := range breakdown.Categories {
 		percent := c.Total / breakdown.Total * 100
-		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBucketItem,
+		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
 			i+1, c.CategoryName, i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), percent))
 	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
