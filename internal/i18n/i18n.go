@@ -93,6 +93,7 @@ const (
 	KeyQuerySpendingListItem               = "query_spending_list_item"
 	KeyQuerySpendingListMore               = "query_spending_list_more"
 	KeyQuerySpendingListEmptyAll           = "query_spending_list_empty_all"
+	KeyPeriodLabelSince                    = "period_label_since"
 	KeyLanguageUsage                       = "language_usage"
 	KeyLanguageSet                         = "language_set"
 	KeyInputTooLong                        = "input_too_long"
@@ -193,6 +194,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyQuerySpendingListItem:               "%d. %s — %s: %s (%s)",
 		KeyQuerySpendingListMore:               "...and %d more — say \"show me more\" to see the rest.",
 		KeyQuerySpendingListEmptyAll:           "You don't have any expenses %s.",
+		KeyPeriodLabelSince:                    "since %s",
 		KeyLanguageUsage:                       "Usage: /language <en|id>, e.g. /language id",
 		KeyLanguageSet:                         "Language set to English.",
 		KeyInputTooLong:                        "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
@@ -291,6 +293,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyQuerySpendingListItem:               "%d. %s — %s: %s (%s)",
 		KeyQuerySpendingListMore:               "...dan %d lainnya — ketik \"lanjutkan\" untuk lihat selanjutnya.",
 		KeyQuerySpendingListEmptyAll:           "Kamu belum ada pengeluaran %s.",
+		KeyPeriodLabelSince:                    "sejak %s",
 		KeyLanguageUsage:                       "Cara pakai: /language <en|id>, contoh: /language id",
 		KeyLanguageSet:                         "Bahasa diatur ke Bahasa Indonesia.",
 		KeyInputTooLong:                        "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",

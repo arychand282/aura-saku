@@ -1325,25 +1325,31 @@ func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, t
 // same question as "how much did I spend", just expecting more detail in
 // the answer, and the breakdown query already existed for other features.
 func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage, parsed *ai.ParsedTransaction) {
-	periodLabel := i18n.PeriodLabel(user.Language, parsed.QueryPeriod)
+	start, end, err := resolveQueryRange(parsed)
+	if err != nil {
+		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("resolve period for spending query for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+		return
+	}
+	periodLabel := queryPeriodLabel(user.Language, parsed, start)
 
 	if parsed.QueryMode == ai.QueryModeList {
-		s.handleSpendingListQuery(ctx, user, parsed, periodLabel)
+		s.handleSpendingListQuery(ctx, user, parsed, start, end, periodLabel)
 		return
 	}
 
 	if isUncategorizedQuery(parsed) {
-		s.handleUncategorizedSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel)
+		s.handleUncategorizedSpendingQuery(ctx, user, start, end, periodLabel)
 		return
 	}
 
 	if bucket, ok := resolveQueryBucket(parsed); ok {
-		s.handleBucketSpendingQuery(ctx, user, parsed.QueryPeriod, periodLabel, bucket)
+		s.handleBucketSpendingQuery(ctx, user, start, end, periodLabel, bucket)
 		return
 	}
 
 	if parsed.QueryCategory != "" {
-		total, matched, err := s.reportSvc.CategoryTotal(ctx, user.ID, parsed.QueryPeriod, parsed.QueryCategory)
+		total, matched, err := s.reportSvc.CategoryTotalRange(ctx, user.ID, start, end, parsed.QueryCategory)
 		if err != nil {
 			logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("category spending query for user %d", user.ID), err)
 			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1357,7 +1363,7 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 
-	totals, _, _, err := s.reportSvc.Summary(ctx, user.ID, parsed.QueryPeriod)
+	totals, err := s.reportSvc.SummaryRange(ctx, user.ID, start, end)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("summary spending query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1372,7 +1378,7 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 
-	topCategories, err := s.reportSvc.TopCategories(ctx, user.ID, parsed.QueryPeriod)
+	topCategories, err := s.reportSvc.TopCategoriesRange(ctx, user.ID, start, end)
 	if err != nil {
 		// The breakdown is a nice-to-have on top of the total, not the
 		// question's core answer — log and still send the total rather than
@@ -1390,6 +1396,45 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
+// resolveQueryRange computes the actual [start, now] window a query_spending
+// parse should use: report.PeriodRange(parsed.QueryPeriod)'s default start,
+// overridden by parsed.QueryStartDate when the AI set one — e.g. "mulai dari
+// bulan lalu" ("starting from last month"), which none of PeriodRange's four
+// fixed period shapes (each anchored to the CURRENT day/week/month/year) can
+// express on their own. See ai.ParsedTransaction.QueryStartDate's own doc
+// comment for the bug this fixes. An unparseable QueryStartDate is treated
+// the same as it being empty — silently ignored in favor of the plain
+// period default — rather than failing the whole query over an occasional
+// malformed date from the model.
+func resolveQueryRange(parsed *ai.ParsedTransaction) (start, end time.Time, err error) {
+	start, end, err = report.PeriodRange(parsed.QueryPeriod)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if parsed.QueryStartDate == "" {
+		return start, end, nil
+	}
+	if customStart, parseErr := time.Parse("2006-01-02", parsed.QueryStartDate); parseErr == nil {
+		start = customStart
+	}
+	return start, end, nil
+}
+
+// queryPeriodLabel is the "this month"/"sejak 1 Sep 2026" phrase shown in a
+// spending-query reply. When QueryStartDate was actually honored (parsed
+// successfully and therefore reflected in start), the plain period label
+// would be misleading — e.g. still saying "this month" while the data shown
+// spans back to last month — so it's replaced with an explicit "since
+// <date>" phrase naming the real boundary instead.
+func queryPeriodLabel(lang models.Language, parsed *ai.ParsedTransaction, start time.Time) string {
+	if parsed.QueryStartDate != "" {
+		if _, parseErr := time.Parse("2006-01-02", parsed.QueryStartDate); parseErr == nil {
+			return i18n.T(lang, i18n.KeyPeriodLabelSince, start.Format("2 Jan 2006"))
+		}
+	}
+	return i18n.PeriodLabel(lang, parsed.QueryPeriod)
+}
+
 // spendingListCursor is the small piece of state a "show me more"/"lanjutkan"
 // follow-up needs to resume exactly where the previous list left off. The
 // model is never asked to track a numeric offset across turns — that's
@@ -1399,7 +1444,13 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 // same period/category/bucket before it's trusted (see
 // handleSpendingListQuery).
 type spendingListCursor struct {
-	Period        string `json:"period"`
+	Period string `json:"period"`
+	// StartDate mirrors ai.ParsedTransaction.QueryStartDate verbatim (empty
+	// string for a plain period query) — included in the match check so a
+	// "lanjutkan" never resumes a custom-start-date list ("mulai dari bulan
+	// lalu") against a plain-period one that happens to share the same
+	// Period/category/bucket, or vice versa.
+	StartDate     string `json:"start_date"`
 	CategoryQuery string `json:"category_query"`
 	Bucket        string `json:"bucket"`
 	Uncategorized bool   `json:"uncategorized"`
@@ -1473,7 +1524,7 @@ func (s *Service) clearSpendingListCursor(ctx context.Context, userID uint) {
 // this period" — both simply produce zero matching transactions, and a
 // single "nothing to show" reply covers both honestly enough without a
 // second existence-check query.
-func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction, periodLabel string) {
+func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction, start, end time.Time, periodLabel string) {
 	uncategorized := isUncategorizedQuery(parsed)
 	var bucket models.BudgetBucket
 	var hasBucket bool
@@ -1491,21 +1542,14 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	offset := 0
 	if parsed.QueryListMore {
 		if cursor, ok := s.loadSpendingListCursor(ctx, user.ID); ok &&
-			cursor.Period == parsed.QueryPeriod && cursor.CategoryQuery == categoryQuery &&
-			cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized {
+			cursor.Period == parsed.QueryPeriod && cursor.StartDate == parsed.QueryStartDate &&
+			cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized {
 			offset = cursor.NextOffset
 		}
 		// No matching cursor (expired, or the model attached QueryListMore
 		// to a request that doesn't actually match the previous list) —
 		// silently start over from the first page rather than erroring;
 		// that's still a sensible answer to "lanjutkan".
-	}
-
-	start, end, err := report.PeriodRange(parsed.QueryPeriod)
-	if err != nil {
-		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("resolve period for spending list query for user %d", user.ID), err)
-		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
-		return
 	}
 
 	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, categoryQuery, bucket, uncategorized, offset)
@@ -1548,7 +1592,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	if remaining := page.Total - shown; remaining > 0 {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
 		s.saveSpendingListCursor(ctx, user.ID, spendingListCursor{
-			Period: parsed.QueryPeriod, CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
+			Period: parsed.QueryPeriod, StartDate: parsed.QueryStartDate, CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
 		})
 	} else {
 		s.clearSpendingListCursor(ctx, user.ID)
@@ -1583,8 +1627,8 @@ func isUncategorizedQuery(parsed *ai.ParsedTransaction) bool {
 // uncategorized-total counterpart to CategoryTotal, using the SAME
 // translated label (never the raw "none"/"tanpa kategori" the model
 // guessed) so the reply reads the same way the original list did.
-func (s *Service) handleUncategorizedSpendingQuery(ctx context.Context, user *models.User, period, periodLabel string) {
-	total, err := s.reportSvc.UncategorizedTotal(ctx, user.ID, period)
+func (s *Service) handleUncategorizedSpendingQuery(ctx context.Context, user *models.User, start, end time.Time, periodLabel string) {
+	total, err := s.reportSvc.UncategorizedTotalRange(ctx, user.ID, start, end)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("uncategorized spending query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1662,8 +1706,8 @@ func bucketDisplayName(bucket models.BudgetBucket) string {
 // resolveQueryBucket) with a per-category breakdown within that bucket, the
 // same shape RunCategoryInsights already uses for the proactive monthly
 // recap, rather than a single opaque total.
-func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.User, period, periodLabel string, bucket models.BudgetBucket) {
-	breakdown, err := s.reportSvc.BucketSpending(ctx, user.ID, period, bucket)
+func (s *Service) handleBucketSpendingQuery(ctx context.Context, user *models.User, start, end time.Time, periodLabel string, bucket models.BudgetBucket) {
+	breakdown, err := s.reportSvc.BucketSpendingRange(ctx, user.ID, start, end, bucket)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("bucket spending query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))

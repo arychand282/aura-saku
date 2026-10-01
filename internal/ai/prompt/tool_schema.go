@@ -195,6 +195,10 @@ func TransactionTools() []Tool {
 					Type:        "boolean",
 					Description: "Only meaningful when query_mode is \"list\". Set true when this message is asking to continue/see more of a list YOU (the assistant) just showed in your immediately previous reply — e.g. \"lanjutkan\", \"lanjut dong\", \"ada lagi?\", \"show me more\", \"next\" — rather than starting a brand-new list request. When true, still set query_period/query_category/query_bucket to the SAME values you used for that previous list (the server tracks exactly which page comes next on its own — never try to guess or state an offset/page number yourself). Leave false/omitted for a fresh list request.",
 				},
+				"query_start_date": {
+					Type:        "string",
+					Description: "ISO 8601 date (YYYY-MM-DD) to use as the query's START boundary INSTEAD of query_period's own default start — set this whenever the message specifies or implies a starting point that query_period's four fixed values (daily/weekly/monthly/yearly, each anchored to the CURRENT day/week/month/year) can't express on their own. Examples: \"mulai dari bulan lalu\"/\"starting from last month\" -> last month's 1st (still set query_period, e.g. \"monthly\", as the closest fit — query_start_date is what actually controls the start); \"sejak tanggal 15\" -> the 15th of the current month; \"since January\" -> Jan 1st of the current year; \"dari awal tahun lalu\" -> Jan 1st of last year. The end of the range is always today regardless of this field. Leave empty for a plain period query with no explicit custom start stated — that's the common case.",
+				},
 			},
 			Required: []string{"query_period"},
 		},

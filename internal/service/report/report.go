@@ -55,7 +55,19 @@ func (s *Service) Summary(ctx context.Context, userID uint, period string) (tota
 	if err != nil {
 		return nil, time.Time{}, time.Time{}, err
 	}
+	totals, err = s.SummaryRange(ctx, userID, start, end)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+	return totals, start, end, nil
+}
 
+// SummaryRange is Summary's explicit-[start,end] counterpart — lets a caller
+// (bot.Service.resolveQueryRange) override PeriodRange's default start
+// boundary with a specific date stated in the message (e.g. "mulai dari
+// bulan lalu") while still ending at "now", which PeriodRange itself has no
+// way to express.
+func (s *Service) SummaryRange(ctx context.Context, userID uint, start, end time.Time) (map[string]float64, error) {
 	type totalRow struct {
 		Type  string
 		Total float64
@@ -66,14 +78,14 @@ func (s *Service) Summary(ctx context.Context, userID uint, period string) (tota
 		Where("user_id = ? AND occurred_at BETWEEN ? AND ?", userID, start, end).
 		Group("type").
 		Scan(&rows); result.Error != nil {
-		return nil, time.Time{}, time.Time{}, result.Error
+		return nil, result.Error
 	}
 
-	totals = map[string]float64{}
+	totals := map[string]float64{}
 	for _, r := range rows {
 		totals[r.Type] = r.Total
 	}
-	return totals, start, end, nil
+	return totals, nil
 }
 
 // TopCategories returns the top 5 expense categories by converted amount
@@ -83,7 +95,12 @@ func (s *Service) TopCategories(ctx context.Context, userID uint, period string)
 	if err != nil {
 		return nil, err
 	}
+	return s.TopCategoriesRange(ctx, userID, start, end)
+}
 
+// TopCategoriesRange is TopCategories' explicit-[start,end] counterpart —
+// see SummaryRange's doc comment for why this exists.
+func (s *Service) TopCategoriesRange(ctx context.Context, userID uint, start, end time.Time) ([]CategoryTotal, error) {
 	var rows []CategoryTotal
 	result := s.db.WithContext(ctx).Table("transactions").
 		Select("categories.name as category_name, COALESCE(SUM(transactions.converted_amount), 0) as total").
@@ -247,7 +264,12 @@ func (s *Service) BucketSpending(ctx context.Context, userID uint, period string
 	if err != nil {
 		return nil, err
 	}
+	return s.BucketSpendingRange(ctx, userID, start, end, bucket)
+}
 
+// BucketSpendingRange is BucketSpending's explicit-[start,end] counterpart —
+// see SummaryRange's doc comment for why this exists.
+func (s *Service) BucketSpendingRange(ctx context.Context, userID uint, start, end time.Time, bucket models.BudgetBucket) (*BucketBreakdown, error) {
 	const bucketExpr = "COALESCE(transactions.bucket, categories.bucket, 'none')"
 
 	var rows []CategoryTotal
@@ -360,9 +382,14 @@ func (s *Service) UncategorizedTotal(ctx context.Context, userID uint, period st
 	if err != nil {
 		return 0, err
 	}
+	return s.UncategorizedTotalRange(ctx, userID, start, end)
+}
 
+// UncategorizedTotalRange is UncategorizedTotal's explicit-[start,end]
+// counterpart — see SummaryRange's doc comment for why this exists.
+func (s *Service) UncategorizedTotalRange(ctx context.Context, userID uint, start, end time.Time) (float64, error) {
 	var total float64
-	err = s.db.WithContext(ctx).Model(&models.Transaction{}).
+	err := s.db.WithContext(ctx).Model(&models.Transaction{}).
 		Select("COALESCE(SUM(converted_amount), 0)").
 		Where("user_id = ? AND type = ? AND occurred_at BETWEEN ? AND ? AND category_id IS NULL",
 			userID, models.TxExpense, start, end).
@@ -382,7 +409,12 @@ func (s *Service) CategoryTotal(ctx context.Context, userID uint, period, catego
 	if err != nil {
 		return 0, false, err
 	}
+	return s.CategoryTotalRange(ctx, userID, start, end, categoryQuery)
+}
 
+// CategoryTotalRange is CategoryTotal's explicit-[start,end] counterpart —
+// see SummaryRange's doc comment for why this exists.
+func (s *Service) CategoryTotalRange(ctx context.Context, userID uint, start, end time.Time, categoryQuery string) (total float64, matched bool, err error) {
 	like := "%" + categoryQuery + "%"
 
 	var categoryCount int64

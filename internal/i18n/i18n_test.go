@@ -101,7 +101,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyBalance, KeyQuerySpendingTotal, KeyQuerySpendingByCategory, KeyQueryCategoryNotFound,
 		KeyQuerySpendingByBucket, KeyQuerySpendingBreakdownItem, KeyQuerySpendingScopeNone, KeyUncategorizedLabel,
 		KeyQuerySpendingListHeader, KeyQuerySpendingListHeaderAll, KeyQuerySpendingListItem,
-		KeyQuerySpendingListMore, KeyQuerySpendingListEmptyAll,
+		KeyQuerySpendingListMore, KeyQuerySpendingListEmptyAll, KeyPeriodLabelSince,
 		KeyLanguageUsage, KeyLanguageSet,
 		KeyBudgetNoIncome, KeyBudgetNeedsExceeded, KeyBudgetWantsExceeded,
 		KeyBudgetWantsPace, KeyBudgetRollover,

@@ -1146,6 +1146,63 @@ func TestHandleUpdate_SpendingQuery_ListPagination(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_CustomStartDateIncludesLastMonth reproduces
+// a real reported bug: "list semua transaksi mulai dari bulan lalu" ("list
+// all transactions starting from last month") only ever showed this
+// calendar month's items — query_period's four fixed shapes have no way to
+// express "starting from a specific point", so the model's only option
+// (query_period="monthly") silently dropped everything from last month.
+// QueryStartDate now overrides that default start boundary; this confirms a
+// last-month expense is included with the override and excluded without it.
+func TestHandleUpdate_SpendingQuery_CustomStartDateIncludesLastMonth(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lastMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	lastMonthDate := lastMonthStart.Format("2006-01-02")
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "rent", Description: "sewa bulan lalu",
+		OccurredAtHint: lastMonthDate,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "sewa 500000 bulan lalu"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food", Description: "makan hari ini"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 50000"})
+
+	// Without the override: this month's query must NOT include last
+	// month's rent — reproducing the reported bug's actual behavior.
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+	thisMonthOnly := env.messenger.last(chatID)
+	if strings.Contains(thisMonthOnly, "sewa bulan lalu") {
+		t.Errorf("plain monthly list = %q, must NOT include last month's rent", thisMonthOnly)
+	}
+	if !strings.Contains(thisMonthOnly, "makan hari ini") {
+		t.Errorf("plain monthly list = %q, want this month's lunch", thisMonthOnly)
+	}
+
+	// With the override: same period, but QueryStartDate pulls the window
+	// back to include last month's rent too.
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList, QueryStartDate: lastMonthDate}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi mulai dari bulan lalu"})
+	sinceLastMonth := env.messenger.last(chatID)
+	if !strings.Contains(sinceLastMonth, "sewa bulan lalu") {
+		t.Errorf("since-last-month list = %q, want last month's rent included", sinceLastMonth)
+	}
+	if !strings.Contains(sinceLastMonth, "makan hari ini") {
+		t.Errorf("since-last-month list = %q, want this month's lunch still included", sinceLastMonth)
+	}
+	// The reply's period label must reflect the real custom boundary, not
+	// the generic (and now misleading) "this month" label.
+	if !strings.Contains(sinceLastMonth, lastMonthStart.Format("2 Jan 2006")) {
+		t.Errorf("since-last-month list = %q, want the period label to name the actual start date %s", sinceLastMonth, lastMonthStart.Format("2 Jan 2006"))
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_UncategorizedList reproduces a real chat
 // bug: after seeing "1. 30 Sep — Tanpa kategori: Rp3.432.000,00 (...)" in a
 // list reply, the user's follow-up ("yang tanpa kategori bisa jelasin lagi

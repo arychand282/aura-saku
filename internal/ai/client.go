@@ -139,6 +139,20 @@ type ParsedTransaction struct {
 	QueryPeriod   string `json:"query_period,omitempty"`
 	QueryCategory string `json:"query_category,omitempty"`
 
+	// QueryStartDate, when non-empty, OVERRIDES QueryPeriod's own default
+	// start boundary with this exact ISO 8601 (YYYY-MM-DD) date — the end of
+	// the range is always "now" regardless. Exists because QueryPeriod's
+	// four values (daily/weekly/monthly/yearly) each anchor to a fixed
+	// "current" window with no way to express "starting from a specific
+	// point" (e.g. "list semua transaksi mulai dari bulan lalu" — starting
+	// from last month — previously had no field to carry that, so the model
+	// silently fell back to QueryPeriod="monthly", which only covers THIS
+	// calendar month and dropped everything from last month entirely).
+	// Resolved in bot.Service.resolveQueryRange, shared by every
+	// query_spending sub-handler (total, breakdown, bucket, list,
+	// uncategorized) so all of them honor it uniformly.
+	QueryStartDate string `json:"query_start_date,omitempty"`
+
 	// QueryBucket is IntentQuery's Needs/Wants/Savings counterpart to
 	// QueryCategory — set when the message asks about spending in a budget
 	// bucket as a whole ("how much did I spend on Wants") rather than a
