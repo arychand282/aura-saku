@@ -23,6 +23,13 @@ type Config struct {
 	RedisPort     string
 	RedisPassword string
 	RedisDB       int
+	// RedisURL, when set, takes priority over RedisHost/Port/Password/DB
+	// above — a single connection URL (e.g. Upstash's "rediss://...") that
+	// also carries whether to use TLS, which the separate fields have no
+	// way to express. Local/Docker Redis has no TLS, so this stays empty
+	// and the separate fields are used instead; a managed provider that
+	// requires TLS (Upstash, Redis Cloud, ...) sets this instead.
+	RedisURL string
 
 	TelegramBotToken      string
 	TelegramWebhookURL    string
@@ -130,6 +137,7 @@ func Load() (*Config, error) {
 		RedisPort:     getEnv("REDIS_PORT", "6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       getEnvInt("REDIS_DB", 0),
+		RedisURL:      getEnv("REDIS_URL", ""),
 
 		TelegramBotToken:      getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramWebhookURL:    getEnv("TELEGRAM_WEBHOOK_URL", ""),
