@@ -130,7 +130,8 @@ const (
 	KeyRecurringCancelUsage    = "recurring_cancel_usage"
 	KeyRecurringCancelSuccess  = "recurring_cancel_success"
 	KeyRecurringCancelNotFound = "recurring_cancel_not_found"
-	KeyRecurringUpdatedFrom    = "recurring_updated_from"
+	KeyRecurringUpdated        = "recurring_updated"
+	KeyBillReminderUpdated     = "bill_reminder_updated"
 
 	KeyBillReminderCreated = "bill_reminder_created"
 	KeyBillReminderDue     = "bill_reminder_due"
@@ -228,7 +229,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCancelUsage:    "Usage: /recurring to list, or /recurring cancel <id> to cancel one, e.g. /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Canceled recurring %s of %s for \"%s\".",
 		KeyRecurringCancelNotFound: "I couldn't find an active recurring transaction with that id. Use /recurring to see your list.",
-		KeyRecurringUpdatedFrom:    "(previously %s)",
+		KeyRecurringUpdated:        "✅ Recurring %s of %s for \"%s\" updated (previously %s for \"%s\") — it'll auto-record on day %d of each month, starting %s.",
+		KeyBillReminderUpdated:     "🔔 Reminder updated for %s of %s for \"%s\" (previously %s for \"%s\") — I'll notify you on day %d of each month, starting %s. I won't record it automatically; let me know when you've paid it.",
 
 		KeyBillReminderCreated: "🔔 Reminder set for %s of %s for \"%s\" — I'll notify you on day %d of each month, starting %s. I won't record it automatically; let me know when you've paid it.",
 		KeyBillReminderDue:     "🔔 Reminder: your %s of %s for \"%s\" is due today.",
@@ -324,7 +326,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyRecurringCancelUsage:    "Cara pakai: /recurring untuk melihat daftar, atau /recurring cancel <id> untuk membatalkan, contoh: /recurring cancel 3.",
 		KeyRecurringCancelSuccess:  "Transaksi berulang %s sebesar %s untuk \"%s\" sudah dibatalkan.",
 		KeyRecurringCancelNotFound: "Aku tidak menemukan transaksi berulang aktif dengan id itu. Gunakan /recurring untuk melihat daftarmu.",
-		KeyRecurringUpdatedFrom:    "(sebelumnya %s)",
+		KeyRecurringUpdated:        "✅ %s berulang sebesar %s untuk \"%s\" telah diperbarui (sebelumnya %s untuk \"%s\") — akan otomatis tercatat tiap tanggal %d, mulai %s.",
+		KeyBillReminderUpdated:     "🔔 Pengingat telah diperbarui untuk %s sebesar %s untuk \"%s\" (sebelumnya %s untuk \"%s\") — aku akan mengingatkanmu tiap tanggal %d, mulai %s. Aku tidak akan mencatatnya otomatis; kabari aku kalau sudah dibayar.",
 
 		KeyBillReminderCreated: "🔔 Pengingat diatur untuk %s sebesar %s untuk \"%s\" — aku akan mengingatkanmu tiap tanggal %d, mulai %s. Aku tidak akan mencatatnya otomatis; kabari aku kalau sudah dibayar.",
 		KeyBillReminderDue:     "🔔 Pengingat: %s sebesar %s untuk \"%s\" jatuh tempo hari ini.",

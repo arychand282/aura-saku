@@ -499,18 +499,33 @@ func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, 
 		return
 	}
 
+	// The old schedule was actually found and canceled: frame this as an
+	// UPDATE — a dedicated "updated ... (previously X for Y)" sentence
+	// naming both the old amount AND old description/category together, not
+	// the plain creation wording with a bolted-on second line showing only
+	// the amount (confusing: reads like a brand new reminder was just set
+	// up, with a stray fragment after it, rather than an existing one
+	// changing). Falls back to the ordinary creation wording only if the old
+	// row couldn't be found (cancelErr != nil) — that's genuinely just a
+	// fresh creation from the user's perspective too.
+	if cancelErr == nil && oldRt != nil {
+		replyKey := i18n.KeyRecurringUpdated
+		if newRt.ReminderOnly {
+			replyKey = i18n.KeyBillReminderUpdated
+		}
+		s.reply(ctx, user, i18n.T(user.Language, replyKey,
+			newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), recurringLabel(newRt),
+			i18n.FormatMoney(user.Language, oldRt.Amount, oldRt.Currency), recurringLabel(oldRt),
+			newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02")))
+		return
+	}
+
 	replyKey := i18n.KeyRecurringCreated
 	if newRt.ReminderOnly {
 		replyKey = i18n.KeyBillReminderCreated
 	}
-	reply := i18n.T(user.Language, replyKey,
-		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), recurringLabel(newRt), newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02"))
-
-	if cancelErr == nil && oldRt != nil {
-		reply += "\n" + i18n.T(user.Language, i18n.KeyRecurringUpdatedFrom, i18n.FormatMoney(user.Language, oldRt.Amount, oldRt.Currency))
-	}
-
-	s.reply(ctx, user, reply)
+	s.reply(ctx, user, i18n.T(user.Language, replyKey,
+		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), recurringLabel(newRt), newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02")))
 }
 
 // handleBudget is /budget's dispatcher: no argument shows the user's

@@ -2727,6 +2727,13 @@ func TestHandleUpdate_RecurringUpdate_DeleteAndCreatePair(t *testing.T) {
 	if !strings.Contains(got, wantOldAmount) {
 		t.Errorf("update reply = %q, want it to mention the previous amount %s for contrast", got, wantOldAmount)
 	}
+	// "diperbarui" (updated) only appears in KeyRecurringUpdated, never in
+	// KeyRecurringCreated's "sudah diatur" (set up) wording — asserting on
+	// it catches the reply reverting to sounding like a brand-new recurring
+	// transaction was just created rather than an existing one changing.
+	if !strings.Contains(got, "diperbarui") {
+		t.Errorf("update reply = %q, want the update-specific wording (KeyRecurringUpdated), not the plain creation one", got)
+	}
 
 	var netflixOld models.RecurringTransaction
 	if err := env.db.First(&netflixOld, netflix.ID).Error; err != nil {
@@ -2751,5 +2758,57 @@ func TestHandleUpdate_RecurringUpdate_DeleteAndCreatePair(t *testing.T) {
 	env.db.Model(&models.RecurringTransaction{}).Where("user_id = ? AND description = ? AND is_active = ?", user.ID, "sewa kos", true).Count(&rentCount)
 	if rentCount != 1 {
 		t.Error("the unrelated rent recurring transaction should still be active and untouched by netflix's update")
+	}
+}
+
+// TestHandleUpdate_BillReminderUpdate_DescriptionChangeOnly covers renaming
+// a bill reminder with the amount unchanged ("udah pengingat tagihan
+// internet setiap tanggal 5 jadi nama internet rumah menjadi tagihan
+// indihome") — the reply must name BOTH the new and old description
+// ("tagihan indihome" / "internet rumah") woven into one update sentence,
+// use the bill-reminder-specific update wording (KeyBillReminderUpdated,
+// never the plain KeyBillReminderCreated "diatur"/set-up phrasing), and
+// never a bare amount-only "(sebelumnya 375.000,00 )" fragment bolted onto a
+// creation sentence — the exact confusion this was built to fix.
+func TestHandleUpdate_BillReminderUpdate_DescriptionChangeOnly(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 375_000, Currency: "IDR",
+		CategoryName: "utilities", Description: "internet rumah", DayOfMonth: 5, ReminderOnly: true,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ingetin bayar internet 375000 tiap tanggal 5"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var internet models.RecurringTransaction
+	if err := env.db.Where("user_id = ? AND description = ?", user.ID, "internet rumah").First(&internet).Error; err != nil {
+		t.Fatalf("load internet recurring transaction: %v", err)
+	}
+
+	env.ai.parseResults = []*ai.ParsedTransaction{
+		{Intent: ai.IntentRecurringDelete, TargetRecurringTransactionID: internet.ID},
+		{Intent: ai.IntentRecurringCreate, Type: "expense", Amount: 375_000, Currency: "IDR", CategoryName: "utilities", Description: "tagihan indihome", DayOfMonth: 5, ReminderOnly: true},
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "udah pengingat tagihan internet setiap tanggal 5 jadi nama internet rumah menjadi tagihan indihome"})
+	env.ai.parseResults = nil
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "tagihan indihome") {
+		t.Errorf("update reply = %q, want it to mention the new description %q", got, "tagihan indihome")
+	}
+	if !strings.Contains(got, "internet rumah") {
+		t.Errorf("update reply = %q, want it to mention the previous description %q for contrast", got, "internet rumah")
+	}
+	if !strings.Contains(got, "diperbarui") {
+		t.Errorf("update reply = %q, want the update-specific wording (KeyBillReminderUpdated), not the plain creation one", got)
+	}
+	if strings.Contains(got, "diatur") {
+		t.Errorf("update reply = %q, must not use the plain-creation \"diatur\" (set up) wording for an actual update", got)
 	}
 }
