@@ -492,7 +492,7 @@ func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, 
 		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("cancel old recurring transaction during update for user %d", user.ID), cancelErr)
 	}
 
-	newRt, err := s.recurSvc.Create(ctx, user.ID, created)
+	newRt, err := s.recurSvc.Create(ctx, user.ID, user.DefaultCurrency, created)
 	if err != nil {
 		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("create updated recurring transaction for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
@@ -504,7 +504,7 @@ func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, 
 		replyKey = i18n.KeyBillReminderCreated
 	}
 	reply := i18n.T(user.Language, replyKey,
-		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), newRt.CategoryName, newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02"))
+		newRt.Type, i18n.FormatMoney(user.Language, newRt.Amount, newRt.Currency), recurringLabel(newRt), newRt.DayOfMonth, newRt.NextRunAt.UTC().Format("2006-01-02"))
 
 	if cancelErr == nil && oldRt != nil {
 		reply += "\n" + i18n.T(user.Language, i18n.KeyRecurringUpdatedFrom, i18n.FormatMoney(user.Language, oldRt.Amount, oldRt.Currency))
@@ -1028,7 +1028,7 @@ func (s *Service) handleTransactionDeletion(ctx context.Context, user *models.Us
 // see cmd/server/main.go) ever acts on one, once the schedule actually
 // comes due.
 func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
-	rt, err := s.recurSvc.Create(ctx, user.ID, parsed)
+	rt, err := s.recurSvc.Create(ctx, user.ID, user.DefaultCurrency, parsed)
 	if err != nil {
 		logger.Error(logger.SvcRecurringFailed, fmt.Sprintf("create recurring transaction for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyRecurringCreateFailed))
@@ -1040,7 +1040,19 @@ func (s *Service) handleRecurringCreate(ctx context.Context, user *models.User, 
 		replyKey = i18n.KeyBillReminderCreated
 	}
 	s.reply(ctx, user, i18n.T(user.Language, replyKey,
-		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), rt.CategoryName, rt.DayOfMonth, rt.NextRunAt.UTC().Format("2006-01-02")))
+		rt.Type, i18n.FormatMoney(user.Language, rt.Amount, rt.Currency), recurringLabel(rt), rt.DayOfMonth, rt.NextRunAt.UTC().Format("2006-01-02")))
+}
+
+// recurringLabel is the quoted "for \"%s\"" part of a recurring/bill-reminder
+// confirmation — the user's own free-text description (e.g. "netflix",
+// "listrik PLN") when the AI captured one, since that's far more
+// identifying than the generic CategoryName ("subscription", "utilities")
+// it would otherwise fall back to.
+func recurringLabel(rt *models.RecurringTransaction) string {
+	if rt.Description != "" {
+		return rt.Description
+	}
+	return rt.CategoryName
 }
 
 // handleSavingsGoalCreate creates (or replaces — only one goal is active at

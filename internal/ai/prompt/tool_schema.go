@@ -141,7 +141,7 @@ func transactionProperties() map[string]ToolProperty {
 		},
 		"description": {
 			Type:        "string",
-			Description: "Free-text note about the transaction, if any.",
+			Description: "A short free-text summary of what this transaction was for, in the user's OWN words/language (e.g. \"gaji\", \"isi bensin motor suzuki\", \"beli jajan pasar pagi\") — fill this in whenever the message gives ANY specific detail beyond the bare transaction type, including for income/salary (\"gaji bulan ini\" -> description \"gaji\"), even though category_name also conceptually covers it; category_name is an internal English label never shown to the user, while this field is what shows up in transaction lists and confirmations, so leaving it blank loses real information. Only leave it empty when the message truly states nothing beyond amount and type (rare).",
 		},
 		"occurred_at_hint": {
 			Type:        "string",

@@ -45,7 +45,20 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 
 	occurredAt := resolveOccurredAt(parsed.OccurredAtHint)
 
-	rate, err := s.fxSvc.GetExchangeRate(ctx, parsed.Currency, defaultCurrency, occurredAt)
+	// The AI is instructed to always fill in currency (defaulting to
+	// defaultCurrency when the user doesn't mention one explicitly — see
+	// tool_schema.go's "currency" field description), but tool-calling
+	// compliance isn't guaranteed — an empty parsed.Currency has been
+	// observed in practice. Falling back here rather than trusting the
+	// model keeps a blank value from ever reaching GetExchangeRate (which
+	// would otherwise try to look up a rate for an empty currency code) or
+	// being persisted as the transaction's OriginalCurrency.
+	currency := strings.ToUpper(parsed.Currency)
+	if currency == "" {
+		currency = strings.ToUpper(defaultCurrency)
+	}
+
+	rate, err := s.fxSvc.GetExchangeRate(ctx, currency, defaultCurrency, occurredAt)
 	if err != nil {
 		return nil, fmt.Errorf("resolve exchange rate: %w", err)
 	}
@@ -58,7 +71,7 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 		Description:      parsed.Description,
 		Bucket:           resolveBucket(parsed.Bucket),
 		OriginalAmount:   parsed.Amount,
-		OriginalCurrency: strings.ToUpper(parsed.Currency),
+		OriginalCurrency: currency,
 		ExchangeRate:     rate,
 		ConvertedAmount:  parsed.Amount * rate,
 		Source:           source,

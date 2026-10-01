@@ -62,7 +62,7 @@ func TestCreate_SchedulesNextOccurrenceNotToday(t *testing.T) {
 		Description: "netflix", Bucket: "wants", DayOfMonth: 5,
 	}
 
-	rt, err := svc.Create(ctx, user.ID, parsed)
+	rt, err := svc.Create(ctx, user.ID, "IDR", parsed)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -104,18 +104,18 @@ func TestListActive_OnlyReturnsThisUsersActiveOnes(t *testing.T) {
 		gormDB.Unscoped().Where("id = ?", otherUser.ID).Delete(&models.User{})
 	})
 
-	active, err := svc.Create(ctx, user.ID, &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
+	active, err := svc.Create(ctx, user.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
 	if err != nil {
 		t.Fatalf("Create active: %v", err)
 	}
-	canceled, err := svc.Create(ctx, user.ID, &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "gym", DayOfMonth: 10})
+	canceled, err := svc.Create(ctx, user.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "gym", DayOfMonth: 10})
 	if err != nil {
 		t.Fatalf("Create to-be-canceled: %v", err)
 	}
 	if _, err := svc.Cancel(ctx, user.ID, canceled.ID); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if _, err := svc.Create(ctx, otherUser.ID, &ai.ParsedTransaction{Type: "expense", Amount: 999_000, Currency: "IDR", CategoryName: "other-user", DayOfMonth: 15}); err != nil {
+	if _, err := svc.Create(ctx, otherUser.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 999_000, Currency: "IDR", CategoryName: "other-user", DayOfMonth: 15}); err != nil {
 		t.Fatalf("Create for other user: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestCancel_CrossUserOwnershipIsEnforced(t *testing.T) {
 		gormDB.Unscoped().Where("id = ?", otherUser.ID).Delete(&models.User{})
 	})
 
-	rt, err := svc.Create(ctx, user.ID, &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
+	rt, err := svc.Create(ctx, user.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDueAndAdvance_OnlyFiresWhenActuallyDueAndNeverDrifts(t *testing.T) {
 	svc, gormDB, user := setup(t)
 	ctx := context.Background()
 
-	dueSoon, err := svc.Create(ctx, user.ID, &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
+	dueSoon, err := svc.Create(ctx, user.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "rent", DayOfMonth: 1})
 	if err != nil {
 		t.Fatalf("Create dueSoon: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestDueAndAdvance_OnlyFiresWhenActuallyDueAndNeverDrifts(t *testing.T) {
 		t.Fatalf("backdate dueSoon.NextRunAt: %v", err)
 	}
 
-	notDue, err := svc.Create(ctx, user.ID, &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "gym", DayOfMonth: 28})
+	notDue, err := svc.Create(ctx, user.ID, "IDR", &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "gym", DayOfMonth: 28})
 	if err != nil {
 		t.Fatalf("Create notDue: %v", err)
 	}

@@ -2111,8 +2111,11 @@ func TestHandleUpdate_BillReminderCreate_NaturalLanguage(t *testing.T) {
 
 	got := env.messenger.last(chatID)
 	wantAmount := i18n.FormatMoney(models.LanguageID, 500_000, "IDR")
-	if !strings.Contains(got, wantAmount) || !strings.Contains(got, "utilities") {
-		t.Errorf("reply = %q, want it to mention the amount %s and category", got, wantAmount)
+	// The confirmation shows the user's own description ("listrik") rather
+	// than the generic CategoryName ("utilities") whenever one was parsed —
+	// see recurringLabel's doc comment.
+	if !strings.Contains(got, wantAmount) || !strings.Contains(got, "listrik") {
+		t.Errorf("reply = %q, want it to mention the amount %s and description", got, wantAmount)
 	}
 	// "kabari aku kalau sudah dibayar" only appears in KeyBillReminderCreated
 	// (the reminder confirmation), never in KeyRecurringCreated (the

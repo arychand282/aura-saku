@@ -38,12 +38,23 @@ func NewService(db *gorm.DB) *Service {
 // occurrence of parsed.DayOfMonth strictly AFTER now — never today, even if
 // today happens to be that day of the month, so setting one up never
 // doubles up with something the user already recorded normally this month.
-func (s *Service) Create(ctx context.Context, userID uint, parsed *ai.ParsedTransaction) (*models.RecurringTransaction, error) {
+// defaultCurrency backstops an empty parsed.Currency — the AI is instructed
+// to always fill it in (defaulting to the user's own currency when none was
+// stated), but an empty value has been observed in practice, and Currency is
+// a NOT NULL column here (empty string satisfies that constraint silently,
+// so nothing at the DB layer would catch it) — see
+// transaction.Service.CreateFromParsed for the identical fallback on the
+// one-off transaction path.
+func (s *Service) Create(ctx context.Context, userID uint, defaultCurrency string, parsed *ai.ParsedTransaction) (*models.RecurringTransaction, error) {
+	currency := strings.ToUpper(parsed.Currency)
+	if currency == "" {
+		currency = strings.ToUpper(defaultCurrency)
+	}
 	rt := &models.RecurringTransaction{
 		UserID:       userID,
 		Type:         models.TransactionType(parsed.Type),
 		Amount:       parsed.Amount,
-		Currency:     strings.ToUpper(parsed.Currency),
+		Currency:     currency,
 		CategoryName: parsed.CategoryName,
 		Description:  parsed.Description,
 		Bucket:       resolveBucket(parsed.Bucket),
