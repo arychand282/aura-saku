@@ -372,3 +372,25 @@ func (c *Client) SuggestSavings(ctx context.Context, spendingSummary string, pre
 	}
 	return strings.TrimSpace(resp.Candidates[0].Content.Parts[0].Text), usage, nil
 }
+
+func (c *Client) PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	start := time.Now()
+	resp, err := c.doRequest(ctx, genRequest{
+		Contents:          []genContent{{Role: "user", Parts: []genPart{{Text: listSummary}}}},
+		SystemInstruction: &genContent{Parts: []genPart{{Text: prompt.SpendingListPhraseSystemInstruction(preferredLanguage)}}},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", nil, fmt.Errorf("empty spending list phrasing response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.UsageMetadata.PromptTokenCount,
+		CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Candidates[0].Content.Parts[0].Text), usage, nil
+}

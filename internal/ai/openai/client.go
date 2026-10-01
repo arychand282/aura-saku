@@ -392,6 +392,30 @@ func (c *Client) SuggestSavings(ctx context.Context, spendingSummary string, pre
 	return strings.TrimSpace(resp.Choices[0].Message.Content), usage, nil
 }
 
+func (c *Client) PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	messages := []chatMessage{
+		{Role: "system", Content: prompt.SpendingListPhraseSystemInstruction(preferredLanguage)},
+		{Role: "user", Content: listSummary},
+	}
+
+	start := time.Now()
+	resp, err := c.doChatRequest(ctx, chatRequest{Model: c.model, Messages: messages})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+		return "", nil, fmt.Errorf("empty spending list phrasing response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), usage, nil
+}
+
 func (c *Client) transcribe(ctx context.Context, audioBytes []byte, mimeType string) (string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)

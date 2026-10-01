@@ -40,6 +40,9 @@ func (s *stubAIClient) Summarize(ctx context.Context, priorSummary string, turns
 func (s *stubAIClient) SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
 	return "stub savings suggestion", &ai.UsageMetadata{Model: "stub"}, nil
 }
+func (s *stubAIClient) PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	return listSummary, &ai.UsageMetadata{Model: "stub"}, nil
+}
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()

@@ -371,3 +371,27 @@ func (c *Client) SuggestSavings(ctx context.Context, spendingSummary string, pre
 	}
 	return strings.TrimSpace(resp.Content[0].Text), usage, nil
 }
+
+func (c *Client) PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	start := time.Now()
+	resp, err := c.doRequest(ctx, messagesRequest{
+		Model:     c.model,
+		MaxTokens: 1024,
+		System:    prompt.SpendingListPhraseSystemInstruction(preferredLanguage),
+		Messages:  []message{{Role: "user", Content: listSummary}},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(resp.Content) == 0 || strings.TrimSpace(resp.Content[0].Text) == "" {
+		return "", nil, fmt.Errorf("empty spending list phrasing response")
+	}
+
+	usage := &ai.UsageMetadata{
+		Model:            c.model,
+		PromptTokens:     resp.Usage.InputTokens,
+		CompletionTokens: resp.Usage.OutputTokens,
+		LatencyMs:        int(time.Since(start).Milliseconds()),
+	}
+	return strings.TrimSpace(resp.Content[0].Text), usage, nil
+}

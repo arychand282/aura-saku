@@ -294,6 +294,21 @@ type AIClient interface {
 	// nothing to extract, just advise.
 	SuggestSavings(ctx context.Context, spendingSummary string, preferredLanguage string) (string, *UsageMetadata, error)
 
+	// PhraseTransactionList asks the model to render an already-computed
+	// list of transactions (listSummary — a plain-language, English,
+	// internal description built by bot.Service.phraseSpendingList, the
+	// same convention as SuggestSavings' spendingSummary) as natural
+	// conversational text in preferredLanguage, instead of a rigid Sprintf
+	// template. Same "plain text completion, not a tool call" shape as
+	// Summarize/SuggestSavings: no transaction is parsed, decided, or
+	// changed here, only reworded. The caller MUST verify every amount
+	// string from listSummary still appears verbatim in the result before
+	// trusting it — the model could still occasionally drop or alter a
+	// detail despite the system instruction telling it not to — see
+	// bot.Service.phraseSpendingList's validation for why this isn't
+	// optional for a financial reply.
+	PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *UsageMetadata, error)
+
 	ProviderName() string
 }
 

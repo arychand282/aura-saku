@@ -107,6 +107,17 @@ type mockAIClient struct {
 	// verify RunCategoryInsights still sends the deterministic part of its
 	// message when the AI suggestion call errors out.
 	suggestSavingsErr error
+
+	// phraseListErr, when set, makes PhraseTransactionList fail — used to
+	// verify handleSpendingListQuery falls back to the deterministic
+	// template reply.
+	phraseListErr error
+	// phraseListResult, when set, is returned by PhraseTransactionList
+	// verbatim instead of echoing the input back — used to simulate the
+	// model dropping/altering an amount, so a test can verify the
+	// deterministic-template fallback triggers on a failed validation, not
+	// just on an API error.
+	phraseListResult string
 }
 
 func (m *mockAIClient) call(history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
@@ -162,6 +173,20 @@ func (m *mockAIClient) SuggestSavings(ctx context.Context, spendingSummary, pref
 		return "", nil, m.suggestSavingsErr
 	}
 	return mockSavingsSuggestion, &ai.UsageMetadata{Model: "mock-model"}, nil
+}
+
+func (m *mockAIClient) PhraseTransactionList(ctx context.Context, listSummary, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	if m.phraseListErr != nil {
+		return "", nil, m.phraseListErr
+	}
+	if m.phraseListResult != "" {
+		return m.phraseListResult, &ai.UsageMetadata{Model: "mock-model"}, nil
+	}
+	// Echoing the input back trivially satisfies the caller's "every
+	// pre-formatted amount still appears verbatim" validation check,
+	// standing in for "the model phrased it naturally without dropping or
+	// altering any detail" without actually rephrasing anything here.
+	return listSummary, &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
 func (m *mockAIClient) ProviderName() string { return "mock" }
@@ -1297,6 +1322,89 @@ func TestHandleUpdate_SpendingQuery_AllTypesList(t *testing.T) {
 	}
 	if !strings.Contains(got, "[expense]") {
 		t.Errorf("all-types list = %q, want the expense row to be labeled with its own type", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_PlainListUsesAIPhrasingWhenValid is the
+// prototype this test locks in: a plain, unscoped, first-page expense list
+// (no category/bucket/type filter — exactly "list semua transaksi bulan
+// ini" with no further qualifier) is rendered via
+// ai.AIClient.PhraseTransactionList instead of the rigid
+// KeyQuerySpendingListItem template, as long as every amount survives
+// verbatim in the model's text.
+func TestHandleUpdate_SpendingQuery_PlainListUsesAIPhrasingWhenValid(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", Description: "isi bensin motor"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "isi bensin 50000"})
+
+	env.ai.phraseListResult = "Here's a naturally-phrased summary: you spent Rp50.000,00 on transport (isi bensin motor)."
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "naturally-phrased summary") {
+		t.Errorf("reply = %q, want the AI-phrased text used instead of the rigid template", got)
+	}
+	if strings.Contains(got, "1. ") {
+		t.Errorf("reply = %q, want the AI phrasing (no numbered-template formatting), not a fallback", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_PlainListFallsBackWhenAIDropsAnAmount
+// covers the safety net: if the model's phrased text fails to retain an
+// amount verbatim (dropped, altered, or mistranslated), the deterministic
+// template reply must be used instead — a wrong or missing amount is a far
+// worse outcome for a finance bot than a less natural-sounding reply.
+func TestHandleUpdate_SpendingQuery_PlainListFallsBackWhenAIDropsAnAmount(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", Description: "isi bensin motor"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "isi bensin 50000"})
+
+	// Deliberately wrong amount — simulates the model mangling a figure.
+	env.ai.phraseListResult = "You spent Rp5.000,00 on transport."
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if strings.Contains(got, "Rp5.000,00 on transport") {
+		t.Errorf("reply = %q, must NOT use the AI phrasing that dropped the real amount", got)
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 50_000, "IDR")) {
+		t.Errorf("reply = %q, want the deterministic template fallback with the correct amount", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_PlainListFallsBackOnAIError covers the
+// other failure mode: PhraseTransactionList itself erroring out (API
+// outage) must still produce the normal deterministic reply, never an
+// empty or failed response.
+func TestHandleUpdate_SpendingQuery_PlainListFallsBackOnAIError(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", Description: "isi bensin motor"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "isi bensin 50000"})
+
+	env.ai.phraseListErr = errors.New("simulated AI outage")
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 50_000, "IDR")) {
+		t.Errorf("reply = %q, want the deterministic template fallback when PhraseTransactionList errors", got)
 	}
 }
 

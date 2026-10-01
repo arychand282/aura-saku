@@ -1676,6 +1676,20 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 	}
 
+	// Prototype: render the plain, unscoped, single-page, single-type list
+	// (exactly the case that prompted this — "list semua transaksi" with no
+	// category/bucket/type filter) as AI-phrased natural text instead of the
+	// rigid numbered template, deliberately scoped to just this one branch
+	// rather than every list variant. lines (the deterministic template,
+	// already fully built above) stays the guaranteed fallback — see
+	// phraseSpendingList's own doc comment for why a failed/unverifiable AI
+	// response must never reach the user.
+	if scopeLabel == "" && !isAllTypes && offset == 0 {
+		if phrased, ok := s.phraseSpendingList(ctx, user, page.Items, periodLabel); ok {
+			lines = []string{phrased}
+		}
+	}
+
 	shown := offset + len(page.Items)
 	if remaining := page.Total - shown; remaining > 0 {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
@@ -1688,6 +1702,50 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	}
 
 	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// phraseSpendingList asks the AI to render an already-computed list of
+// transactions as natural conversational text instead of the rigid
+// KeyQuerySpendingListItem template — a prototype for moving reply wording
+// off Sprintf templates while keeping every number backend-computed and
+// verified, never AI-computed or AI-recalled. Every amount shown to the
+// model is a pre-formatted string (i18n.FormatMoney's own output) that it's
+// instructed to copy verbatim, never reformat; this function then checks
+// that every one of those exact strings still appears in the model's
+// response before trusting it. Returns ("", false) on any failure — an API
+// error, or the model dropping/altering so much as one amount — signaling
+// the caller to use the deterministic template instead. A reply with a
+// wrong or missing amount is a far worse outcome for a finance bot than one
+// that simply sounds a bit more mechanical, so this fallback is not
+// optional.
+func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, items []report.TransactionListItem, periodLabel string) (string, bool) {
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "Period: %s\n", periodLabel)
+	amounts := make([]string, len(items))
+	for i, item := range items {
+		amounts[i] = i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency)
+		fmt.Fprintf(&summary, "- Date: %s | Category: %s | Amount: %s | Description: %s\n",
+			item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
+	}
+
+	text, usageMeta, err := s.aiClient.PhraseTransactionList(ctx, summary.String(), string(user.Language))
+	if err != nil {
+		logger.Error(logger.AIPhraseListFailed, fmt.Sprintf("phrase spending list for user %d", user.ID), err)
+		return "", false
+	}
+	for _, amount := range amounts {
+		if !strings.Contains(text, amount) {
+			logger.Error(logger.AIPhraseListFailed, fmt.Sprintf("phrase spending list for user %d dropped/altered an amount", user.ID), fmt.Errorf("expected amount %q not found in phrased text", amount))
+			return "", false
+		}
+	}
+
+	// System-triggered rendering, not the user's own prompt — never counted
+	// against the interactive daily quota (no quota.Increment call), but
+	// still logged for cost visibility like every other real AI call (see
+	// RunCategoryInsights' identical SuggestSavings accounting).
+	s.usageSvc.RecordAICall(ctx, user.ID, models.AIProvider(s.aiClient.ProviderName()), "phrase_spending_list", usageMeta)
+	return text, true
 }
 
 // isUncategorizedQuery recognizes a follow-up referring back to whatever

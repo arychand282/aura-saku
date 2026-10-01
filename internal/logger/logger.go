@@ -23,6 +23,7 @@ const (
 	AIClientBuildFailed    Code = "AURA-AI-001" // ai/factory.NewAIClient failed (unknown/misconfigured AI_PROVIDER)
 	AIParseFailed          Code = "AURA-AI-002" // AIClient.ParseTransactionText/TranscribeAndParseAudio returned an error
 	AISuggestSavingsFailed Code = "AURA-AI-003" // AIClient.SuggestSavings failed for one user's monthly category insight (logged, the deterministic part of that message still sends)
+	AIPhraseListFailed     Code = "AURA-AI-004" // AIClient.PhraseTransactionList failed, or its output dropped/altered an amount (logged, the deterministic template reply is sent instead)
 
 	ServerListenFailed   Code = "AURA-SRV-001" // fiber.App.Listen failed to bind
 	ServerShutdownFailed Code = "AURA-SRV-002" // graceful shutdown did not complete cleanly within the timeout
