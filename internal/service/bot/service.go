@@ -538,7 +538,16 @@ func (s *Service) handleBudget(ctx context.Context, user *models.User, msg *mess
 		return
 	}
 
-	b, err := s.budgetSvc.SetBudget(ctx, user.ID, needs, wants, savings)
+	s.setBudgetAndReply(ctx, user, needs, wants, savings)
+}
+
+// setBudgetAndReply calls budgetSvc.SetBudget and sends the success/failure
+// reply — shared by /budget's explicit-percentage form and the
+// natural-language ai.IntentBudgetSet path (see handleBudgetSetFromParsed),
+// which may arrive here with percentages it computed itself from stated
+// nominal amounts rather than ones the user typed directly.
+func (s *Service) setBudgetAndReply(ctx context.Context, user *models.User, needsPercent, wantsPercent, savingsPercent float64) {
+	b, err := s.budgetSvc.SetBudget(ctx, user.ID, needsPercent, wantsPercent, savingsPercent)
 	if err != nil {
 		if errors.Is(err, apperror.ErrInvalidBudgetPercentages) {
 			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetInvalid))
@@ -550,6 +559,31 @@ func (s *Service) handleBudget(ctx context.Context, user *models.User, msg *mess
 	}
 
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetSuccess, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+}
+
+// handleBudgetSetFromParsed is ai.IntentBudgetSet's handler — the
+// natural-language counterpart to /budget's explicit-percentage form,
+// reachable via set_budget_allocation (see tool_schema.go). The AI may
+// express the new split either as percentages directly
+// (BudgetSetNeedsPercent/WantsPercent/SavingsPercent) or as nominal amounts
+// (BudgetSetNeedsAmount/WantsAmount/SavingsAmount, e.g. "needs 7juta, wants
+// 4.5juta, savings 5juta"). An amount trio is converted to percentages of
+// ITS OWN sum — never the user's recorded income, which might not match
+// what they just stated, or might not exist at all — so this always
+// produces valid percentages summing to exactly 100 by construction,
+// regardless of whether the three amounts relate to any real income. An
+// amount trio takes priority if a parse somehow sets both, matching
+// handleBudgetShow's hypothetical-amount-over-against-income precedent.
+func (s *Service) handleBudgetSetFromParsed(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	amountSum := parsed.BudgetSetNeedsAmount + parsed.BudgetSetWantsAmount + parsed.BudgetSetSavingsAmount
+	if amountSum > 0 {
+		s.setBudgetAndReply(ctx, user,
+			parsed.BudgetSetNeedsAmount/amountSum*100,
+			parsed.BudgetSetWantsAmount/amountSum*100,
+			parsed.BudgetSetSavingsAmount/amountSum*100)
+		return
+	}
+	s.setBudgetAndReply(ctx, user, parsed.BudgetSetNeedsPercent, parsed.BudgetSetWantsPercent, parsed.BudgetSetSavingsPercent)
 }
 
 // handleBudgetShow answers "what's my budget allocation" — the configured
@@ -949,6 +983,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentBudgetAllocation {
 		s.handleBudgetShow(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentBudgetSet {
+		s.handleBudgetSetFromParsed(ctx, user, first)
 		return
 	}
 

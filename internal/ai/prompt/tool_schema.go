@@ -30,6 +30,7 @@ const (
 	ToolSubscribeToPro             = "subscribe_to_pro"
 	ToolCheckSubscriptionStatus    = "check_subscription_status"
 	ToolCheckBudgetAllocation      = "check_budget_allocation"
+	ToolSetBudgetAllocation        = "set_budget_allocation"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -269,6 +270,40 @@ func TransactionTools() []Tool {
 				"hypothetical_currency": {
 					Type:        "string",
 					Description: "ISO 4217 code for hypothetical_amount (e.g. IDR, USD). Only meaningful alongside hypothetical_amount. If not mentioned, use the caller-provided default currency.",
+				},
+			},
+		},
+		{
+			Name:        ToolSetBudgetAllocation,
+			Description: "Call this when the message asks to CHANGE/SET the user's 50/30/20 budget allocation — this is a SET action, never confuse with check_budget_allocation (which only reports the current split, never changes it). The new split may be stated as percentages (e.g. \"ubah budgetku jadi 60 needs, 20 wants, 20 savings\", \"set my split to 50/30/20\") OR as nominal money amounts (e.g. \"kalau mau ngubah savings jadi 5juta, needs 7juta, wants 4.5juta bisa enggak?\", \"set needs to 2 million, wants to 1 million, savings to 1 million\") — use whichever form the message actually states, never convert one to the other yourself. Fill EITHER the three *_percent fields OR the three *_amount fields (plus currency), never both.",
+			Properties: map[string]ToolProperty{
+				"needs_percent": {
+					Type:        "number",
+					Description: "The new Needs percentage, only when the message states the split as percentages directly. Must be used together with wants_percent and savings_percent (all three, summing to 100) — never just one or two.",
+				},
+				"wants_percent": {
+					Type:        "number",
+					Description: "The new Wants percentage — see needs_percent.",
+				},
+				"savings_percent": {
+					Type:        "number",
+					Description: "The new Savings percentage — see needs_percent.",
+				},
+				"needs_amount": {
+					Type:        "number",
+					Description: "The new Needs amount in nominal money terms, only when the message states the split as amounts rather than percentages (e.g. \"needs 7juta\"). Must be used together with wants_amount and savings_amount (all three) — the caller converts these to percentages of their own sum itself, so they do NOT need to sum to any particular total (your recorded income, 100, or anything else) — just state exactly what the message says.",
+				},
+				"wants_amount": {
+					Type:        "number",
+					Description: "The new Wants amount — see needs_amount.",
+				},
+				"savings_amount": {
+					Type:        "number",
+					Description: "The new Savings amount — see needs_amount.",
+				},
+				"budget_set_currency": {
+					Type:        "string",
+					Description: "ISO 4217 code for the *_amount fields (e.g. IDR, USD). Only meaningful alongside those. If not mentioned, use the caller-provided default currency.",
 				},
 			},
 		},

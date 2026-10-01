@@ -73,6 +73,17 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			BudgetHypotheticalAmount:   argFloat(args, "hypothetical_amount"),
 			BudgetHypotheticalCurrency: argString(args, "hypothetical_currency"),
 		}
+	case prompt.ToolSetBudgetAllocation:
+		return &ParsedTransaction{
+			Intent:                  IntentBudgetSet,
+			BudgetSetNeedsPercent:   argFloat(args, "needs_percent"),
+			BudgetSetWantsPercent:   argFloat(args, "wants_percent"),
+			BudgetSetSavingsPercent: argFloat(args, "savings_percent"),
+			BudgetSetNeedsAmount:    argFloat(args, "needs_amount"),
+			BudgetSetWantsAmount:    argFloat(args, "wants_amount"),
+			BudgetSetSavingsAmount:  argFloat(args, "savings_amount"),
+			BudgetSetCurrency:       argString(args, "budget_set_currency"),
+		}
 	default:
 		return nil
 	}

@@ -20,6 +20,7 @@ const (
 	IntentSubscribe          = "subscribe"
 	IntentSubscriptionStatus = "subscription_status"
 	IntentBudgetAllocation   = "budget_allocation"
+	IntentBudgetSet          = "budget_set"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -177,6 +178,18 @@ type ParsedTransaction struct {
 	BudgetAgainstLatestIncome  bool    `json:"against_latest_income,omitempty"`
 	BudgetHypotheticalAmount   float64 `json:"hypothetical_amount,omitempty"`
 	BudgetHypotheticalCurrency string  `json:"hypothetical_currency,omitempty"`
+
+	// BudgetSet* fields are only meaningful for IntentBudgetSet — see
+	// set_budget_allocation's own field descriptions in tool_schema.go, and
+	// bot.Service.handleBudgetSetFromParsed for how an amount trio gets
+	// converted to percentages.
+	BudgetSetNeedsPercent   float64 `json:"needs_percent,omitempty"`
+	BudgetSetWantsPercent   float64 `json:"wants_percent,omitempty"`
+	BudgetSetSavingsPercent float64 `json:"savings_percent,omitempty"`
+	BudgetSetNeedsAmount    float64 `json:"needs_amount,omitempty"`
+	BudgetSetWantsAmount    float64 `json:"wants_amount,omitempty"`
+	BudgetSetSavingsAmount  float64 `json:"savings_amount,omitempty"`
+	BudgetSetCurrency       string  `json:"budget_set_currency,omitempty"`
 }
 
 type UsageMetadata struct {
@@ -278,6 +291,14 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		}
 	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus, IntentBudgetAllocation:
 		return true
+	case IntentBudgetSet:
+		percentSum := pt.BudgetSetNeedsPercent + pt.BudgetSetWantsPercent + pt.BudgetSetSavingsPercent
+		amountSum := pt.BudgetSetNeedsAmount + pt.BudgetSetWantsAmount + pt.BudgetSetSavingsAmount
+		// Only a loose "something was actually stated" shape check — the
+		// authoritative sum-to-100/non-negative validation happens in
+		// budget.Service.SetBudget itself (see setBudgetAndReply), the same
+		// place /budget's own explicit-percentage form already relies on.
+		return percentSum > 0 || amountSum > 0
 	case IntentRecurringDelete:
 		// Unlike IntentDelete (a regular transaction), there's no
 		// "most recent" fallback concept for a recurring schedule — a

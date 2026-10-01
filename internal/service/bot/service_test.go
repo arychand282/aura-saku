@@ -1601,6 +1601,77 @@ func TestHandleUpdate_BudgetAllocation_HypotheticalAmount(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_BudgetSet_NominalAmounts covers "kalau mau ngubah savings
+// jadi 5juta, needs 7juta, wants 4.5juta bisa enggak?" — amounts that do NOT
+// need to sum to the user's recorded income (or to 100) since they're
+// converted to percentages of their OWN sum (7+4.5+5=16.5juta here), which
+// always totals exactly 100% by construction.
+func TestHandleUpdate_BudgetSet_NominalAmounts(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent:                 ai.IntentBudgetSet,
+		BudgetSetNeedsAmount:   7_000_000,
+		BudgetSetWantsAmount:   4_500_000,
+		BudgetSetSavingsAmount: 5_000_000,
+		BudgetSetCurrency:      "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "kalau mau ngubah savings jadi 5juta, needs 7juta, wants 4.5juta bisa enggak?"})
+
+	wantNeeds := 7_000_000.0 / 16_500_000.0 * 100
+	wantWants := 4_500_000.0 / 16_500_000.0 * 100
+	wantSavings := 5_000_000.0 / 16_500_000.0 * 100
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetSetSuccess, wantNeeds, wantWants, wantSavings)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	b, err := func() (*models.Budget, error) {
+		var b models.Budget
+		err := env.db.Where("user_id = ? AND is_active = ?", user.ID, true).First(&b).Error
+		return &b, err
+	}()
+	if err != nil {
+		t.Fatalf("load active budget: %v", err)
+	}
+	// Tolerance wider than SetBudget's own 0.01 validation tolerance: that
+	// check runs on the full-precision computed percentages BEFORE storage,
+	// but NeedsPercent/WantsPercent/SavingsPercent are numeric(5,2) columns,
+	// so each is independently rounded to 2 decimals on write — three such
+	// roundings can legitimately land the stored sum a few hundredths off
+	// 100 (e.g. 42.42+27.27+30.30=99.99 here), the same as a user manually
+	// typing 33.33/33.33/33.34.
+	if sum := b.NeedsPercent + b.WantsPercent + b.SavingsPercent; sum < 99.95 || sum > 100.05 {
+		t.Errorf("stored percentages sum = %.4f, want ~100 (within independent 2-decimal rounding)", sum)
+	}
+}
+
+// TestHandleUpdate_BudgetSet_ExplicitPercentages covers setting the split via
+// natural language stated AS percentages directly (no amounts involved).
+func TestHandleUpdate_BudgetSet_ExplicitPercentages(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentBudgetSet, BudgetSetNeedsPercent: 60, BudgetSetWantsPercent: 20, BudgetSetSavingsPercent: 20,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ubah budgetku jadi 60 needs, 20 wants, 20 savings"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetSetSuccess, 60.0, 20.0, 20.0)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
 // TestHandleUpdate_Correction_ReplacesLastTransaction reproduces the
 // reported bug: a correction message ("eh maaf, harusnya 1jt deh...typo")
 // must replace the previous wrong transaction, not add a second one
