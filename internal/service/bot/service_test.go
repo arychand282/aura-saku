@@ -1203,6 +1203,103 @@ func TestHandleUpdate_SpendingQuery_CustomStartDateIncludesLastMonth(t *testing.
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_SpecificType covers "berapa pemasukan aku
+// bulan ini?" (how much income this month) — query_spending has always
+// silently meant "expense" only; query_transaction_type now lets it answer
+// about a specific other type instead, using that type's own total rather
+// than the expense-scoped one.
+func TestHandleUpdate_SpendingQuery_SpecificType(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 5000000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryTransactionType: "income"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berapa pemasukan aku bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 5_000_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("income-total reply = %q, want the income total %s", got, wantAmount)
+	}
+	if strings.Contains(got, i18n.FormatMoney(models.LanguageID, 50_000, "IDR")) {
+		t.Errorf("income-total reply = %q, must NOT include the expense total", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_AllTypesTotal covers a plain "list semua
+// transaksi" style total-mode question (no list mode stated) with
+// query_transaction_type="all" — must show every non-zero type's total, not
+// just the expense-scoped headline every query_spending answer gave before
+// this field existed.
+func TestHandleUpdate_SpendingQuery_AllTypesTotal(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 5000000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryTransactionType: "all"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ringkasan semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 5_000_000, "IDR")) {
+		t.Errorf("all-types reply = %q, want the income total included", got)
+	}
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 50_000, "IDR")) {
+		t.Errorf("all-types reply = %q, want the expense total included", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_AllTypesList covers "list semua transaksi"
+// in list mode — the exact real-world bug report this feature closes: a
+// mixed income+expense list must include BOTH, each line naming its own
+// type so an income row is distinguishable from an expense row.
+func TestHandleUpdate_SpendingQuery_AllTypesList(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 16_500_000, Currency: "IDR", CategoryName: "salary", Description: "gaji bulan ini",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 16500000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", Description: "isi bensin",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "isi bensin 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList, QueryTransactionType: "all"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "gaji bulan ini") {
+		t.Errorf("all-types list = %q, want the income row (gaji bulan ini) included", got)
+	}
+	if !strings.Contains(got, "isi bensin") {
+		t.Errorf("all-types list = %q, want the expense row (isi bensin) included", got)
+	}
+	if !strings.Contains(got, "[income]") {
+		t.Errorf("all-types list = %q, want the income row to be labeled with its own type", got)
+	}
+	if !strings.Contains(got, "[expense]") {
+		t.Errorf("all-types list = %q, want the expense row to be labeled with its own type", got)
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_UncategorizedList reproduces a real chat
 // bug: after seeing "1. 30 Sep — Tanpa kategori: Rp3.432.000,00 (...)" in a
 // list reply, the user's follow-up ("yang tanpa kategori bisa jelasin lagi

@@ -153,6 +153,19 @@ type ParsedTransaction struct {
 	// uncategorized) so all of them honor it uniformly.
 	QueryStartDate string `json:"query_start_date,omitempty"`
 
+	// QueryTransactionType restricts query_spending to one transaction type
+	// ("income", "investment", "transfer", "reward"), or "all" for no type
+	// restriction at all. Empty means the long-standing default: "expense" —
+	// every query_spending mode silently meant "spending" only until this
+	// field existed, so "list semua transaksi" ("list ALL transactions")
+	// actually only ever listed expenses, with no way to ask for anything
+	// else. Only meaningful for the plain-total and list query modes
+	// (resolveQueryTransactionType/handleSpendingListQuery) —
+	// QueryCategory/QueryBucket are inherently expense/budget-specific
+	// concepts in this app's model and stay expense-scoped regardless of
+	// this field.
+	QueryTransactionType string `json:"query_transaction_type,omitempty"`
+
 	// QueryBucket is IntentQuery's Needs/Wants/Savings counterpart to
 	// QueryCategory — set when the message asks about spending in a budget
 	// bucket as a whole ("how much did I spend on Wants") rather than a

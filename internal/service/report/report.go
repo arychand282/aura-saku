@@ -303,9 +303,13 @@ const transactionListPageSize = 10
 // flat, JOIN-flattened shape as the dashboard's TransactionRow
 // (internal/api/handlers/transaction_query.go), duplicated here rather than
 // imported since a service package importing an api/handlers package would
-// be a layering inversion neither side needs otherwise.
+// be a layering inversion neither side needs otherwise. Type is only worth
+// showing in a reply when a list spans more than one transaction type (see
+// ListTransactions' txType param) — a single-type list already says so in
+// its own header and would be redundant repeating it on every line.
 type TransactionListItem struct {
 	OccurredAt   time.Time
+	Type         models.TransactionType
 	CategoryName string
 	Description  string
 	Amount       float64
@@ -319,23 +323,32 @@ type TransactionListPage struct {
 	Total int
 }
 
-// ListTransactions returns one page of a user's expense transactions within
+// ListTransactions returns one page of a user's transactions within
 // [start, end), most-recent-first — the data behind a natural-language
-// "what did I buy for X" / "list my Y expenses" listing request, as opposed
-// to query_spending's aggregate total/breakdown modes above. At most one of
+// "what did I buy for X" / "list my Y expenses" / "list semua transaksi"
+// listing request, as opposed to query_spending's aggregate total/breakdown
+// modes above. txType restricts to one transaction type ("" lists every
+// type — e.g. for an explicit "list ALL transactions" request; callers
+// defaulting to spending-only behavior should pass models.TxExpense
+// explicitly, not rely on an implicit default here). At most one of
 // uncategorizedOnly (Transaction.CategoryID IS NULL — e.g. a /sync "blind
 // spot" adjustment, see categoryDisplayName's own doc comment), categoryQuery
 // (ILIKE match, same convention as CategoryTotal), or bucket (same COALESCE
 // resolution as BucketSpending) should be set, checked in that order — leave
-// all three empty/zero to list every expense in the period regardless of
-// category. offset is the caller-tracked pagination cursor (see
-// bot.Service's short-lived Redis cursor); this always returns at most
+// all three empty/zero to list every matching transaction in the period
+// regardless of category. offset is the caller-tracked pagination cursor
+// (see bot.Service's short-lived Redis cursor); this always returns at most
 // transactionListPageSize items starting from it, ordered with the row id as
 // a tiebreaker so pagination stays stable even when two transactions share
 // the exact same OccurredAt.
-func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, categoryQuery string, bucket models.BudgetBucket, uncategorizedOnly bool, offset int) (*TransactionListPage, error) {
-	where := "transactions.user_id = ? AND transactions.type = ? AND transactions.occurred_at >= ? AND transactions.occurred_at < ?"
-	args := []interface{}{userID, models.TxExpense, start, end}
+func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, txType models.TransactionType, categoryQuery string, bucket models.BudgetBucket, uncategorizedOnly bool, offset int) (*TransactionListPage, error) {
+	where := "transactions.user_id = ? AND transactions.occurred_at >= ? AND transactions.occurred_at < ?"
+	args := []interface{}{userID, start, end}
+
+	if txType != "" {
+		where += " AND transactions.type = ?"
+		args = append(args, txType)
+	}
 
 	switch {
 	case uncategorizedOnly:
@@ -358,7 +371,7 @@ func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end 
 
 	var items []TransactionListItem
 	if err := s.db.WithContext(ctx).Table("transactions").
-		Select(`transactions.occurred_at, COALESCE(categories.name, '') as category_name,
+		Select(`transactions.occurred_at, transactions.type, COALESCE(categories.name, '') as category_name,
 			transactions.description, transactions.converted_amount as amount`).
 		Joins("LEFT JOIN categories ON categories.id = transactions.category_id").
 		Where(where, args...).

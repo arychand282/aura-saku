@@ -269,7 +269,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Fatalf("PeriodRange: %v", err)
 	}
 
-	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", false, 0)
+	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, 0)
 	if err != nil {
 		t.Fatalf("ListTransactions page 1: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Errorf("page1.Items[0].Description = %q, want %q (most recent first)", page1.Items[0].Description, "item 12")
 	}
 
-	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "food", "", false, 10)
+	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, 10)
 	if err != nil {
 		t.Fatalf("ListTransactions page 2: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestListTransactions_UncategorizedOnly(t *testing.T) {
 		t.Fatalf("PeriodRange: %v", err)
 	}
 
-	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, "", "", true, 0)
+	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "", "", true, 0)
 	if err != nil {
 		t.Fatalf("ListTransactions: %v", err)
 	}

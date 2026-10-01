@@ -94,6 +94,12 @@ const (
 	KeyQuerySpendingListMore               = "query_spending_list_more"
 	KeyQuerySpendingListEmptyAll           = "query_spending_list_empty_all"
 	KeyPeriodLabelSince                    = "period_label_since"
+	KeyQuerySpendingListHeaderAllTypes     = "query_spending_list_header_all_types"
+	KeyQuerySpendingListItemWithType       = "query_spending_list_item_with_type"
+	KeyQuerySpendingListEmptyAllTypes      = "query_spending_list_empty_all_types"
+	KeyQueryTypeTotal                      = "query_type_total"
+	KeyQueryAllTypesHeader                 = "query_all_types_header"
+	KeyQueryAllTypesItem                   = "query_all_types_item"
 	KeyLanguageUsage                       = "language_usage"
 	KeyLanguageSet                         = "language_set"
 	KeyInputTooLong                        = "input_too_long"
@@ -195,6 +201,12 @@ var catalog = map[models.Language]map[string]string{
 		KeyQuerySpendingListMore:               "...and %d more — say \"show me more\" to see the rest.",
 		KeyQuerySpendingListEmptyAll:           "You don't have any expenses %s.",
 		KeyPeriodLabelSince:                    "since %s",
+		KeyQuerySpendingListHeaderAllTypes:     "Here's your transaction history %s:",
+		KeyQuerySpendingListItemWithType:       "%d. %s — [%s] %s: %s (%s)",
+		KeyQuerySpendingListEmptyAllTypes:      "You don't have any transactions %s.",
+		KeyQueryTypeTotal:                      "Your total %s %s: %s.",
+		KeyQueryAllTypesHeader:                 "Here's your transaction summary %s:",
+		KeyQueryAllTypesItem:                   "%s: %s",
 		KeyLanguageUsage:                       "Usage: /language <en|id>, e.g. /language id",
 		KeyLanguageSet:                         "Language set to English.",
 		KeyInputTooLong:                        "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
@@ -294,6 +306,12 @@ var catalog = map[models.Language]map[string]string{
 		KeyQuerySpendingListMore:               "...dan %d lainnya — ketik \"lanjutkan\" untuk lihat selanjutnya.",
 		KeyQuerySpendingListEmptyAll:           "Kamu belum ada pengeluaran %s.",
 		KeyPeriodLabelSince:                    "sejak %s",
+		KeyQuerySpendingListHeaderAllTypes:     "Berikut riwayat transaksimu %s:",
+		KeyQuerySpendingListItemWithType:       "%d. %s — [%s] %s: %s (%s)",
+		KeyQuerySpendingListEmptyAllTypes:      "Kamu belum ada transaksi %s.",
+		KeyQueryTypeTotal:                      "Total %s kamu %s: %s.",
+		KeyQueryAllTypesHeader:                 "Berikut ringkasan transaksimu %s:",
+		KeyQueryAllTypesItem:                   "%s: %s",
 		KeyLanguageUsage:                       "Cara pakai: /language <en|id>, contoh: /language id",
 		KeyLanguageSet:                         "Bahasa diatur ke Bahasa Indonesia.",
 		KeyInputTooLong:                        "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",

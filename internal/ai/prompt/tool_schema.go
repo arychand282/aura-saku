@@ -199,6 +199,11 @@ func TransactionTools() []Tool {
 					Type:        "string",
 					Description: "ISO 8601 date (YYYY-MM-DD) to use as the query's START boundary INSTEAD of query_period's own default start — set this whenever the message specifies or implies a starting point that query_period's four fixed values (daily/weekly/monthly/yearly, each anchored to the CURRENT day/week/month/year) can't express on their own. Examples: \"mulai dari bulan lalu\"/\"starting from last month\" -> last month's 1st (still set query_period, e.g. \"monthly\", as the closest fit — query_start_date is what actually controls the start); \"sejak tanggal 15\" -> the 15th of the current month; \"since January\" -> Jan 1st of the current year; \"dari awal tahun lalu\" -> Jan 1st of last year. The end of the range is always today regardless of this field. Leave empty for a plain period query with no explicit custom start stated — that's the common case.",
 				},
+				"query_transaction_type": {
+					Type:        "string",
+					Description: "Restricts the query to ONE transaction type, or \"all\" for no restriction at all. Leave empty for the default: \"expense\" (the overwhelmingly common case — a bare \"how much did I spend\"/\"list my transactions\" question with no type stated means expenses). Set to \"all\" when the message EXPLICITLY asks for every transaction regardless of type — e.g. \"list semua transaksi\" (list ALL transactions, not just spending), \"show me everything this month\", \"riwayat transaksi lengkap\". Set to a specific other type (\"income\", \"investment\", \"transfer\", \"reward\") when the message asks specifically about that type instead of expenses — e.g. \"berapa pemasukan aku bulan ini?\" (how much income this month) -> \"income\". Only meaningful for a plain total or a \"list\" query_mode — never combine a non-expense value with query_category or query_bucket (both are inherently about spending/budget categories, not income or other types).",
+					Enum:        []string{"expense", "income", "investment", "transfer", "reward", "all"},
+				},
 			},
 			Required: []string{"query_period"},
 		},

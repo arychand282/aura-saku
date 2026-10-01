@@ -1332,35 +1332,46 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		return
 	}
 	periodLabel := queryPeriodLabel(user.Language, parsed, start)
+	txType, isAllTypes := resolveQueryTransactionType(parsed)
 
 	if parsed.QueryMode == ai.QueryModeList {
 		s.handleSpendingListQuery(ctx, user, parsed, start, end, periodLabel)
 		return
 	}
 
-	if isUncategorizedQuery(parsed) {
-		s.handleUncategorizedSpendingQuery(ctx, user, start, end, periodLabel)
-		return
-	}
-
-	if bucket, ok := resolveQueryBucket(parsed); ok {
-		s.handleBucketSpendingQuery(ctx, user, start, end, periodLabel, bucket)
-		return
-	}
-
-	if parsed.QueryCategory != "" {
-		total, matched, err := s.reportSvc.CategoryTotalRange(ctx, user.ID, start, end, parsed.QueryCategory)
-		if err != nil {
-			logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("category spending query for user %d", user.ID), err)
-			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+	// Category/bucket/uncategorized breakdowns are inherently expense/
+	// budget-specific concepts in this app's model (see
+	// check_budget_allocation and query_spending's own tool descriptions) —
+	// only take these paths for the default expense type, so an odd
+	// combination (e.g. query_category set alongside
+	// query_transaction_type="income") falls through to the generic
+	// type-aware total below instead of silently running expense-only SQL
+	// against a different type.
+	if txType == models.TxExpense && !isAllTypes {
+		if isUncategorizedQuery(parsed) {
+			s.handleUncategorizedSpendingQuery(ctx, user, start, end, periodLabel)
 			return
 		}
-		if !matched {
-			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
+
+		if bucket, ok := resolveQueryBucket(parsed); ok {
+			s.handleBucketSpendingQuery(ctx, user, start, end, periodLabel, bucket)
 			return
 		}
-		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), parsed.QueryCategory, periodLabel))
-		return
+
+		if parsed.QueryCategory != "" {
+			total, matched, err := s.reportSvc.CategoryTotalRange(ctx, user.ID, start, end, parsed.QueryCategory)
+			if err != nil {
+				logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("category spending query for user %d", user.ID), err)
+				s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
+				return
+			}
+			if !matched {
+				s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQueryCategoryNotFound, parsed.QueryCategory, periodLabel))
+				return
+			}
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingByCategory, i18n.FormatMoney(user.Language, total, user.DefaultCurrency), parsed.QueryCategory, periodLabel))
+			return
+		}
 	}
 
 	totals, err := s.reportSvc.SummaryRange(ctx, user.ID, start, end)
@@ -1369,6 +1380,40 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
 		return
 	}
+
+	// "list semua transaksi" ("list ALL transactions") style request with no
+	// list mode stated — show every non-zero type's total instead of a
+	// single expense-scoped headline (TopCategoriesRange's breakdown is
+	// expense-only SQL, so no per-category breakdown here regardless of
+	// type).
+	if isAllTypes {
+		lines := []string{i18n.T(user.Language, i18n.KeyQueryAllTypesHeader, periodLabel)}
+		any := false
+		for _, t := range []models.TransactionType{models.TxExpense, models.TxIncome, models.TxInvestment, models.TxTransfer, models.TxReward} {
+			amount := totals[string(t)]
+			if amount == 0 {
+				continue
+			}
+			any = true
+			lines = append(lines, i18n.T(user.Language, i18n.KeyQueryAllTypesItem, string(t), i18n.FormatMoney(user.Language, amount, user.DefaultCurrency)))
+		}
+		if !any {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingListEmptyAllTypes, periodLabel))
+			return
+		}
+		s.reply(ctx, user, strings.Join(lines, "\n"))
+		return
+	}
+
+	// A specific non-expense type ("berapa pemasukan aku bulan ini?") — just
+	// that type's total, no category breakdown (TopCategoriesRange is
+	// expense-only SQL and rarely meaningful for e.g. income anyway).
+	if txType != models.TxExpense {
+		total := totals[string(txType)]
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQueryTypeTotal, string(txType), periodLabel, i18n.FormatMoney(user.Language, total, user.DefaultCurrency)))
+		return
+	}
+
 	expenseTotal := totals[string(models.TxExpense)]
 	headline := i18n.T(user.Language, i18n.KeyQuerySpendingTotal, i18n.FormatMoney(user.Language, expenseTotal, user.DefaultCurrency), periodLabel)
 	if expenseTotal <= 0 {
@@ -1420,6 +1465,25 @@ func resolveQueryRange(parsed *ai.ParsedTransaction) (start, end time.Time, err 
 	return start, end, nil
 }
 
+// resolveQueryTransactionType maps ai.ParsedTransaction.QueryTransactionType
+// onto the value report.Service.ListTransactions/the total-mode branch below
+// actually need: empty (the long-standing default) means "expense", "all"
+// means no restriction (empty models.TransactionType, so every type
+// matches), and anything else is that specific type verbatim — e.g.
+// "income" for "berapa pemasukan aku bulan ini?". ok is false only for
+// "all", letting a caller distinguish "the default, single expense type"
+// from "no restriction at all" without a second string comparison.
+func resolveQueryTransactionType(parsed *ai.ParsedTransaction) (txType models.TransactionType, isAllTypes bool) {
+	switch parsed.QueryTransactionType {
+	case "":
+		return models.TxExpense, false
+	case "all":
+		return "", true
+	default:
+		return models.TransactionType(parsed.QueryTransactionType), false
+	}
+}
+
 // queryPeriodLabel is the "this month"/"sejak 1 Sep 2026" phrase shown in a
 // spending-query reply. When QueryStartDate was actually honored (parsed
 // successfully and therefore reflected in start), the plain period label
@@ -1450,11 +1514,17 @@ type spendingListCursor struct {
 	// "lanjutkan" never resumes a custom-start-date list ("mulai dari bulan
 	// lalu") against a plain-period one that happens to share the same
 	// Period/category/bucket, or vice versa.
-	StartDate     string `json:"start_date"`
-	CategoryQuery string `json:"category_query"`
-	Bucket        string `json:"bucket"`
-	Uncategorized bool   `json:"uncategorized"`
-	NextOffset    int    `json:"next_offset"`
+	StartDate string `json:"start_date"`
+	// TransactionType mirrors ai.ParsedTransaction.QueryTransactionType
+	// verbatim (empty for the default expense-only list) — included in the
+	// match check for the same reason as StartDate: a "lanjutkan" must never
+	// resume an "all types" list against a plain expense-only one sharing
+	// the same Period/category/bucket.
+	TransactionType string `json:"transaction_type"`
+	CategoryQuery   string `json:"category_query"`
+	Bucket          string `json:"bucket"`
+	Uncategorized   bool   `json:"uncategorized"`
+	NextOffset      int    `json:"next_offset"`
 }
 
 // spendingListCursorTTL is generous enough to survive a user pausing mid
@@ -1525,6 +1595,8 @@ func (s *Service) clearSpendingListCursor(ctx context.Context, userID uint) {
 // single "nothing to show" reply covers both honestly enough without a
 // second existence-check query.
 func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction, start, end time.Time, periodLabel string) {
+	txType, isAllTypes := resolveQueryTransactionType(parsed)
+
 	uncategorized := isUncategorizedQuery(parsed)
 	var bucket models.BudgetBucket
 	var hasBucket bool
@@ -1542,7 +1614,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	offset := 0
 	if parsed.QueryListMore {
 		if cursor, ok := s.loadSpendingListCursor(ctx, user.ID); ok &&
-			cursor.Period == parsed.QueryPeriod && cursor.StartDate == parsed.QueryStartDate &&
+			cursor.Period == parsed.QueryPeriod && cursor.StartDate == parsed.QueryStartDate && cursor.TransactionType == parsed.QueryTransactionType &&
 			cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized {
 			offset = cursor.NextOffset
 		}
@@ -1552,7 +1624,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 		// that's still a sensible answer to "lanjutkan".
 	}
 
-	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, categoryQuery, bucket, uncategorized, offset)
+	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, txType, categoryQuery, bucket, uncategorized, offset)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("spending list query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1568,21 +1640,37 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	}
 
 	if len(page.Items) == 0 {
-		if scopeLabel != "" {
+		switch {
+		case scopeLabel != "":
 			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingScopeNone, scopeLabel, periodLabel))
-		} else {
+		case isAllTypes:
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingListEmptyAllTypes, periodLabel))
+		default:
 			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyQuerySpendingListEmptyAll, periodLabel))
 		}
 		return
 	}
 
 	var lines []string
-	if scopeLabel != "" {
+	switch {
+	case scopeLabel != "":
 		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeader, scopeLabel, periodLabel)}
-	} else {
+	case isAllTypes:
+		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeaderAllTypes, periodLabel)}
+	default:
 		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeaderAll, periodLabel)}
 	}
 	for i, item := range page.Items {
+		// A mixed-type list (isAllTypes) names each row's own type, since
+		// nothing else on the line would otherwise distinguish an income
+		// row from an expense row; a single-type list already says so in
+		// its header and would just repeat the same word on every line.
+		if isAllTypes {
+			lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItemWithType,
+				offset+i+1, item.OccurredAt.UTC().Format("2 Jan"), string(item.Type), categoryDisplayName(user.Language, item.CategoryName),
+				i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
+			continue
+		}
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItem,
 			offset+i+1, item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName),
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
@@ -1592,7 +1680,8 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	if remaining := page.Total - shown; remaining > 0 {
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
 		s.saveSpendingListCursor(ctx, user.ID, spendingListCursor{
-			Period: parsed.QueryPeriod, StartDate: parsed.QueryStartDate, CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
+			Period: parsed.QueryPeriod, StartDate: parsed.QueryStartDate, TransactionType: parsed.QueryTransactionType,
+			CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
 		})
 	} else {
 		s.clearSpendingListCursor(ctx, user.ID)
