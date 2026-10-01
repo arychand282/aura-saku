@@ -309,6 +309,17 @@ type AIClient interface {
 	// optional for a financial reply.
 	PhraseTransactionList(ctx context.Context, listSummary string, preferredLanguage string) (string, *UsageMetadata, error)
 
+	// PhraseSpendingBreakdown is PhraseTransactionList's counterpart for a
+	// different already-computed data shape: a total plus its per-category
+	// breakdown (breakdownSummary, same plain-language/English/internal
+	// convention) rather than individual transaction rows — the plain "how
+	// much have I spent" answer with a percentage breakdown, as opposed to
+	// an itemized list. Same contract as PhraseTransactionList: no
+	// computation happens here, only rewording, and the caller MUST verify
+	// every amount/percentage string still appears verbatim before trusting
+	// it — see bot.Service.phraseSpendingBreakdown's validation.
+	PhraseSpendingBreakdown(ctx context.Context, breakdownSummary string, preferredLanguage string) (string, *UsageMetadata, error)
+
 	ProviderName() string
 }
 

@@ -118,6 +118,12 @@ type mockAIClient struct {
 	// deterministic-template fallback triggers on a failed validation, not
 	// just on an API error.
 	phraseListResult string
+
+	// phraseBreakdownErr/phraseBreakdownResult mirror phraseListErr/
+	// phraseListResult above, for PhraseSpendingBreakdown instead of
+	// PhraseTransactionList.
+	phraseBreakdownErr    error
+	phraseBreakdownResult string
 }
 
 func (m *mockAIClient) call(history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {
@@ -187,6 +193,16 @@ func (m *mockAIClient) PhraseTransactionList(ctx context.Context, listSummary, p
 	// standing in for "the model phrased it naturally without dropping or
 	// altering any detail" without actually rephrasing anything here.
 	return listSummary, &ai.UsageMetadata{Model: "mock-model"}, nil
+}
+
+func (m *mockAIClient) PhraseSpendingBreakdown(ctx context.Context, breakdownSummary, preferredLanguage string) (string, *ai.UsageMetadata, error) {
+	if m.phraseBreakdownErr != nil {
+		return "", nil, m.phraseBreakdownErr
+	}
+	if m.phraseBreakdownResult != "" {
+		return m.phraseBreakdownResult, &ai.UsageMetadata{Model: "mock-model"}, nil
+	}
+	return breakdownSummary, &ai.UsageMetadata{Model: "mock-model"}, nil
 }
 
 func (m *mockAIClient) ProviderName() string { return "mock" }
@@ -1457,6 +1473,113 @@ func TestHandleUpdate_SpendingQuery_PlainListFallsBackOnAIError(t *testing.T) {
 	got := env.messenger.last(chatID)
 	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 50_000, "IDR")) {
 		t.Errorf("reply = %q, want the deterministic template fallback when PhraseTransactionList errors", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_ScopedListUsesAIPhrasing covers "list
+// pengeluaran food bulan ini" (a category-scoped list, scopeLabel != "") —
+// the other list variant besides the plain/all-types one, confirming the
+// AI-phrasing prototype also covers it, and that the scope ("food") is
+// actually given to the model so it can frame the message around that
+// specific category rather than a generic list.
+func TestHandleUpdate_SpendingQuery_ScopedListUsesAIPhrasing(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 23_000, Currency: "IDR", CategoryName: "food", Description: "beli jajan pasar pagi"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "jajan 23000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "food", QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list pengeluaran food bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "Scope: food") {
+		t.Errorf("reply = %q, want the scope (food) given to the AI phrasing call", got)
+	}
+	if !strings.Contains(got, "beli jajan pasar pagi") {
+		t.Errorf("reply = %q, want the item included", got)
+	}
+	if strings.Contains(got, "1. ") {
+		t.Errorf("reply = %q, want AI phrasing used (no numbered-template fallback)", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_BreakdownUsesAIPhrasingWhenValid covers the
+// plain "how much have I spent" total + category breakdown reply (not list
+// mode) — the second reply type this prototype extended to.
+func TestHandleUpdate_SpendingQuery_BreakdownUsesAIPhrasingWhenValid(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "belanja 300000"})
+
+	env.ai.phraseBreakdownResult = "Bulan ini kamu habis Rp300.000,00, semuanya untuk food (100%)."
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "habis buat apa aja bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "Bulan ini kamu habis") {
+		t.Errorf("reply = %q, want the AI-phrased breakdown used", got)
+	}
+	if strings.Contains(got, "1. ") {
+		t.Errorf("reply = %q, want AI phrasing used (no numbered-template fallback)", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_BreakdownFallsBackWhenAIDropsAPercentage
+// covers the breakdown's validation safety net: a phrased response that
+// gets a percentage wrong must never reach the user — the deterministic
+// template, with correct figures, is used instead.
+func TestHandleUpdate_SpendingQuery_BreakdownFallsBackWhenAIDropsAPercentage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "belanja 300000"})
+
+	// Deliberately wrong percentage — simulates the model miscalculating.
+	env.ai.phraseBreakdownResult = "You spent Rp300.000,00, with food at 50% of the total."
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "habis buat apa aja bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if strings.Contains(got, "food at 50%") {
+		t.Errorf("reply = %q, must NOT use the AI phrasing with the wrong percentage", got)
+	}
+	if !strings.Contains(got, "100") {
+		t.Errorf("reply = %q, want the deterministic template fallback with the correct 100%% breakdown", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_BreakdownFallsBackOnAIError covers the
+// other failure mode: PhraseSpendingBreakdown itself erroring out must
+// still produce the normal deterministic reply.
+func TestHandleUpdate_SpendingQuery_BreakdownFallsBackOnAIError(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 300_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "belanja 300000"})
+
+	env.ai.phraseBreakdownErr = errors.New("simulated AI outage")
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "habis buat apa aja bulan ini?"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, i18n.FormatMoney(models.LanguageID, 300_000, "IDR")) {
+		t.Errorf("reply = %q, want the deterministic template fallback when PhraseSpendingBreakdown errors", got)
 	}
 }
 

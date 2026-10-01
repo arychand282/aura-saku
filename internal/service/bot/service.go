@@ -1438,6 +1438,15 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingBreakdownItem,
 			i+1, categoryDisplayName(user.Language, c.CategoryName), i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency), c.Total/expenseTotal*100))
 	}
+
+	// Prototype, same pattern as phraseSpendingList: render the total +
+	// per-category breakdown as AI-phrased natural text instead of the
+	// rigid KeyQuerySpendingBreakdownItem template, falling back to lines
+	// (already fully built above) on any failure or unverifiable output.
+	if phrased, ok := s.phraseSpendingBreakdown(ctx, user, expenseTotal, topCategories, periodLabel); ok {
+		s.reply(ctx, user, phrased)
+		return
+	}
 	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
@@ -1676,18 +1685,18 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 	}
 
-	// Prototype: render the plain, unscoped, first-page list (no category/
-	// bucket filter — covers BOTH the default expense-only list and an
-	// isAllTypes="all" one, e.g. the exact "list semua transaksi" phrasing
-	// that prompted this, which resolves to QueryTransactionType="all") as
-	// AI-phrased natural text instead of the rigid numbered template,
-	// deliberately scoped to just this one branch rather than every list
-	// variant. lines (the deterministic template, already fully built
+	// Prototype: render every first-page list reply — plain, mixed-type
+	// ("all"), or category/bucket/uncategorized-scoped — as AI-phrased
+	// natural text instead of the rigid numbered template. Continuation
+	// pages (offset > 0) are deliberately left on the deterministic
+	// template: a "lanjutkan" follow-up should read as a continuation of
+	// the same list, not a second independently-phrased message with its
+	// own tone. lines (the deterministic template, already fully built
 	// above) stays the guaranteed fallback — see phraseSpendingList's own
 	// doc comment for why a failed/unverifiable AI response must never
 	// reach the user.
-	if scopeLabel == "" && offset == 0 {
-		if phrased, ok := s.phraseSpendingList(ctx, user, page.Items, periodLabel, isAllTypes); ok {
+	if offset == 0 {
+		if phrased, ok := s.phraseSpendingList(ctx, user, page.Items, scopeLabel, periodLabel, isAllTypes); ok {
 			lines = []string{phrased}
 		}
 	}
@@ -1711,10 +1720,13 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 // KeyQuerySpendingListItem/KeyQuerySpendingListItemWithType templates — a
 // prototype for moving reply wording off Sprintf templates while keeping
 // every number backend-computed and verified, never AI-computed or
-// AI-recalled. includeType adds each row's transaction type to what the
-// model sees (set for a mixed-type "all" list — see
-// resolveQueryTransactionType — so e.g. an income row isn't phrased as
-// spending; omitted for a single-type list, where it'd be redundant).
+// AI-recalled. scopeLabel, when non-empty, is the category/bucket/
+// uncategorized-label the list is scoped to (e.g. "food") so the phrasing
+// reads as an answer about that specific scope, not a generic list — empty
+// means an unscoped list (plain or mixed-type). includeType adds each row's
+// transaction type to what the model sees (set for a mixed-type "all" list
+// — see resolveQueryTransactionType — so e.g. an income row isn't phrased
+// as spending; omitted for a single-type list, where it'd be redundant).
 // Every amount shown to the model is a pre-formatted string
 // (i18n.FormatMoney's own output) that it's instructed to copy verbatim,
 // never reformat; this function then checks that every one of those exact
@@ -1724,8 +1736,11 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 // the deterministic template instead. A reply with a wrong or missing
 // amount is a far worse outcome for a finance bot than one that simply
 // sounds a bit more mechanical, so this fallback is not optional.
-func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, items []report.TransactionListItem, periodLabel string, includeType bool) (string, bool) {
+func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, items []report.TransactionListItem, scopeLabel, periodLabel string, includeType bool) (string, bool) {
 	var summary strings.Builder
+	if scopeLabel != "" {
+		fmt.Fprintf(&summary, "Scope: %s\n", scopeLabel)
+	}
 	fmt.Fprintf(&summary, "Period: %s\n", periodLabel)
 	amounts := make([]string, len(items))
 	for i, item := range items {
@@ -1761,6 +1776,45 @@ func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, ite
 	// still logged for cost visibility like every other real AI call (see
 	// RunCategoryInsights' identical SuggestSavings accounting).
 	s.usageSvc.RecordAICall(ctx, user.ID, models.AIProvider(s.aiClient.ProviderName()), "phrase_spending_list", usageMeta)
+	return text, true
+}
+
+// phraseSpendingBreakdown is phraseSpendingList's counterpart for a
+// different already-computed data shape: a total plus its per-category
+// breakdown (handleSpendingQuery's default "how much have I spent" answer)
+// rather than individual transaction rows. Same contract as
+// phraseSpendingList: every amount/percentage shown to the model is a
+// pre-formatted string it's instructed to copy verbatim, and this function
+// verifies every one of those exact strings still appears in the response
+// before trusting it — returning ("", false) on any failure (API error, or
+// a dropped/altered amount or percentage) so the caller falls back to the
+// deterministic template instead.
+func (s *Service) phraseSpendingBreakdown(ctx context.Context, user *models.User, total float64, categories []report.CategoryTotal, periodLabel string) (string, bool) {
+	totalFormatted := i18n.FormatMoney(user.Language, total, user.DefaultCurrency)
+	required := []string{totalFormatted}
+
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "Period: %s\nTotal expenses: %s\nBreakdown by category:\n", periodLabel, totalFormatted)
+	for _, c := range categories {
+		amountFormatted := i18n.FormatMoney(user.Language, c.Total, user.DefaultCurrency)
+		percentFormatted := fmt.Sprintf("%.0f%%", c.Total/total*100)
+		fmt.Fprintf(&summary, "- %s: %s (%s of total)\n", categoryDisplayName(user.Language, c.CategoryName), amountFormatted, percentFormatted)
+		required = append(required, amountFormatted, percentFormatted)
+	}
+
+	text, usageMeta, err := s.aiClient.PhraseSpendingBreakdown(ctx, summary.String(), string(user.Language))
+	if err != nil {
+		logger.Error(logger.AIPhraseListFailed, fmt.Sprintf("phrase spending breakdown for user %d", user.ID), err)
+		return "", false
+	}
+	for _, r := range required {
+		if !strings.Contains(text, r) {
+			logger.Error(logger.AIPhraseListFailed, fmt.Sprintf("phrase spending breakdown for user %d dropped/altered a value", user.ID), fmt.Errorf("expected %q not found in phrased text", r))
+			return "", false
+		}
+	}
+
+	s.usageSvc.RecordAICall(ctx, user.ID, models.AIProvider(s.aiClient.ProviderName()), "phrase_spending_breakdown", usageMeta)
 	return text, true
 }
 
