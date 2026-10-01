@@ -97,16 +97,19 @@ const (
 	KeyLanguageSet                         = "language_set"
 	KeyInputTooLong                        = "input_too_long"
 
-	KeyBudgetNoIncome      = "budget_no_income"
-	KeyBudgetNeedsExceeded = "budget_needs_exceeded"
-	KeyBudgetWantsExceeded = "budget_wants_exceeded"
-	KeyBudgetWantsPace     = "budget_wants_pace"
-	KeyBudgetRollover      = "budget_rollover"
-	KeyBudgetSetUsage      = "budget_set_usage"
-	KeyBudgetSetInvalid    = "budget_set_invalid"
-	KeyBudgetSetFailed     = "budget_set_failed"
-	KeyBudgetSetSuccess    = "budget_set_success"
-	KeyBudgetShow          = "budget_show"
+	KeyBudgetNoIncome                = "budget_no_income"
+	KeyBudgetNeedsExceeded           = "budget_needs_exceeded"
+	KeyBudgetWantsExceeded           = "budget_wants_exceeded"
+	KeyBudgetWantsPace               = "budget_wants_pace"
+	KeyBudgetRollover                = "budget_rollover"
+	KeyBudgetSetUsage                = "budget_set_usage"
+	KeyBudgetSetInvalid              = "budget_set_invalid"
+	KeyBudgetSetFailed               = "budget_set_failed"
+	KeyBudgetSetSuccess              = "budget_set_success"
+	KeyBudgetShow                    = "budget_show"
+	KeyBudgetShowAgainstIncome       = "budget_show_against_income"
+	KeyBudgetShowAgainstHypothetical = "budget_show_against_hypothetical"
+	KeyBudgetShowNoIncome            = "budget_show_no_income"
 
 	KeyQuotaExceededWithReward = "quota_exceeded_with_reward"
 	KeyQuotaExceededNoReward   = "quota_exceeded_no_reward"
@@ -192,16 +195,19 @@ var catalog = map[models.Language]map[string]string{
 		KeyLanguageSet:                         "Language set to English.",
 		KeyInputTooLong:                        "That message is too long (max %d characters). Please shorten it and send it again — splitting it across multiple messages won't work either, since each one is read on its own.",
 
-		KeyBudgetNoIncome:      "No income recorded yet this period — log your income (e.g. \"salary 5000000\") to enable budget limit tracking.",
-		KeyBudgetNeedsExceeded: "Needs spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
-		KeyBudgetWantsExceeded: "Wants spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
-		KeyBudgetWantsPace:     "Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
-		KeyBudgetRollover:      "You had a surplus of %.2f last month — consider moving it into savings or investments.",
-		KeyBudgetSetUsage:      "Usage: /budget <needs%> <wants%> <savings%> — must sum to 100, e.g. /budget 50 30 20. Send /budget with no arguments to see your current allocation.",
-		KeyBudgetSetInvalid:    "Those percentages must each be zero or more and sum to exactly 100.",
-		KeyBudgetSetFailed:     "Something went wrong updating your budget allocation.",
-		KeyBudgetSetSuccess:    "✅ Budget updated: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — effective this period.",
-		KeyBudgetShow:          "Your current budget allocation: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Use /budget <needs> <wants> <savings> to change it.",
+		KeyBudgetNoIncome:                "No income recorded yet this period — log your income (e.g. \"salary 5000000\") to enable budget limit tracking.",
+		KeyBudgetNeedsExceeded:           "Needs spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
+		KeyBudgetWantsExceeded:           "Wants spending has exceeded your %.0f%% allocation: %.2f of %.2f.",
+		KeyBudgetWantsPace:               "Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
+		KeyBudgetRollover:                "You had a surplus of %.2f last month — consider moving it into savings or investments.",
+		KeyBudgetSetUsage:                "Usage: /budget <needs%> <wants%> <savings%> — must sum to 100, e.g. /budget 50 30 20. Send /budget with no arguments to see your current allocation.",
+		KeyBudgetSetInvalid:              "Those percentages must each be zero or more and sum to exactly 100.",
+		KeyBudgetSetFailed:               "Something went wrong updating your budget allocation.",
+		KeyBudgetSetSuccess:              "✅ Budget updated: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — effective this period.",
+		KeyBudgetShow:                    "Your current budget allocation: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Use /budget <needs> <wants> <savings> to change it.",
+		KeyBudgetShowAgainstIncome:       "Based on your most recent income (%s): Needs %.0f%% = %s, Wants %.0f%% = %s, Savings %.0f%% = %s.",
+		KeyBudgetShowAgainstHypothetical: "If your income were %s: Needs %.0f%% = %s, Wants %.0f%% = %s, Savings %.0f%% = %s.",
+		KeyBudgetShowNoIncome:            "You don't have any income recorded yet to base this on. Record an income transaction first, or just ask for your budget split as plain percentages.",
 
 		KeyQuotaExceededWithReward: "You've used all %d free prompts for today. 🚀 Send /subscribe to upgrade to Pro for unlimited use, or earn %d more today: %s\nAfter visiting, send /claim %s here to unlock them.",
 		KeyQuotaExceededNoReward:   "You've used all %d free prompts for today. 🚀 Send /subscribe to upgrade to Pro for unlimited use, or try again tomorrow.",
@@ -285,16 +291,19 @@ var catalog = map[models.Language]map[string]string{
 		KeyLanguageSet:                         "Bahasa diatur ke Bahasa Indonesia.",
 		KeyInputTooLong:                        "Pesan itu terlalu panjang (maks %d karakter). Coba persingkat dan kirim ulang ya — dipecah jadi beberapa pesan juga tidak akan membantu, karena masing-masing dibaca sendiri-sendiri.",
 
-		KeyBudgetNoIncome:      "Belum ada pemasukan tercatat periode ini — catat pemasukanmu (misal \"gaji 5000000\") untuk mengaktifkan pelacakan batas anggaran.",
-		KeyBudgetNeedsExceeded: "Pengeluaran Needs sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
-		KeyBudgetWantsExceeded: "Pengeluaran Wants sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
-		KeyBudgetWantsPace:     "Laju pengeluaran Wants-mu diperkirakan mencapai %.2f di akhir bulan, melebihi alokasi %.2f — pertimbangkan untuk mengurangi pengeluaran.",
-		KeyBudgetRollover:      "Kamu punya surplus %.2f bulan lalu — pertimbangkan untuk memindahkannya ke tabungan atau investasi.",
-		KeyBudgetSetUsage:      "Cara pakai: /budget <needs%> <wants%> <savings%> — harus berjumlah 100, contoh: /budget 50 30 20. Kirim /budget tanpa argumen untuk melihat alokasi saat ini.",
-		KeyBudgetSetInvalid:    "Persentase harus masing-masing nol atau lebih dan berjumlah tepat 100.",
-		KeyBudgetSetFailed:     "Terjadi kesalahan saat memperbarui alokasi budgetmu.",
-		KeyBudgetSetSuccess:    "✅ Budget diperbarui: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — berlaku mulai periode ini.",
-		KeyBudgetShow:          "Alokasi budgetmu saat ini: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Gunakan /budget <needs> <wants> <savings> untuk mengubahnya.",
+		KeyBudgetNoIncome:                "Belum ada pemasukan tercatat periode ini — catat pemasukanmu (misal \"gaji 5000000\") untuk mengaktifkan pelacakan batas anggaran.",
+		KeyBudgetNeedsExceeded:           "Pengeluaran Needs sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
+		KeyBudgetWantsExceeded:           "Pengeluaran Wants sudah melebihi alokasi %.0f%%: %.2f dari %.2f.",
+		KeyBudgetWantsPace:               "Laju pengeluaran Wants-mu diperkirakan mencapai %.2f di akhir bulan, melebihi alokasi %.2f — pertimbangkan untuk mengurangi pengeluaran.",
+		KeyBudgetRollover:                "Kamu punya surplus %.2f bulan lalu — pertimbangkan untuk memindahkannya ke tabungan atau investasi.",
+		KeyBudgetSetUsage:                "Cara pakai: /budget <needs%> <wants%> <savings%> — harus berjumlah 100, contoh: /budget 50 30 20. Kirim /budget tanpa argumen untuk melihat alokasi saat ini.",
+		KeyBudgetSetInvalid:              "Persentase harus masing-masing nol atau lebih dan berjumlah tepat 100.",
+		KeyBudgetSetFailed:               "Terjadi kesalahan saat memperbarui alokasi budgetmu.",
+		KeyBudgetSetSuccess:              "✅ Budget diperbarui: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — berlaku mulai periode ini.",
+		KeyBudgetShow:                    "Alokasi budgetmu saat ini: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Gunakan /budget <needs> <wants> <savings> untuk mengubahnya.",
+		KeyBudgetShowAgainstIncome:       "Berdasarkan pemasukan terakhirmu (%s): Needs %.0f%% = %s, Wants %.0f%% = %s, Savings %.0f%% = %s.",
+		KeyBudgetShowAgainstHypothetical: "Kalau pemasukanmu %s: Needs %.0f%% = %s, Wants %.0f%% = %s, Savings %.0f%% = %s.",
+		KeyBudgetShowNoIncome:            "Kamu belum punya pemasukan tercatat untuk jadi dasar perhitungan ini. Catat pemasukanmu dulu, atau tanya pembagian budgetmu dalam persen saja.",
 
 		KeyQuotaExceededWithReward: "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Kirim /subscribe untuk upgrade ke Pro dan dapat pemakaian tanpa batas, atau dapatkan %d tambahan hari ini: %s\nSetelah mengunjungi link itu, kirim /claim %s di sini untuk membukanya.",
 		KeyQuotaExceededNoReward:   "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Kirim /subscribe untuk upgrade ke Pro dan dapat pemakaian tanpa batas, atau coba lagi besok.",

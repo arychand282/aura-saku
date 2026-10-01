@@ -29,6 +29,7 @@ const (
 	ToolDeleteRecurringTransaction = "delete_recurring_transaction"
 	ToolSubscribeToPro             = "subscribe_to_pro"
 	ToolCheckSubscriptionStatus    = "check_subscription_status"
+	ToolCheckBudgetAllocation      = "check_budget_allocation"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -252,6 +253,24 @@ func TransactionTools() []Tool {
 			Name:        ToolCheckSubscriptionStatus,
 			Description: "Call this when the message asks about the user's OWN current Pro-tier status or renewal date on this bot (\"aku pro ga sih?\", \"kapan langganan pro ku abis?\", \"am I still Pro?\", \"when does my subscription renew?\", \"status pro aku gimana?\"). Not for a recurring transaction the user tracks for themselves — that's a normal query_spending/get_recurring_transactions question instead. Takes no parameters.",
 			Properties:  map[string]ToolProperty{},
+		},
+		{
+			Name:        ToolCheckBudgetAllocation,
+			Description: "Call this when the message asks about the user's configured 50/30/20 budget ALLOCATION/SPLIT itself — what percentage of their money is assigned to Needs/Wants/Savings (e.g. \"pembagian budgeting ku gimana?\", \"budget split aku berapa?\", \"what's my budget allocation?\", \"how is my budget divided?\", \"needs/wants/savings aku berapa persen?\"). This is DIFFERENT from query_spending's query_bucket — that tool answers \"how much have I SPENT in a bucket,\" this one answers \"what percentages are my buckets SET TO.\" A plain \"gimana budgetku\"/\"how's my budget\" with no mention of spending amounts means this tool, not query_spending. At most ONE of against_latest_income or hypothetical_amount should be set — never both.",
+			Properties: map[string]ToolProperty{
+				"against_latest_income": {
+					Type:        "boolean",
+					Description: "Set true when the message asks for the allocation applied to their most recently recorded salary/income transaction, rather than just the bare percentages — e.g. \"budget dari gaji kemarin gimana?\", \"berdasarkan gaji terakhir, budgetku berapa?\", \"based on my last salary what's my needs/wants/savings split\". This always uses the user's actual last-recorded income, never an amount typed in the message itself (that's hypothetical_amount instead). Leave false/omit for a plain \"what's my split\" question with no income involved — that's the far more common case.",
+				},
+				"hypothetical_amount": {
+					Type:        "number",
+					Description: "Set this when the message states a SPECIFIC what-if amount to apply the percentages to, regardless of what's actually recorded — e.g. \"kalau gajiku 5 juta, berapa masing-masing budgetnya?\", \"if I had 10 million, what would my needs/wants/savings be?\", \"misalnya pemasukan 3 juta, budgetnya gimana\". Leave empty/omit when no specific amount is stated in the message itself — that's against_latest_income (for their real last income) or neither (for the bare percentages) instead.",
+				},
+				"hypothetical_currency": {
+					Type:        "string",
+					Description: "ISO 4217 code for hypothetical_amount (e.g. IDR, USD). Only meaningful alongside hypothetical_amount. If not mentioned, use the caller-provided default currency.",
+				},
+			},
 		},
 	}
 }

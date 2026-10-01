@@ -19,6 +19,7 @@ const (
 	IntentSavingsGoalCreate  = "savings_goal_create"
 	IntentSubscribe          = "subscribe"
 	IntentSubscriptionStatus = "subscription_status"
+	IntentBudgetAllocation   = "budget_allocation"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -165,6 +166,17 @@ type ParsedTransaction struct {
 	// asking a language model to do that arithmetic reliably across turns
 	// is exactly the kind of thing that silently drifts wrong.
 	QueryListMore bool `json:"query_list_more,omitempty"`
+
+	// BudgetAgainstLatestIncome/BudgetHypotheticalAmount/
+	// BudgetHypotheticalCurrency are only meaningful for
+	// IntentBudgetAllocation — see check_budget_allocation's own field
+	// descriptions in tool_schema.go. At most one of
+	// BudgetAgainstLatestIncome or a non-zero BudgetHypotheticalAmount should
+	// be set; the caller (bot.Service.handleBudgetShow) treats a
+	// hypothetical amount as taking priority if a parse somehow sets both.
+	BudgetAgainstLatestIncome  bool    `json:"against_latest_income,omitempty"`
+	BudgetHypotheticalAmount   float64 `json:"hypothetical_amount,omitempty"`
+	BudgetHypotheticalCurrency string  `json:"hypothetical_currency,omitempty"`
 }
 
 type UsageMetadata struct {
@@ -264,7 +276,7 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		default:
 			return false
 		}
-	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus:
+	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus, IntentBudgetAllocation:
 		return true
 	case IntentRecurringDelete:
 		// Unlike IntentDelete (a regular transaction), there's no

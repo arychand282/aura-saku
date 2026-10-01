@@ -164,6 +164,29 @@ func (s *Service) MostRecent(ctx context.Context, userID uint) (*models.Transact
 	return &tx, nil
 }
 
+// MostRecentByType returns the user's single most recent transaction of a
+// given type (e.g. TxIncome) — backs a budget-allocation question phrased
+// against a real amount ("based on my last salary, what's my needs/wants/
+// savings split") rather than just the bare configured percentages. Returns
+// apperror.ErrNoIncomeTransaction (the only caller today only ever asks for
+// TxIncome) when the user has none of that type yet, distinct from
+// MostRecent's ErrNoUndoableTransaction since "nothing to undo" and "no
+// income recorded yet" are different situations for a caller to explain.
+func (s *Service) MostRecentByType(ctx context.Context, userID uint, txType models.TransactionType) (*models.Transaction, error) {
+	var tx models.Transaction
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND type = ?", userID, txType).
+		Order("occurred_at DESC, created_at DESC").
+		First(&tx).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.ErrNoIncomeTransaction
+		}
+		return nil, fmt.Errorf("find most recent %s transaction: %w", txType, err)
+	}
+	return &tx, nil
+}
+
 // RecentTransactions returns the user's most recent transactions (newest
 // first, up to limit), Category preloaded. Backs bot.Service's
 // get_recent_transactions tool (see ai.ChainedCorrector) — a

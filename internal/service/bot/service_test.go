@@ -1498,6 +1498,109 @@ func TestHandleUpdate_BalanceQuery_NaturalLanguage(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_BudgetAllocation_NaturalLanguage covers a user asking
+// "pembagian budgeting ku gimana?" (what's my budget allocation) — this must
+// show the configured Needs/Wants/Savings PERCENTAGE split (the default
+// 50/30/20, same as the default BudgetShow) via ai.IntentBudgetAllocation,
+// never be misrouted to a query_spending/query_bucket answer about how much
+// was actually spent in one bucket.
+func TestHandleUpdate_BudgetAllocation_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBudgetAllocation}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "pembagian budgeting ku gimana?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetShow, 50.0, 30.0, 20.0)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_BudgetAllocation_AgainstLatestIncome covers "berdasarkan
+// gaji terakhir, budgetku berapa?" — the default 50/30/20 split applied to
+// the user's actual most recent income transaction, not just bare
+// percentages, and not shadowed by a later expense.
+func TestHandleUpdate_BudgetAllocation_AgainstLatestIncome(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 5000000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBudgetAllocation, BudgetAgainstLatestIncome: true}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berdasarkan gaji terakhir, budgetku berapa?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetShowAgainstIncome,
+		i18n.FormatMoney(models.LanguageID, 5_000_000, "IDR"),
+		50.0, i18n.FormatMoney(models.LanguageID, 2_500_000, "IDR"),
+		30.0, i18n.FormatMoney(models.LanguageID, 1_500_000, "IDR"),
+		20.0, i18n.FormatMoney(models.LanguageID, 1_000_000, "IDR"))
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_BudgetAllocation_AgainstLatestIncome_NoneRecorded covers
+// the same request from a user with no income recorded at all yet — must
+// reply with a graceful explanation, never a crash or a nonsensical
+// "0% of nothing" computation.
+func TestHandleUpdate_BudgetAllocation_AgainstLatestIncome_NoneRecorded(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBudgetAllocation, BudgetAgainstLatestIncome: true}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "berdasarkan gaji terakhir, budgetku berapa?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetShowNoIncome)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_BudgetAllocation_HypotheticalAmount covers "kalau gajiku
+// 5 juta, berapa masing-masing budgetnya?" — a what-if amount stated in the
+// message itself, never requiring (or looking at) any recorded transaction.
+func TestHandleUpdate_BudgetAllocation_HypotheticalAmount(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentBudgetAllocation, BudgetHypotheticalAmount: 10_000_000, BudgetHypotheticalCurrency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "kalau gajiku 10 juta, berapa masing-masing budgetnya?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetShowAgainstHypothetical,
+		i18n.FormatMoney(models.LanguageID, 10_000_000, "IDR"),
+		50.0, i18n.FormatMoney(models.LanguageID, 5_000_000, "IDR"),
+		30.0, i18n.FormatMoney(models.LanguageID, 3_000_000, "IDR"),
+		20.0, i18n.FormatMoney(models.LanguageID, 2_000_000, "IDR"))
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var count int64
+	env.db.Model(&models.Transaction{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("transaction count = %d, want 0 (a hypothetical must never record anything)", count)
+	}
+}
+
 // TestHandleUpdate_Correction_ReplacesLastTransaction reproduces the
 // reported bug: a correction message ("eh maaf, harusnya 1jt deh...typo")
 // must replace the previous wrong transaction, not add a second one

@@ -66,6 +66,13 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 		return &ParsedTransaction{Intent: IntentSubscribe}
 	case prompt.ToolCheckSubscriptionStatus:
 		return &ParsedTransaction{Intent: IntentSubscriptionStatus}
+	case prompt.ToolCheckBudgetAllocation:
+		return &ParsedTransaction{
+			Intent:                     IntentBudgetAllocation,
+			BudgetAgainstLatestIncome:  argBool(args, "against_latest_income"),
+			BudgetHypotheticalAmount:   argFloat(args, "hypothetical_amount"),
+			BudgetHypotheticalCurrency: argString(args, "hypothetical_currency"),
+		}
 	default:
 		return nil
 	}

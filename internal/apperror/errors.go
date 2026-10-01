@@ -21,4 +21,5 @@ var (
 	ErrNoActiveSavingsGoal      = errors.New("no active savings goal for this user")
 	ErrPaymentAlreadyPending    = errors.New("a checkout is already pending for this user")
 	ErrInvalidWebhookSignature  = errors.New("invalid webhook signature")
+	ErrNoIncomeTransaction      = errors.New("no income transaction found for this user")
 )

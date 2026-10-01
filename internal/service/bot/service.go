@@ -522,13 +522,7 @@ func (s *Service) handleRecurringUpdate(ctx context.Context, user *models.User, 
 func (s *Service) handleBudget(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	args := strings.Fields(msg.CommandArgs)
 	if len(args) == 0 {
-		b, err := s.budgetSvc.CurrentBudget(ctx, user.ID)
-		if err != nil {
-			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("get current budget for user %d", user.ID), err)
-			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetFailed))
-			return
-		}
-		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetShow, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+		s.handleBudgetShow(ctx, user, nil)
 		return
 	}
 
@@ -556,6 +550,71 @@ func (s *Service) handleBudget(ctx context.Context, user *models.User, msg *mess
 	}
 
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetSuccess, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+}
+
+// handleBudgetShow answers "what's my budget allocation" — the configured
+// Needs/Wants/Savings percentage split itself, not how much was spent in any
+// of them (that's a normal query_spending/query_bucket question instead).
+// Reachable via /budget with no arguments (parsed == nil, always the bare
+// percentages) or the natural-language ai.IntentBudgetAllocation path (see
+// tool_schema.go's check_budget_allocation) — both converging here so
+// there's one code path per action regardless of how it was triggered, the
+// same convention handleSubscribe/handleMySubscription already use.
+// parsed's BudgetHypotheticalAmount (a what-if figure stated in the message
+// itself, e.g. "kalau gajiku 5 juta") takes priority over
+// BudgetAgainstLatestIncome (the user's real last-recorded income) if a
+// parse somehow sets both — a stated amount is unambiguous, while "latest
+// income" requires a DB lookup that could itself fail to find one.
+func (s *Service) handleBudgetShow(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	b, err := s.budgetSvc.CurrentBudget(ctx, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("get current budget for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetFailed))
+		return
+	}
+
+	switch {
+	case parsed != nil && parsed.BudgetHypotheticalAmount > 0:
+		currency := parsed.BudgetHypotheticalCurrency
+		if currency == "" {
+			currency = user.DefaultCurrency
+		}
+		s.replyBudgetAgainstAmount(ctx, user, b, parsed.BudgetHypotheticalAmount, currency, i18n.KeyBudgetShowAgainstHypothetical)
+	case parsed != nil && parsed.BudgetAgainstLatestIncome:
+		income, err := s.txSvc.MostRecentByType(ctx, user.ID, models.TxIncome)
+		if err != nil {
+			if errors.Is(err, apperror.ErrNoIncomeTransaction) {
+				s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetShowNoIncome))
+				return
+			}
+			logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("find most recent income for user %d", user.ID), err)
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetSetFailed))
+			return
+		}
+		// ConvertedAmount is already expressed in the user's own
+		// DefaultCurrency regardless of what currency the income itself was
+		// recorded in — see transaction.Service.CreateFromParsed.
+		s.replyBudgetAgainstAmount(ctx, user, b, income.ConvertedAmount, user.DefaultCurrency, i18n.KeyBudgetShowAgainstIncome)
+	default:
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetShow, b.NeedsPercent, b.WantsPercent, b.SavingsPercent))
+	}
+}
+
+// replyBudgetAgainstAmount computes each bucket's share of amount (in
+// currency) and sends it via key — shared by handleBudgetShow's
+// against-latest-income and against-a-stated-hypothetical-amount branches,
+// which differ only in where amount/currency came from and which i18n key
+// frames the answer.
+func (s *Service) replyBudgetAgainstAmount(ctx context.Context, user *models.User, b *models.Budget, amount float64, currency string, key string) {
+	needsAmt := amount * b.NeedsPercent / 100
+	wantsAmt := amount * b.WantsPercent / 100
+	savingsAmt := amount * b.SavingsPercent / 100
+	s.reply(ctx, user, i18n.T(user.Language, key,
+		i18n.FormatMoney(user.Language, amount, currency),
+		b.NeedsPercent, i18n.FormatMoney(user.Language, needsAmt, currency),
+		b.WantsPercent, i18n.FormatMoney(user.Language, wantsAmt, currency),
+		b.SavingsPercent, i18n.FormatMoney(user.Language, savingsAmt, currency),
+	))
 }
 
 func (s *Service) handleClaim(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
@@ -885,6 +944,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentSubscriptionStatus {
 		s.handleMySubscription(ctx, user, msg)
+		return
+	}
+
+	if first.Intent == ai.IntentBudgetAllocation {
+		s.handleBudgetShow(ctx, user, first)
 		return
 	}
 

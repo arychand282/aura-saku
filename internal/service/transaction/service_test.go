@@ -296,6 +296,65 @@ func TestDeleteTransaction_TargetsSpecificTransactionNotJustLatest(t *testing.T)
 	}
 }
 
+// TestMostRecentByType covers the lookup backing a budget-allocation
+// question asked against the user's real last-recorded income
+// ("berdasarkan gaji terakhir, budgetku berapa?"): it must return the newest
+// transaction of exactly the requested type, never a newer expense that
+// happens to be more recent, and apperror.ErrNoIncomeTransaction when the
+// user has none of that type yet.
+func TestMostRecentByType(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	ctx := context.Background()
+
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	if _, err := svc.MostRecentByType(ctx, user.ID, models.TxIncome); !errors.Is(err, apperror.ErrNoIncomeTransaction) {
+		t.Errorf("MostRecentByType with no income recorded err = %v, want ErrNoIncomeTransaction", err)
+	}
+
+	salary, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary", Description: "gaji",
+	}, models.SourceText, "gaji 5 juta")
+	if err != nil {
+		t.Fatalf("create salary: %v", err)
+	}
+
+	// A newer EXPENSE must never shadow the salary when asking for income
+	// specifically.
+	if _, err := svc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 25_000, Currency: "IDR", CategoryName: "food",
+	}, models.SourceText, "lunch 25000"); err != nil {
+		t.Fatalf("create expense: %v", err)
+	}
+
+	got, err := svc.MostRecentByType(ctx, user.ID, models.TxIncome)
+	if err != nil {
+		t.Fatalf("MostRecentByType: %v", err)
+	}
+	if got.ID != salary.ID {
+		t.Errorf("MostRecentByType returned transaction %d, want the salary one (%d)", got.ID, salary.ID)
+	}
+	if got.ConvertedAmount != 5_000_000 {
+		t.Errorf("ConvertedAmount = %.2f, want 5000000.00", got.ConvertedAmount)
+	}
+}
+
 func cleanupUser(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})
