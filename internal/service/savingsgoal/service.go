@@ -40,11 +40,15 @@ type Progress struct {
 // Create replaces the user's active goal (if any) with a new one — only
 // one goal is active at a time — deactivating the previous rather than
 // deleting it, the same preserve-history pattern
-// budget.Service.SetBudget uses for allocation changes.
-func (s *Service) Create(ctx context.Context, userID uint, name string, targetAmount float64, currency string, deadline *time.Time) (*models.SavingsGoal, error) {
+// budget.Service.SetBudget uses for allocation changes. The replaced return
+// value is the goal that was just deactivated (nil if there wasn't one),
+// so the caller (bot.Service.handleSavingsGoalCreate) can tell the user
+// their previous goal was replaced instead of silently losing track of it —
+// the reply used to say nothing at all about it.
+func (s *Service) Create(ctx context.Context, userID uint, name string, targetAmount float64, currency string, deadline *time.Time) (newGoal *models.SavingsGoal, replaced *models.SavingsGoal, err error) {
 	name = strings.TrimSpace(name)
 	if name == "" || targetAmount <= 0 {
-		return nil, apperror.ErrInvalidSavingsGoal
+		return nil, nil, apperror.ErrInvalidSavingsGoal
 	}
 
 	goal := &models.SavingsGoal{
@@ -56,7 +60,18 @@ func (s *Service) Create(ctx context.Context, userID uint, name string, targetAm
 		IsActive:     true,
 	}
 
-	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		var existing models.SavingsGoal
+		lookupErr := txDB.Where("user_id = ? AND is_active = ?", userID, true).First(&existing).Error
+		switch {
+		case lookupErr == nil:
+			replaced = &existing
+		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+			// No previous active goal — replaced stays nil, nothing to report.
+		default:
+			return fmt.Errorf("look up previous active goal: %w", lookupErr)
+		}
+
 		if err := txDB.Model(&models.SavingsGoal{}).
 			Where("user_id = ? AND is_active = ?", userID, true).
 			Update("is_active", false).Error; err != nil {
@@ -68,9 +83,9 @@ func (s *Service) Create(ctx context.Context, userID uint, name string, targetAm
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return goal, nil
+	return goal, replaced, nil
 }
 
 // Active returns the user's current active goal, or

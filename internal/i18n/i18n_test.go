@@ -116,7 +116,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyRecurringUpdated, KeyBillReminderUpdated,
 		KeyBillReminderCreated, KeyBillReminderDue,
 		KeyCategoryInsightHeader, KeyCategoryInsightItem, KeyCategoryInsightWarning,
-		KeyGoalUsage, KeyGoalCreated, KeyGoalCreateFailed, KeyGoalNone,
+		KeyGoalUsage, KeyGoalCreated, KeyGoalReplaced, KeyGoalCreateFailed, KeyGoalNone,
 		KeyGoalProgress, KeyGoalProgressToGo, KeyGoalProgressDeadline, KeyGoalReached, KeyGoalCancelSuccess,
 		KeySubscribeLink, KeySubscribePending, KeySubscribeUnavailable, KeySubscribeSuccess, KeySubscribeFailed,
 		KeySubscriptionExpired, KeyMySubscriptionPro, KeyMySubscriptionFree,

@@ -55,10 +55,10 @@ func TestCreate_RejectsInvalidInput(t *testing.T) {
 	svc, _, user := setup(t)
 	ctx := context.Background()
 
-	if _, err := svc.Create(ctx, user.ID, "laptop", 0, "IDR", nil); !errors.Is(err, apperror.ErrInvalidSavingsGoal) {
+	if _, _, err := svc.Create(ctx, user.ID, "laptop", 0, "IDR", nil); !errors.Is(err, apperror.ErrInvalidSavingsGoal) {
 		t.Errorf("Create with zero target err = %v, want ErrInvalidSavingsGoal", err)
 	}
-	if _, err := svc.Create(ctx, user.ID, "  ", 1_000_000, "IDR", nil); !errors.Is(err, apperror.ErrInvalidSavingsGoal) {
+	if _, _, err := svc.Create(ctx, user.ID, "  ", 1_000_000, "IDR", nil); !errors.Is(err, apperror.ErrInvalidSavingsGoal) {
 		t.Errorf("Create with blank name err = %v, want ErrInvalidSavingsGoal", err)
 	}
 }
@@ -70,7 +70,7 @@ func TestCreate_ReplacesActiveGoalAndDeactivatesOld(t *testing.T) {
 	svc, gormDB, user := setup(t)
 	ctx := context.Background()
 
-	first, err := svc.Create(ctx, user.ID, "laptop", 10_000_000, "idr", nil)
+	first, replacedFirst, err := svc.Create(ctx, user.ID, "laptop", 10_000_000, "idr", nil)
 	if err != nil {
 		t.Fatalf("Create (first): %v", err)
 	}
@@ -80,13 +80,19 @@ func TestCreate_ReplacesActiveGoalAndDeactivatesOld(t *testing.T) {
 	if !first.IsActive {
 		t.Error("expected the first goal to be active")
 	}
+	if replacedFirst != nil {
+		t.Errorf("replaced = %+v, want nil (no previous active goal existed yet)", replacedFirst)
+	}
 
-	second, err := svc.Create(ctx, user.ID, "emergency fund", 5_000_000, "IDR", nil)
+	second, replacedSecond, err := svc.Create(ctx, user.ID, "emergency fund", 5_000_000, "IDR", nil)
 	if err != nil {
 		t.Fatalf("Create (second): %v", err)
 	}
 	if !second.IsActive {
 		t.Error("expected the second goal to be active")
+	}
+	if replacedSecond == nil || replacedSecond.ID != first.ID {
+		t.Errorf("replaced = %+v, want the first goal (id %d)", replacedSecond, first.ID)
 	}
 
 	var firstAfter models.SavingsGoal
@@ -125,7 +131,7 @@ func TestProgress_TracksRealSavingsActivitySinceGoalCreation(t *testing.T) {
 	ctx := context.Background()
 	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
 
-	goal, err := svc.Create(ctx, user.ID, "laptop", 10_000_000, "IDR", nil)
+	goal, _, err := svc.Create(ctx, user.ID, "laptop", 10_000_000, "IDR", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -168,7 +174,7 @@ func TestCancel_DeactivatesAndReturnsSentinelWhenNoneLeft(t *testing.T) {
 	svc, gormDB, user := setup(t)
 	ctx := context.Background()
 
-	goal, err := svc.Create(ctx, user.ID, "vacation", 3_000_000, "IDR", nil)
+	goal, _, err := svc.Create(ctx, user.ID, "vacation", 3_000_000, "IDR", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

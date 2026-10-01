@@ -2570,6 +2570,17 @@ func TestHandleUpdate_SavingsGoal_ReplaceAndCancel(t *testing.T) {
 	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSavingsGoalCreate, GoalName: "liburan", Amount: 3_000_000, Currency: "IDR"}
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ganti rencana, nabung 3 juta buat liburan"})
 
+	// The reply itself must say the new goal is REPLACING the old one, not
+	// just silently confirm the new goal with no mention of what happened to
+	// "laptop" — this used to say nothing at all about the replaced goal.
+	replaceReply := env.messenger.last(chatID)
+	if !strings.Contains(replaceReply, "liburan") {
+		t.Errorf("replace reply = %q, want it to mention the new goal (liburan)", replaceReply)
+	}
+	if !strings.Contains(replaceReply, "laptop") {
+		t.Errorf("replace reply = %q, want it to mention the replaced goal (laptop) for contrast", replaceReply)
+	}
+
 	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/goal"})
 	progressReply := env.messenger.last(chatID)
 	if !strings.Contains(progressReply, "liburan") || strings.Contains(progressReply, "laptop") {

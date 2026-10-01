@@ -142,6 +142,7 @@ const (
 
 	KeyGoalUsage            = "goal_usage"
 	KeyGoalCreated          = "goal_created"
+	KeyGoalReplaced         = "goal_replaced"
 	KeyGoalCreateFailed     = "goal_create_failed"
 	KeyGoalNone             = "goal_none"
 	KeyGoalProgress         = "goal_progress"
@@ -241,6 +242,7 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyGoalUsage:            "Usage: /goal to see your progress, or /goal cancel to cancel your current goal.",
 		KeyGoalCreated:          "🎯 New goal: save %s for \"%s\"%s. Check your progress anytime with /goal.",
+		KeyGoalReplaced:         "🎯 New goal: save %s for \"%s\"%s — replacing your previous goal of %s for \"%s\". Check your progress anytime with /goal.",
 		KeyGoalCreateFailed:     "Something went wrong setting up that savings goal.",
 		KeyGoalNone:             "You don't have an active savings goal yet. Just tell me about one, e.g. \"I want to save 10000000 for a laptop by December\".",
 		KeyGoalProgress:         "🎯 \"%s\": %s of %s saved (%.0f%%).",
@@ -338,6 +340,7 @@ var catalog = map[models.Language]map[string]string{
 
 		KeyGoalUsage:            "Cara pakai: /goal untuk melihat progressmu, atau /goal cancel untuk membatalkan goal saat ini.",
 		KeyGoalCreated:          "🎯 Goal baru: menabung %s untuk \"%s\"%s. Cek progressmu kapan saja dengan /goal.",
+		KeyGoalReplaced:         "🎯 Goal baru: menabung %s untuk \"%s\"%s — menggantikan goal sebelumnya sebesar %s untuk \"%s\". Cek progressmu kapan saja dengan /goal.",
 		KeyGoalCreateFailed:     "Terjadi kesalahan saat mengatur goal tabunganmu.",
 		KeyGoalNone:             "Kamu belum punya goal tabungan aktif. Cukup ceritakan satu, misal \"aku mau nabung 10000000 buat laptop sampai desember\".",
 		KeyGoalProgress:         "🎯 \"%s\": %s dari %s terkumpul (%.0f%%).",

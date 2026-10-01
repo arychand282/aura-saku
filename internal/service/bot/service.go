@@ -1180,7 +1180,7 @@ func recurringLabel(rt *models.RecurringTransaction) string {
 func (s *Service) handleSavingsGoalCreate(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
 	deadline := parseDeadlineHint(parsed.GoalDeadlineHint)
 
-	goal, err := s.goalSvc.Create(ctx, user.ID, parsed.GoalName, parsed.Amount, parsed.Currency, deadline)
+	goal, replaced, err := s.goalSvc.Create(ctx, user.ID, parsed.GoalName, parsed.Amount, parsed.Currency, deadline)
 	if err != nil {
 		logger.Error(logger.SvcGoalFailed, fmt.Sprintf("create savings goal for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreateFailed))
@@ -1191,6 +1191,19 @@ func (s *Service) handleSavingsGoalCreate(ctx context.Context, user *models.User
 	if goal.Deadline != nil {
 		deadlineClause = " by " + goal.Deadline.UTC().Format("2006-01-02")
 	}
+
+	// An existing active goal was just silently deactivated to make room for
+	// this one (see savingsgoal.Service.Create) — say so explicitly rather
+	// than replying with the exact same "New goal" wording as if nothing
+	// else was affected, which previously gave no indication the old goal
+	// was gone.
+	if replaced != nil {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalReplaced,
+			i18n.FormatMoney(user.Language, goal.TargetAmount, goal.Currency), goal.Name, deadlineClause,
+			i18n.FormatMoney(user.Language, replaced.TargetAmount, replaced.Currency), replaced.Name))
+		return
+	}
+
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyGoalCreated,
 		i18n.FormatMoney(user.Language, goal.TargetAmount, goal.Currency), goal.Name, deadlineClause))
 }
