@@ -1291,6 +1291,14 @@ func TestHandleUpdate_SpendingQuery_AllTypesTotal(t *testing.T) {
 // in list mode — the exact real-world bug report this feature closes: a
 // mixed income+expense list must include BOTH, each line naming its own
 // type so an income row is distinguishable from an expense row.
+// TestHandleUpdate_SpendingQuery_AllTypesList covers the AI-phrasing happy
+// path for a mixed-type list — this is the exact real-world phrase that
+// first exposed phraseSpendingList's scoping bug: "list semua transaksi"
+// resolves to QueryTransactionType="all" (isAllTypes=true), which the
+// prototype originally excluded via an overly narrow !isAllTypes guard, so
+// the one phrase this feature was built for never actually reached it. The
+// mock echoes the input summary back, which must include each row's own
+// Type (income/expense) so an income row is never confused for spending.
 func TestHandleUpdate_SpendingQuery_AllTypesList(t *testing.T) {
 	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
 	chatID := newChatID()
@@ -1317,11 +1325,55 @@ func TestHandleUpdate_SpendingQuery_AllTypesList(t *testing.T) {
 	if !strings.Contains(got, "isi bensin") {
 		t.Errorf("all-types list = %q, want the expense row (isi bensin) included", got)
 	}
+	if !strings.Contains(got, "Type: income") {
+		t.Errorf("all-types list = %q, want the income row's type given to the AI phrasing call", got)
+	}
+	if !strings.Contains(got, "Type: expense") {
+		t.Errorf("all-types list = %q, want the expense row's type given to the AI phrasing call", got)
+	}
+	if strings.Contains(got, "1. ") {
+		t.Errorf("all-types list = %q, want AI phrasing used (no numbered-template fallback)", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_AllTypesListFallsBackToTemplate confirms
+// the deterministic KeyQuerySpendingListItemWithType template (bracketed
+// "[income]"/"[expense]" labels) still works correctly as the safety net
+// when AI phrasing is unavailable, for the exact same mixed-type scenario
+// as the happy-path test above.
+func TestHandleUpdate_SpendingQuery_AllTypesListFallsBackToTemplate(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 16_500_000, Currency: "IDR", CategoryName: "salary", Description: "gaji bulan ini",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 16500000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", Description: "isi bensin",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "isi bensin 50000"})
+
+	env.ai.phraseListErr = errors.New("simulated AI outage")
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList, QueryTransactionType: "all"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "gaji bulan ini") {
+		t.Errorf("fallback all-types list = %q, want the income row (gaji bulan ini) included", got)
+	}
+	if !strings.Contains(got, "isi bensin") {
+		t.Errorf("fallback all-types list = %q, want the expense row (isi bensin) included", got)
+	}
 	if !strings.Contains(got, "[income]") {
-		t.Errorf("all-types list = %q, want the income row to be labeled with its own type", got)
+		t.Errorf("fallback all-types list = %q, want the income row labeled with the deterministic template", got)
 	}
 	if !strings.Contains(got, "[expense]") {
-		t.Errorf("all-types list = %q, want the expense row to be labeled with its own type", got)
+		t.Errorf("fallback all-types list = %q, want the expense row labeled with the deterministic template", got)
 	}
 }
 

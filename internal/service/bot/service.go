@@ -1676,16 +1676,18 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 	}
 
-	// Prototype: render the plain, unscoped, single-page, single-type list
-	// (exactly the case that prompted this — "list semua transaksi" with no
-	// category/bucket/type filter) as AI-phrased natural text instead of the
-	// rigid numbered template, deliberately scoped to just this one branch
-	// rather than every list variant. lines (the deterministic template,
-	// already fully built above) stays the guaranteed fallback — see
-	// phraseSpendingList's own doc comment for why a failed/unverifiable AI
-	// response must never reach the user.
-	if scopeLabel == "" && !isAllTypes && offset == 0 {
-		if phrased, ok := s.phraseSpendingList(ctx, user, page.Items, periodLabel); ok {
+	// Prototype: render the plain, unscoped, first-page list (no category/
+	// bucket filter — covers BOTH the default expense-only list and an
+	// isAllTypes="all" one, e.g. the exact "list semua transaksi" phrasing
+	// that prompted this, which resolves to QueryTransactionType="all") as
+	// AI-phrased natural text instead of the rigid numbered template,
+	// deliberately scoped to just this one branch rather than every list
+	// variant. lines (the deterministic template, already fully built
+	// above) stays the guaranteed fallback — see phraseSpendingList's own
+	// doc comment for why a failed/unverifiable AI response must never
+	// reach the user.
+	if scopeLabel == "" && offset == 0 {
+		if phrased, ok := s.phraseSpendingList(ctx, user, page.Items, periodLabel, isAllTypes); ok {
 			lines = []string{phrased}
 		}
 	}
@@ -1706,24 +1708,38 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 
 // phraseSpendingList asks the AI to render an already-computed list of
 // transactions as natural conversational text instead of the rigid
-// KeyQuerySpendingListItem template — a prototype for moving reply wording
-// off Sprintf templates while keeping every number backend-computed and
-// verified, never AI-computed or AI-recalled. Every amount shown to the
-// model is a pre-formatted string (i18n.FormatMoney's own output) that it's
-// instructed to copy verbatim, never reformat; this function then checks
-// that every one of those exact strings still appears in the model's
-// response before trusting it. Returns ("", false) on any failure — an API
-// error, or the model dropping/altering so much as one amount — signaling
-// the caller to use the deterministic template instead. A reply with a
-// wrong or missing amount is a far worse outcome for a finance bot than one
-// that simply sounds a bit more mechanical, so this fallback is not
-// optional.
-func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, items []report.TransactionListItem, periodLabel string) (string, bool) {
+// KeyQuerySpendingListItem/KeyQuerySpendingListItemWithType templates — a
+// prototype for moving reply wording off Sprintf templates while keeping
+// every number backend-computed and verified, never AI-computed or
+// AI-recalled. includeType adds each row's transaction type to what the
+// model sees (set for a mixed-type "all" list — see
+// resolveQueryTransactionType — so e.g. an income row isn't phrased as
+// spending; omitted for a single-type list, where it'd be redundant).
+// Every amount shown to the model is a pre-formatted string
+// (i18n.FormatMoney's own output) that it's instructed to copy verbatim,
+// never reformat; this function then checks that every one of those exact
+// strings still appears in the model's response before trusting it.
+// Returns ("", false) on any failure — an API error, or the model
+// dropping/altering so much as one amount — signaling the caller to use
+// the deterministic template instead. A reply with a wrong or missing
+// amount is a far worse outcome for a finance bot than one that simply
+// sounds a bit more mechanical, so this fallback is not optional.
+func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, items []report.TransactionListItem, periodLabel string, includeType bool) (string, bool) {
 	var summary strings.Builder
 	fmt.Fprintf(&summary, "Period: %s\n", periodLabel)
 	amounts := make([]string, len(items))
 	for i, item := range items {
 		amounts[i] = i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency)
+		// includeType is only true for a mixed-type ("all") list — the model
+		// needs each row's actual type to correctly call an income row
+		// "income" rather than mislabeling everything as spending; a
+		// single-type list already says so once in its own header context,
+		// so the field is omitted there to keep the summary shorter.
+		if includeType {
+			fmt.Fprintf(&summary, "- Date: %s | Type: %s | Category: %s | Amount: %s | Description: %s\n",
+				item.OccurredAt.UTC().Format("2 Jan"), string(item.Type), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
+			continue
+		}
 		fmt.Fprintf(&summary, "- Date: %s | Category: %s | Amount: %s | Description: %s\n",
 			item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
 	}
