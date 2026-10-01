@@ -89,15 +89,40 @@ func (c *Client) ParseWebhookPayload(body []byte) (*messaging.IncomingMessage, e
 	return incoming, nil
 }
 
+// SendMessage sends text with Telegram's legacy "Markdown" parse mode so
+// single-asterisk *bold* (the only emphasis this bot's system instruction
+// asks the AI to use — see prompt.ToolCallingSystemInstruction) actually
+// renders instead of showing literally. Legacy mode (not MarkdownV2) is
+// used deliberately: MarkdownV2 requires escaping periods/parentheses/
+// hyphens everywhere, which this bot's money formatting and templates use
+// constantly, while legacy mode only treats _, *, `, and [ as special —
+// the AI could still occasionally produce text with an unmatched one of
+// those (e.g. a user's own description echoed back containing a stray
+// underscore), which Telegram's Bot API rejects outright ("can't parse
+// entities") rather than rendering best-effort. Falling back to a second,
+// plain-text send on any error keeps that single malformed message from
+// going completely undelivered — silently degrading to literal asterisks
+// (the original bug) rather than silently dropping the reply entirely.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
 	payload, err := json.Marshal(map[string]any{
-		"chat_id": chatID,
-		"text":    text,
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "Markdown",
 	})
 	if err != nil {
 		return fmt.Errorf("marshal sendMessage payload: %w", err)
 	}
-	return c.post(ctx, "sendMessage", payload)
+	if err := c.post(ctx, "sendMessage", payload); err != nil {
+		plainPayload, plainErr := json.Marshal(map[string]any{
+			"chat_id": chatID,
+			"text":    text,
+		})
+		if plainErr != nil {
+			return fmt.Errorf("marshal plain-text sendMessage fallback payload: %w", plainErr)
+		}
+		return c.post(ctx, "sendMessage", plainPayload)
+	}
+	return nil
 }
 
 func (c *Client) SendTypingIndicator(ctx context.Context, chatID int64) error {
