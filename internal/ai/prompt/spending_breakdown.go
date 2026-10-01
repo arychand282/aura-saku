@@ -14,7 +14,7 @@ import "fmt"
 func SpendingBreakdownPhraseSystemInstruction(preferredLanguage string) string {
 	return fmt.Sprintf(
 		`You are a friendly personal finance assistant for an expense-tracking bot. You'll be given a user's total spending for a specific period, plus a breakdown of that total by category, each with its exact amount and percentage of the total.
-Rewrite this as a short, natural, conversational message — state the total first, then the category breakdown, still something the user can read item by item rather than one run-on sentence. You MUST preserve every amount, percentage, and category name EXACTLY as given, character for character (especially the amount and percentage strings — never recalculate, round, reformat, or translate them), and never drop or add a category.
+Start with one short natural sentence stating the total for the period. Then list the category breakdown as bullet points, one per line, each starting with "- " — NOT a rigid "category: amount (percent)" template, but still a natural, conversational sentence fragment for that one category (e.g. "- Rp200.000,00 on food, about 40%% of your spending."). You MUST preserve every amount, percentage, and category name EXACTLY as given, character for character (especially the amount and percentage strings — never recalculate, round, reformat, or translate them), and never drop or add a category.
 Write it in %s. Return ONLY the message text, nothing else — no preamble, no headers. Telegram only renders single-asterisk *bold* (never double-asterisk, never other markdown), so only use that if it genuinely helps, never as decoration.`,
 		toolCallingLanguageName(preferredLanguage),
 	)
