@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -670,7 +671,43 @@ func (s *Service) enforceQuota(ctx context.Context, user *models.User, msg *mess
 	return true
 }
 
+// subscribeIntentPattern is a cheap, non-AI pre-check for "I want to
+// upgrade/subscribe" phrasing, in English and Indonesian. It exists
+// specifically so a free-tier user who has already exhausted their daily
+// quota can still reach handleSubscribe via natural language — the normal
+// ai.IntentSubscribe path only runs after an AI call, which enforceQuota
+// blocks before it ever happens, so without this a quota-exhausted user's
+// "mau pro dong" would be swallowed by the quota message with no way to act
+// on it short of discovering the undocumented /subscribe command.
+//
+// Deliberately requires "pro"/"upgrade" to appear alongside desire language
+// (mau, pengen, dong, ...) rather than matching either word bare — this bot
+// is an expense tracker, and "Pro" is an extremely common product-name
+// fragment (iPhone Pro, MacBook Pro, AirPods Pro, GoPro...), so a bare match
+// would hijack a genuine transaction message like "beli iPhone 15 Pro 20jt"
+// into showing a payment link instead of recording it. "subscribe" and
+// "berlangganan" alone are safe triggers since neither plausibly appears in
+// a purchase description.
+var subscribeIntentPattern = regexp.MustCompile(`(?i)\b(subscribe|berlangganan)\b` +
+	`|\b(mau|pengen|pingin|jadi|ingin|want|langganan|aktifin|aktifkan|go)\s+(pro|upgrade)\b` +
+	`|\b(pro|upgrade)\s+(dong|please|plis|ya|yuk|now|sekarang)\b` +
+	`|\bupgrade\s+ke\s+pro\b`)
+
+func isSubscribeIntentText(text string) bool {
+	return subscribeIntentPattern.MatchString(text)
+}
+
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
+	// Checked first, before input-length/quota gating, so it works
+	// regardless of quota state — see subscribeIntentPattern's doc comment.
+	// Voice/photo messages have no reliable plain text to match against
+	// (a caption could coincidentally contain "pro" as a receipt item name,
+	// say), so this only applies to genuine text messages.
+	if !msg.IsVoice && !msg.IsPhoto && isSubscribeIntentText(msg.Text) {
+		s.handleSubscribe(ctx, user, msg)
+		return
+	}
+
 	if s.enforceInputLength(ctx, user, msg) {
 		return
 	}

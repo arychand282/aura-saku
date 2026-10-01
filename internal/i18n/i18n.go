@@ -203,8 +203,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetSetSuccess:    "✅ Budget updated: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — effective this period.",
 		KeyBudgetShow:          "Your current budget allocation: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Use /budget <needs> <wants> <savings> to change it.",
 
-		KeyQuotaExceededWithReward: "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or earn %d more today: %s\nAfter visiting, send /claim %s here to unlock them.",
-		KeyQuotaExceededNoReward:   "You've used all %d free prompts for today. 🚀 Upgrade to Pro for unlimited use, or try again tomorrow.",
+		KeyQuotaExceededWithReward: "You've used all %d free prompts for today. 🚀 Send /subscribe to upgrade to Pro for unlimited use, or earn %d more today: %s\nAfter visiting, send /claim %s here to unlock them.",
+		KeyQuotaExceededNoReward:   "You've used all %d free prompts for today. 🚀 Send /subscribe to upgrade to Pro for unlimited use, or try again tomorrow.",
 		KeyClaimUsage:              "Usage: /claim <code> — you'll get a code when you hit your daily limit.",
 		KeyClaimSuccess:            "🎉 You've unlocked %d bonus prompts for today!",
 		KeyClaimInvalidCode:        "That code isn't valid or has expired. You'll get a fresh one next time you hit your daily limit.",
@@ -296,8 +296,8 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetSetSuccess:    "✅ Budget diperbarui: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings — berlaku mulai periode ini.",
 		KeyBudgetShow:          "Alokasi budgetmu saat ini: %.0f%% Needs, %.0f%% Wants, %.0f%% Savings. Gunakan /budget <needs> <wants> <savings> untuk mengubahnya.",
 
-		KeyQuotaExceededWithReward: "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau dapatkan %d tambahan hari ini: %s\nSetelah mengunjungi link itu, kirim /claim %s di sini untuk membukanya.",
-		KeyQuotaExceededNoReward:   "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Upgrade ke Pro untuk pemakaian tanpa batas, atau coba lagi besok.",
+		KeyQuotaExceededWithReward: "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Kirim /subscribe untuk upgrade ke Pro dan dapat pemakaian tanpa batas, atau dapatkan %d tambahan hari ini: %s\nSetelah mengunjungi link itu, kirim /claim %s di sini untuk membukanya.",
+		KeyQuotaExceededNoReward:   "Kamu sudah pakai semua %d jatah gratis hari ini. 🚀 Kirim /subscribe untuk upgrade ke Pro dan dapat pemakaian tanpa batas, atau coba lagi besok.",
 		KeyClaimUsage:              "Cara pakai: /claim <kode> — kamu akan dapat kode saat mencapai batas harian.",
 		KeyClaimSuccess:            "🎉 Kamu mendapat %d prompt bonus untuk hari ini!",
 		KeyClaimInvalidCode:        "Kode itu tidak valid atau sudah kedaluwarsa. Kamu akan dapat kode baru saat mencapai batas harian lagi.",
