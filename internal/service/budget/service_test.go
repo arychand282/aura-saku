@@ -172,6 +172,78 @@ func TestEvaluateBudget_TransactionBucketOverridesCategory(t *testing.T) {
 	}
 }
 
+// TestEvaluateBudget_AnchorsPeriodToRecurringIncomePayday reproduces a real
+// reported bug: a user paid near the end of each month got a false "no
+// income recorded" warning as soon as the calendar flipped to the next
+// month, since EvaluateBudget's period used to always start on the 1st —
+// excluding a payday that happened just a day or two earlier. With a
+// recurring income transaction configured, the period must instead start
+// at the most recent occurrence of that income's own DayOfMonth, correctly
+// including that payday and the spending it actually funds.
+//
+// The salary's day-of-month is derived from "2 days ago" (not a fixed
+// literal like 30) specifically so this test is correct regardless of what
+// today's real date happens to be when it runs — EvaluateBudget has no
+// injectable clock, unlike RunDailyTransactionReminderAt, so the test must
+// work with whatever time.Now() actually is.
+func TestEvaluateBudget_AnchorsPeriodToRecurringIncomePayday(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	ctx := context.Background()
+
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	payday := time.Now().UTC().AddDate(0, 0, -2)
+
+	// NextRunAt's exact value doesn't matter for this test — EvaluateBudget's
+	// own period-anchor lookup only reads DayOfMonth/IsActive/Type — a
+	// plausible future value is enough to satisfy the NOT NULL column.
+	recurringIncome := models.RecurringTransaction{
+		UserID: user.ID, Type: models.TxIncome, Amount: 5_000_000, Currency: "IDR",
+		CategoryName: "salary", DayOfMonth: payday.Day(), NextRunAt: time.Now().UTC().AddDate(0, 1, 0), IsActive: true,
+	}
+	if err := gormDB.Create(&recurringIncome).Error; err != nil {
+		t.Fatalf("create recurring income: %v", err)
+	}
+	t.Cleanup(func() { gormDB.Unscoped().Where("id = ?", recurringIncome.ID).Delete(&models.RecurringTransaction{}) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 5_000_000, Currency: "IDR", CategoryName: "salary",
+		OccurredAtHint: payday.Format("2006-01-02"),
+	}, models.SourceText, "gaji 5000000"); err != nil {
+		t.Fatalf("create salary transaction: %v", err)
+	}
+
+	status, err := budgetSvc.EvaluateBudget(ctx, user.ID, models.LanguageEN)
+	if err != nil {
+		t.Fatalf("EvaluateBudget: %v", err)
+	}
+	if status.NeedsLimit != 2_500_000 {
+		t.Errorf("NeedsLimit = %.2f, want 2500000.00 (50%% of the payday's salary, correctly included)", status.NeedsLimit)
+	}
+	for _, w := range status.Warnings {
+		if strings.Contains(w, "No income recorded") {
+			t.Errorf("unexpected no-income warning despite a payday 2 days ago: %v", status.Warnings)
+		}
+	}
+}
+
 // TestCurrentBudget_DefaultsTo503020 covers the auto-creation path: a user
 // with no budget row yet gets the standard 50/30/20 split, matching
 // EvaluateBudget's own getOrCreateActiveBudget fallback.

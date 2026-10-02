@@ -52,7 +52,10 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint, lang models.L
 	}
 
 	now := time.Now().UTC()
-	periodStart := startOfMonth(now)
+	periodStart, periodEnd, err := s.resolvePeriod(ctx, userID, now)
+	if err != nil {
+		return nil, fmt.Errorf("resolve budget period: %w", err)
+	}
 
 	income, err := s.sumByType(ctx, userID, models.TxIncome, periodStart, now)
 	if err != nil {
@@ -87,10 +90,17 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint, lang models.L
 		status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetWantsExceeded,
 			b.WantsPercent, status.WantsSpent, status.WantsLimit))
 	} else if status.WantsLimit > 0 {
-		// Impulse/anomaly detector: project this month's Wants spend at the
+		// Impulse/anomaly detector: project this period's Wants spend at the
 		// current daily pace and warn if it's on track to blow past the
-		// allocation, even though it hasn't yet.
-		projected := status.WantsSpent / float64(now.Day()) * float64(daysInMonth(now))
+		// allocation, even though it hasn't yet. Uses the ACTUAL resolved
+		// period (periodStart/periodEnd — a payday-to-payday cycle for a
+		// user with recurring income configured, otherwise the calendar
+		// month), not hardcoded "day of month"/"days in this calendar
+		// month" math, which would silently drift once periodStart stopped
+		// being the 1st.
+		daysElapsed := now.Sub(periodStart).Hours()/24 + 1
+		daysInPeriod := periodEnd.Sub(periodStart).Hours() / 24
+		projected := status.WantsSpent / daysElapsed * daysInPeriod
 		if projected > status.WantsLimit*1.2 {
 			status.Warnings = append(status.Warnings, i18n.T(lang, i18n.KeyBudgetWantsPace, projected, status.WantsLimit))
 		}
@@ -207,6 +217,71 @@ func (s *Service) SavingsSince(ctx context.Context, userID uint, start time.Time
 	return byBucket[models.BucketSavings], nil
 }
 
+// resolvePeriod anchors a budget evaluation period to the user's own
+// recurring income schedule's DayOfMonth when one exists (e.g. a recurring
+// transaction created from "gaji tiap tanggal 30") — the most recent
+// occurrence of that day on or before now, through the next one — rather
+// than always the calendar month's 1st through the 1st of next month.
+//
+// Fixes a real reported confusion: a payday near the end of a month (e.g.
+// the 30th) funds the NEXT roughly-30-day stretch of spending, but a strict
+// "1st of this calendar month" window excluded it entirely the moment the
+// calendar flipped to the next month, triggering a false "no income
+// recorded" warning the day after a perfectly normal end-of-month payday.
+// Falls back to the plain calendar month for a user with no recurring
+// income configured — unchanged from the original behavior. If a user has
+// more than one active recurring income schedule, the oldest (lowest id)
+// one wins — picking a single, stable anchor matters more here than
+// handling multiple income schedules, which is out of scope for this fix.
+func (s *Service) resolvePeriod(ctx context.Context, userID uint, now time.Time) (start, end time.Time, err error) {
+	var incomeTx models.RecurringTransaction
+	dbErr := s.db.WithContext(ctx).
+		Where("user_id = ? AND type = ? AND is_active = ?", userID, models.TxIncome, true).
+		Order("id ASC").
+		First(&incomeTx).Error
+	if dbErr != nil {
+		if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+			start = startOfMonth(now)
+			return start, start.AddDate(0, 1, 0), nil
+		}
+		return time.Time{}, time.Time{}, fmt.Errorf("find active recurring income: %w", dbErr)
+	}
+
+	start = mostRecentPayday(now, incomeTx.DayOfMonth)
+	end = occurrenceIn(start.Year(), start.Month()+1, incomeTx.DayOfMonth)
+	return start, end, nil
+}
+
+// lastDayOfMonth/occurrenceIn mirror recurring.Service's own identical
+// helpers — kept as their own small copy here rather than a cross-package
+// dependency for a few lines of date math, the same convention
+// recurring.Service's own resolveBucket copy already follows.
+func lastDayOfMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+func occurrenceIn(year int, month time.Month, dayOfMonth int) time.Time {
+	day := dayOfMonth
+	if last := lastDayOfMonth(year, month); day > last {
+		day = last
+	}
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+}
+
+// mostRecentPayday returns the most recent occurrence of dayOfMonth ON OR
+// BEFORE now — this month's if it's already happened, otherwise last
+// month's. The inverse of recurring.Service's nextOccurrenceAfter (which
+// finds the next FUTURE occurrence); resolvePeriod instead needs whichever
+// payday most recently funded the user's current spending, not an
+// upcoming one.
+func mostRecentPayday(now time.Time, dayOfMonth int) time.Time {
+	candidate := occurrenceIn(now.Year(), now.Month(), dayOfMonth)
+	if candidate.After(now) {
+		candidate = occurrenceIn(now.Year(), now.Month()-1, dayOfMonth)
+	}
+	return candidate
+}
+
 func (s *Service) getOrCreateActiveBudget(ctx context.Context, userID uint) (*models.Budget, error) {
 	var b models.Budget
 	err := s.db.WithContext(ctx).
@@ -287,8 +362,4 @@ func (s *Service) sumSpendByBucket(ctx context.Context, userID uint, start, end 
 
 func startOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-}
-
-func daysInMonth(t time.Time) int {
-	return time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
