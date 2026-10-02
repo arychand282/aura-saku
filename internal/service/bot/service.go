@@ -26,6 +26,7 @@ import (
 	"aura-saku/internal/service/account"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
+	"aura-saku/internal/service/debt"
 	"aura-saku/internal/service/payment"
 	"aura-saku/internal/service/reconciliation"
 	"aura-saku/internal/service/recurring"
@@ -154,6 +155,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleGoal(ctx, user, msg)
 	case "/accounts":
 		s.handleAccounts(ctx, user)
+	case "/debts":
+		s.handleDebtQuery(ctx, user, "")
 	case "/subscribe":
 		s.handleSubscribe(ctx, user, msg)
 	case "/mysubscription":
@@ -336,6 +339,143 @@ func (s *Service) handleAccounts(ctx context.Context, user *models.User) {
 	}
 	lines = append(lines, i18n.T(user.Language, i18n.KeyAccountsListTotal, i18n.FormatMoney(user.Language, total, user.DefaultCurrency)))
 	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// handleDebtLend records lending money to, or borrowing money from, a
+// specific person (ai.IntentDebtLend — record_loan). See
+// transaction.Service.CreateLoan.
+func (s *Service) handleDebtLend(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	direction := models.DebtOwedToMe
+	if parsed.DebtDirection == "borrowed" {
+		direction = models.DebtIOwe
+	}
+	currency := parsed.Currency
+	if currency == "" {
+		currency = user.DefaultCurrency
+	}
+
+	_, _, err := s.txSvc.CreateLoan(ctx, user.ID, user.DefaultCurrency, parsed.DebtCounterparty, direction,
+		parsed.Amount, currency, parsed.Description, parsed.OccurredAtHint, parsed.AccountName)
+	if err != nil {
+		logger.Error(logger.SvcDebtFailed, fmt.Sprintf("create loan for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtFailed))
+		return
+	}
+
+	amountStr := i18n.FormatMoney(user.Language, parsed.Amount, currency)
+	if direction == models.DebtOwedToMe {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtLentRecorded, parsed.DebtCounterparty, amountStr))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtBorrowedRecorded, amountStr, parsed.DebtCounterparty))
+}
+
+// handleDebtRepay records a repayment against an existing debt
+// (ai.IntentDebtRepay — record_repayment). See
+// transaction.Service.CreateRepayment.
+func (s *Service) handleDebtRepay(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	currency := parsed.Currency
+	if currency == "" {
+		currency = user.DefaultCurrency
+	}
+
+	_, debtRow, err := s.txSvc.CreateRepayment(ctx, user.ID, user.DefaultCurrency, parsed.DebtCounterparty, parsed.DebtDirection,
+		parsed.Amount, currency, parsed.Description, parsed.OccurredAtHint, parsed.AccountName)
+	if err != nil {
+		if errors.Is(err, apperror.ErrDebtNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtNotFound, parsed.DebtCounterparty))
+			return
+		}
+		logger.Error(logger.SvcDebtFailed, fmt.Sprintf("create repayment for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtFailed))
+		return
+	}
+
+	remaining, err := debt.RemainingAmount(ctx, s.db, debtRow.ID)
+	if err != nil {
+		logger.Error(logger.SvcDebtFailed, fmt.Sprintf("compute remaining debt %d", debtRow.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtFailed))
+		return
+	}
+
+	amountStr := i18n.FormatMoney(user.Language, parsed.Amount, currency)
+	settled := remaining <= 0
+	if parsed.DebtDirection == "made" {
+		if settled {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtRepaymentMadeSettled, amountStr, parsed.DebtCounterparty, parsed.DebtCounterparty))
+			return
+		}
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtRepaymentMadeOngoing,
+			amountStr, parsed.DebtCounterparty, parsed.DebtCounterparty, i18n.FormatMoney(user.Language, remaining, user.DefaultCurrency)))
+		return
+	}
+	if settled {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtRepaymentReceivedSettled, parsed.DebtCounterparty, amountStr, parsed.DebtCounterparty))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtRepaymentReceivedOngoing,
+		parsed.DebtCounterparty, amountStr, parsed.DebtCounterparty, i18n.FormatMoney(user.Language, remaining, user.DefaultCurrency)))
+}
+
+// handleDebtQuery answers "siapa yang masih utang ke aku?"/"utangku ke
+// Dania berapa?" (ai.IntentDebtQuery — check_debts) and backs /debts with
+// an empty counterparty. Empty lists every open debt, split by direction;
+// a named counterparty checks both directions for that one person, since
+// they could plausibly appear on both sides.
+func (s *Service) handleDebtQuery(ctx context.Context, user *models.User, counterparty string) {
+	if strings.TrimSpace(counterparty) == "" {
+		open, err := debt.ListOpen(ctx, s.db, user.ID)
+		if err != nil {
+			logger.Error(logger.SvcDebtFailed, fmt.Sprintf("list debts for user %d", user.ID), err)
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtFailed))
+			return
+		}
+		if len(open) == 0 {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtsListEmpty))
+			return
+		}
+
+		var owedToYou, youOwe []string
+		for _, d := range open {
+			line := i18n.T(user.Language, i18n.KeyDebtsListItem, d.Debt.Counterparty, i18n.FormatMoney(user.Language, d.Remaining, user.DefaultCurrency))
+			if d.Debt.Direction == models.DebtOwedToMe {
+				owedToYou = append(owedToYou, line)
+			} else {
+				youOwe = append(youOwe, line)
+			}
+		}
+
+		var sections []string
+		if len(owedToYou) > 0 {
+			sections = append(sections, i18n.T(user.Language, i18n.KeyDebtsOwedToYouHeader)+"\n"+strings.Join(owedToYou, "\n"))
+		}
+		if len(youOwe) > 0 {
+			sections = append(sections, i18n.T(user.Language, i18n.KeyDebtsYouOweHeader)+"\n"+strings.Join(youOwe, "\n"))
+		}
+		s.reply(ctx, user, strings.Join(sections, "\n\n"))
+		return
+	}
+
+	owed, owedErr := debt.FindByCounterparty(ctx, s.db, user.ID, counterparty, models.DebtOwedToMe)
+	owe, oweErr := debt.FindByCounterparty(ctx, s.db, user.ID, counterparty, models.DebtIOwe)
+
+	var replies []string
+	if owedErr == nil {
+		if remaining, err := debt.RemainingAmount(ctx, s.db, owed.ID); err == nil && remaining > 0 {
+			replies = append(replies, i18n.T(user.Language, i18n.KeyDebtQueryOwedToYou, counterparty, i18n.FormatMoney(user.Language, remaining, user.DefaultCurrency)))
+		}
+	}
+	if oweErr == nil {
+		if remaining, err := debt.RemainingAmount(ctx, s.db, owe.ID); err == nil && remaining > 0 {
+			replies = append(replies, i18n.T(user.Language, i18n.KeyDebtQueryYouOwe, counterparty, i18n.FormatMoney(user.Language, remaining, user.DefaultCurrency)))
+		}
+	}
+
+	if len(replies) == 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyDebtQueryNone, counterparty))
+		return
+	}
+	s.reply(ctx, user, strings.Join(replies, "\n"))
 }
 
 // handleSubscribe starts (or resumes) a Pro-tier checkout — reachable via
@@ -1120,6 +1260,21 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentAccountTransfer {
 		s.handleAccountTransfer(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentDebtLend {
+		s.handleDebtLend(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentDebtRepay {
+		s.handleDebtRepay(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentDebtQuery {
+		s.handleDebtQuery(ctx, user, first.DebtCounterparty)
 		return
 	}
 

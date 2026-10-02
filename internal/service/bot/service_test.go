@@ -286,6 +286,7 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 		}
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Debt{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.RecurringTransaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.SavingsGoal{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
@@ -2046,6 +2047,135 @@ func TestHandleUpdate_AccountsCommand_ListsEveryAccountWithBalance(t *testing.T)
 	wantAmount := i18n.FormatMoney(models.LanguageID, 20_000, "IDR")
 	if !strings.Contains(reply, wantAmount) {
 		t.Errorf("reply = %q, want it to contain the formatted balance %q", reply, wantAmount)
+	}
+}
+
+// TestHandleUpdate_DebtLend_NaturalLanguage covers lending money to someone
+// (ai.IntentDebtLend — record_loan) and the reply confirming it.
+func TestHandleUpdate_DebtLend_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtLend, DebtDirection: "lent", DebtCounterparty: "Budi", Amount: 500_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku pinjemin Budi 500rb"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyDebtLentRecorded, "Budi", i18n.FormatMoney(models.LanguageID, 500_000, "IDR"))
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	var tx models.Transaction
+	if err := env.db.Where("user_id = ?", user.ID).First(&tx).Error; err != nil {
+		t.Fatalf("load transaction: %v", err)
+	}
+	if tx.Type != models.TxLoanOut {
+		t.Errorf("Type = %q, want %q", tx.Type, models.TxLoanOut)
+	}
+	if tx.DebtID == nil {
+		t.Fatal("expected DebtID to be set")
+	}
+}
+
+// TestHandleUpdate_DebtRepay_PartialThenFullSettlement covers a partial
+// repayment (reply shows a running remaining balance) followed by a second
+// repayment that fully settles the debt (reply shows the distinct
+// "settled" wording instead).
+func TestHandleUpdate_DebtRepay_PartialThenFullSettlement(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtLend, DebtDirection: "lent", DebtCounterparty: "Budi", Amount: 500_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku pinjemin Budi 500rb"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtRepay, DebtDirection: "received", DebtCounterparty: "Budi", Amount: 200_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "Budi bayar utang 200rb"})
+
+	wantPartial := i18n.T(models.LanguageID, i18n.KeyDebtRepaymentReceivedOngoing,
+		"Budi", i18n.FormatMoney(models.LanguageID, 200_000, "IDR"), "Budi", i18n.FormatMoney(models.LanguageID, 300_000, "IDR"))
+	if got := env.messenger.last(chatID); got != wantPartial {
+		t.Errorf("partial repayment reply = %q, want %q", got, wantPartial)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtRepay, DebtDirection: "received", DebtCounterparty: "Budi", Amount: 300_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "Budi bayar sisa utangnya 300rb"})
+
+	wantSettled := i18n.T(models.LanguageID, i18n.KeyDebtRepaymentReceivedSettled,
+		"Budi", i18n.FormatMoney(models.LanguageID, 300_000, "IDR"), "Budi")
+	if got := env.messenger.last(chatID); got != wantSettled {
+		t.Errorf("final repayment reply = %q, want %q", got, wantSettled)
+	}
+}
+
+// TestHandleUpdate_DebtRepay_NoMatchingDebtRepliesNotFound covers repaying
+// someone with no tracked loan at all.
+func TestHandleUpdate_DebtRepay_NoMatchingDebtRepliesNotFound(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtRepay, DebtDirection: "made", DebtCounterparty: "Dania", Amount: 100_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku bayar utang ke Dania 100rb"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyDebtNotFound, "Dania")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_DebtsCommand_ListsOwedAndOwing covers /debts showing
+// both directions, and a fully-settled debt being hidden automatically.
+func TestHandleUpdate_DebtsCommand_ListsOwedAndOwing(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// Budi owes the user 500k, fully repaid -> must NOT show up.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtLend, DebtDirection: "lent", DebtCounterparty: "Budi", Amount: 500_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku pinjemin Budi 500rb"})
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtRepay, DebtDirection: "received", DebtCounterparty: "Budi", Amount: 500_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "Budi lunasin utangnya 500rb"})
+
+	// The user owes Dania 300k, still outstanding -> must show up.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentDebtLend, DebtDirection: "borrowed", DebtCounterparty: "Dania", Amount: 300_000, Currency: "IDR",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "aku minjem ke Dania 300rb"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/debts"})
+	reply := env.messenger.last(chatID)
+	if strings.Contains(reply, "Budi") {
+		t.Errorf("reply = %q, should NOT mention the fully-settled Budi debt", reply)
+	}
+	if !strings.Contains(reply, "Dania") {
+		t.Errorf("reply = %q, want it to mention the still-outstanding Dania debt", reply)
+	}
+	wantAmount := i18n.FormatMoney(models.LanguageID, 300_000, "IDR")
+	if !strings.Contains(reply, wantAmount) {
+		t.Errorf("reply = %q, want it to contain %q", reply, wantAmount)
 	}
 }
 

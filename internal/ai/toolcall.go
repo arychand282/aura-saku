@@ -98,6 +98,33 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Description:     argString(args, "description"),
 			OccurredAtHint:  argString(args, "occurred_at_hint"),
 		}
+	case prompt.ToolRecordLoan:
+		return &ParsedTransaction{
+			Intent:           IntentDebtLend,
+			DebtDirection:    argString(args, "direction"),
+			DebtCounterparty: argString(args, "counterparty"),
+			Amount:           argFloat(args, "amount"),
+			Currency:         argString(args, "currency"),
+			Description:      argString(args, "description"),
+			OccurredAtHint:   argString(args, "occurred_at_hint"),
+			AccountName:      argString(args, "account_name"),
+		}
+	case prompt.ToolRecordRepayment:
+		return &ParsedTransaction{
+			Intent:           IntentDebtRepay,
+			DebtDirection:    argString(args, "direction"),
+			DebtCounterparty: argString(args, "counterparty"),
+			Amount:           argFloat(args, "amount"),
+			Currency:         argString(args, "currency"),
+			Description:      argString(args, "description"),
+			OccurredAtHint:   argString(args, "occurred_at_hint"),
+			AccountName:      argString(args, "account_name"),
+		}
+	case prompt.ToolCheckDebts:
+		return &ParsedTransaction{
+			Intent:           IntentDebtQuery,
+			DebtCounterparty: argString(args, "counterparty"),
+		}
 	default:
 		return nil
 	}

@@ -23,6 +23,9 @@ const (
 	IntentBudgetSet          = "budget_set"
 	IntentSurplus            = "surplus"
 	IntentAccountTransfer    = "account_transfer"
+	IntentDebtLend           = "debt_lend"
+	IntentDebtRepay          = "debt_repay"
+	IntentDebtQuery          = "debt_query"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -92,6 +95,18 @@ type ParsedTransaction struct {
 	// as before this field existed). See transaction.Service.CreateTransfer.
 	FromAccountName string `json:"from_account,omitempty"`
 	ToAccountName   string `json:"to_account,omitempty"`
+
+	// DebtCounterparty/DebtDirection are only meaningful for
+	// IntentDebtLend/IntentDebtRepay/IntentDebtQuery (record_loan/
+	// record_repayment/check_debts) — DebtCounterparty is the person's name;
+	// DebtDirection is the raw "lent"/"borrowed" (IntentDebtLend) or
+	// "received"/"made" (IntentDebtRepay) value, left empty for
+	// IntentDebtQuery. Amount/Currency/Description/OccurredAtHint/
+	// AccountName above are reused for the loan/repayment amount and which
+	// of the user's own accounts the cash moved from/into — see
+	// transaction.Service.CreateLoan/CreateRepayment.
+	DebtCounterparty string `json:"counterparty,omitempty"`
+	DebtDirection    string `json:"direction,omitempty"`
 
 	// DayOfMonth is only populated for IntentRecurringCreate: the day of the
 	// month (1-31) the transaction repeats on, as stated by the message. A
@@ -397,6 +412,22 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		from := strings.TrimSpace(pt.FromAccountName)
 		to := strings.TrimSpace(pt.ToAccountName)
 		return from != "" && to != "" && !strings.EqualFold(from, to) && pt.Amount > 0
+	case IntentDebtLend:
+		switch pt.DebtDirection {
+		case "lent", "borrowed":
+		default:
+			return false
+		}
+		return strings.TrimSpace(pt.DebtCounterparty) != "" && pt.Amount > 0
+	case IntentDebtRepay:
+		switch pt.DebtDirection {
+		case "received", "made":
+		default:
+			return false
+		}
+		return strings.TrimSpace(pt.DebtCounterparty) != "" && pt.Amount > 0
+	case IntentDebtQuery:
+		return true
 	}
 
 	switch pt.Type {

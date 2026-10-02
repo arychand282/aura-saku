@@ -104,6 +104,74 @@ func TestEvaluateBudget(t *testing.T) {
 	}
 }
 
+// TestEvaluateBudget_ExcludesLoanAndRepaymentTransactions is a regression
+// check for debt/loan tracking: lending, borrowing, and repaying must never
+// move the Needs/Wants limits (which are a percentage of real TxIncome) or
+// the Needs/Wants spent totals (summed strictly from TxExpense) — borrowing
+// money is not income, and lending it out is not spending.
+func TestEvaluateBudget_ExcludesLoanAndRepaymentTransactions(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "gaji 1000000"); err != nil {
+		t.Fatalf("create income: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food",
+	}, models.SourceText, "makan 100000"); err != nil {
+		t.Fatalf("create expense: %v", err)
+	}
+
+	// Borrowing 2,000,000 must NOT be counted as income.
+	if _, _, err := txSvc.CreateLoan(ctx, user.ID, user.DefaultCurrency, "Dania", models.DebtIOwe, 2_000_000, "IDR", "", "", ""); err != nil {
+		t.Fatalf("CreateLoan (borrowed): %v", err)
+	}
+	// Lending 500,000 out must NOT be counted as spending.
+	if _, _, err := txSvc.CreateLoan(ctx, user.ID, user.DefaultCurrency, "Budi", models.DebtOwedToMe, 500_000, "IDR", "", "", ""); err != nil {
+		t.Fatalf("CreateLoan (lent): %v", err)
+	}
+	// A repayment received must NOT be counted as income either.
+	if _, _, err := txSvc.CreateRepayment(ctx, user.ID, user.DefaultCurrency, "Budi", "received", 200_000, "IDR", "", "", ""); err != nil {
+		t.Fatalf("CreateRepayment: %v", err)
+	}
+
+	status, err := budgetSvc.EvaluateBudget(ctx, user.ID, models.LanguageEN)
+	if err != nil {
+		t.Fatalf("EvaluateBudget: %v", err)
+	}
+
+	if status.NeedsLimit != 500_000 {
+		t.Errorf("NeedsLimit = %.2f, want 500000.00 (50%% of the REAL 1,000,000 income only)", status.NeedsLimit)
+	}
+	if status.WantsLimit != 300_000 {
+		t.Errorf("WantsLimit = %.2f, want 300000.00 (30%% of the REAL 1,000,000 income only)", status.WantsLimit)
+	}
+	if status.NeedsSpent != 100_000 {
+		t.Errorf("NeedsSpent = %.2f, want 100000.00 (the real expense only, loan/repayment excluded)", status.NeedsSpent)
+	}
+}
+
 // TestEvaluateBudget_TransactionBucketOverridesCategory covers a
 // transaction-level Bucket override (set from the AI's per-message
 // classification) taking precedence over its category's static default
@@ -469,6 +537,7 @@ func cleanup(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Transaction{})
+	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Debt{})
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Budget{})
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.BalanceReconciliation{})
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.Account{})

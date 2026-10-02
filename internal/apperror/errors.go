@@ -24,4 +24,5 @@ var (
 	ErrNoIncomeTransaction      = errors.New("no income transaction found for this user")
 	ErrAccountNotFound          = errors.New("no account found with that name for this user")
 	ErrSameAccountTransfer      = errors.New("transfer source and destination accounts must be different")
+	ErrDebtNotFound             = errors.New("no open debt found with that counterparty for this user")
 )

@@ -14,6 +14,7 @@ import (
 	"aura-saku/internal/apperror"
 	"aura-saku/internal/models"
 	"aura-saku/internal/service/account"
+	"aura-saku/internal/service/debt"
 	"aura-saku/internal/service/fx"
 )
 
@@ -231,6 +232,131 @@ func (s *Service) CreateTransfer(ctx context.Context, userID uint, defaultCurren
 	}
 
 	return out, in, nil
+}
+
+// CreateLoan records lending money to, or borrowing money from, a specific
+// person (ai.IntentDebtLend — record_loan) as ONE plain cash movement on
+// one of the user's own accounts, tagged via Transaction.DebtID so
+// debt.RemainingAmount can track it. Unlike CreateTransfer, this never
+// needs a linked second leg: the "other side" is a person, not one of the
+// user's own accounts, so it's tracked separately via debt.Debt rather than
+// folded into account.TotalBalance. direction=DebtOwedToMe means the user
+// lent money out (cash leaves their account, TxLoanOut); DebtIOwe means
+// they borrowed it (cash arrives, TxLoanIn).
+func (s *Service) CreateLoan(ctx context.Context, userID uint, defaultCurrency, counterparty string, direction models.DebtDirection, amount float64, currency, description, occurredAtHint, accountName string) (*models.Transaction, *models.Debt, error) {
+	acc, err := account.GetOrCreateByName(ctx, s.db, userID, accountName)
+	if err != nil {
+		return nil, nil, err
+	}
+	debtRow, err := debt.GetOrCreateByCounterparty(ctx, s.db, userID, counterparty, direction)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	occurredAt := resolveOccurredAt(occurredAtHint)
+	currency = strings.ToUpper(currency)
+	if currency == "" {
+		currency = strings.ToUpper(defaultCurrency)
+	}
+	rate, err := s.fxSvc.GetExchangeRate(ctx, currency, defaultCurrency, occurredAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve exchange rate: %w", err)
+	}
+
+	txType := models.TxLoanOut
+	if direction == models.DebtIOwe {
+		txType = models.TxLoanIn
+	}
+
+	tx := &models.Transaction{
+		UserID:           userID,
+		AccountID:        &acc.ID,
+		DebtID:           &debtRow.ID,
+		Type:             txType,
+		Description:      description,
+		OriginalAmount:   amount,
+		OriginalCurrency: currency,
+		ExchangeRate:     rate,
+		ConvertedAmount:  amount * rate,
+		Source:           models.SourceText,
+		RawInput:         description,
+		OccurredAt:       occurredAt,
+	}
+
+	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Omit("User").Create(tx).Error; err != nil {
+			return fmt.Errorf("insert loan transaction: %w", err)
+		}
+		return writeUndoHistory(txDB, userID, tx, "created")
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, debtRow, nil
+}
+
+// CreateRepayment records a repayment against an EXISTING debt
+// (ai.IntentDebtRepay — record_repayment): repayDirection "received" means
+// someone is repaying the user (must match an open DebtOwedToMe, cash
+// arrives via TxRepaymentIn); "made" means the user is repaying someone
+// (must match an open DebtIOwe, cash leaves via TxRepaymentOut). Unlike
+// CreateLoan, this never auto-creates the debt — repaying something that
+// was never lent/borrowed is a real error (apperror.ErrDebtNotFound),
+// propagated untouched so the caller can reply with a clarification
+// instead of silently fabricating a debt from nothing.
+func (s *Service) CreateRepayment(ctx context.Context, userID uint, defaultCurrency, counterparty, repayDirection string, amount float64, currency, description, occurredAtHint, accountName string) (*models.Transaction, *models.Debt, error) {
+	debtDirection := models.DebtOwedToMe
+	txType := models.TxRepaymentIn
+	if repayDirection == "made" {
+		debtDirection = models.DebtIOwe
+		txType = models.TxRepaymentOut
+	}
+
+	debtRow, err := debt.FindByCounterparty(ctx, s.db, userID, counterparty, debtDirection)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	acc, err := account.GetOrCreateByName(ctx, s.db, userID, accountName)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	occurredAt := resolveOccurredAt(occurredAtHint)
+	currency = strings.ToUpper(currency)
+	if currency == "" {
+		currency = strings.ToUpper(defaultCurrency)
+	}
+	rate, err := s.fxSvc.GetExchangeRate(ctx, currency, defaultCurrency, occurredAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve exchange rate: %w", err)
+	}
+
+	tx := &models.Transaction{
+		UserID:           userID,
+		AccountID:        &acc.ID,
+		DebtID:           &debtRow.ID,
+		Type:             txType,
+		Description:      description,
+		OriginalAmount:   amount,
+		OriginalCurrency: currency,
+		ExchangeRate:     rate,
+		ConvertedAmount:  amount * rate,
+		Source:           models.SourceText,
+		RawInput:         description,
+		OccurredAt:       occurredAt,
+	}
+
+	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Omit("User").Create(tx).Error; err != nil {
+			return fmt.Errorf("insert repayment transaction: %w", err)
+		}
+		return writeUndoHistory(txDB, userID, tx, "created")
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, debtRow, nil
 }
 
 // MostRecent returns the user's most recent transaction without modifying

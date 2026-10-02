@@ -124,6 +124,10 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeySubscriptionExpired, KeyMySubscriptionPro, KeyMySubscriptionFree,
 		KeyAccountBalance, KeyAccountNotFound, KeyTransferRecorded, KeySameAccountTransfer, KeyTransferFailed,
 		KeyAccountsListEmpty, KeyAccountsListItem, KeyAccountsListTotal,
+		KeyDebtLentRecorded, KeyDebtBorrowedRecorded, KeyDebtRepaymentReceivedOngoing, KeyDebtRepaymentReceivedSettled,
+		KeyDebtRepaymentMadeOngoing, KeyDebtRepaymentMadeSettled, KeyDebtNotFound, KeyDebtFailed,
+		KeyDebtsListEmpty, KeyDebtsOwedToYouHeader, KeyDebtsYouOweHeader, KeyDebtsListItem,
+		KeyDebtQueryOwedToYou, KeyDebtQueryYouOwe, KeyDebtQueryNone,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

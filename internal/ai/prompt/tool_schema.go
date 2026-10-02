@@ -33,6 +33,9 @@ const (
 	ToolSetBudgetAllocation        = "set_budget_allocation"
 	ToolCheckSurplus               = "check_surplus"
 	ToolMoveMoney                  = "move_money"
+	ToolRecordLoan                 = "record_loan"
+	ToolRecordRepayment            = "record_repayment"
+	ToolCheckDebts                 = "check_debts"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -253,6 +256,88 @@ func TransactionTools() []Tool {
 				},
 			},
 			Required: []string{"from_account", "to_account", "amount"},
+		},
+		{
+			Name:        ToolRecordLoan,
+			Description: "Call this ONLY when the message explicitly frames money as a LOAN to or from a specific PERSON — something expected to be paid back (\"pinjemin\", \"minjem\", \"utangin\", \"lend\", \"borrow\", \"owe\"), e.g. \"aku pinjemin Budi 500rb\" (I lent Budi 500k), \"aku minjem ke Dania 300rb buat bayar listrik\" (I borrowed 300k from Dania). Do NOT call this for a one-off gift, payment, or transfer to someone with no loan/repayment framing at all (\"aku kasih duit ke Budi 100rb buat jajan\", \"transfer ke adek 500rb\", \"bayar ke toko\") — those are record_transaction with type=\"transfer\" instead, completely unchanged. counterparty must be a PERSON's name, never a bank/wallet (that's move_money/record_transaction's account_name instead).",
+			Properties: map[string]ToolProperty{
+				"direction": {
+					Type:        "string",
+					Description: "\"lent\" if the user gave money to counterparty (they now owe the user); \"borrowed\" if the user received money from counterparty (the user now owes them).",
+					Enum:        []string{"lent", "borrowed"},
+				},
+				"counterparty": {
+					Type:        "string",
+					Description: "The person's name, in the user's own words (e.g. \"Budi\", \"Dania\", \"adek\"). Never a bank or e-wallet name.",
+				},
+				"amount": {
+					Type:        "number",
+					Description: "A positive number. Never guess a number that wasn't stated or clearly implied.",
+				},
+				"currency": {
+					Type:        "string",
+					Description: "ISO 4217 code (e.g. IDR, USD). If not mentioned, use the caller-provided default currency.",
+				},
+				"description": {
+					Type:        "string",
+					Description: "A short free-text note, in the user's own words, if the message gives one (e.g. \"buat bayar listrik\"). Leave empty if the message states nothing beyond the person and amount.",
+				},
+				"occurred_at_hint": {
+					Type:        "string",
+					Description: "ISO 8601 date (YYYY-MM-DD) this happened on, computed from today's date and any relative time language in the message. Leave empty if no time is mentioned (assume today).",
+				},
+				"account_name": {
+					Type:        "string",
+					Description: "Which of the user's own tracked accounts/wallets the cash moved from/into, ONLY when the message explicitly names one (e.g. \"dari BCA\" -> \"BCA\"). Leave empty to use their default account.",
+				},
+			},
+			Required: []string{"direction", "counterparty", "amount"},
+		},
+		{
+			Name:        ToolRecordRepayment,
+			Description: "Call this ONLY when the message describes repaying, or being repaid for, an EXISTING loan already tracked via record_loan — e.g. \"Budi bayar utang 200rb\" (Budi repaid the user 200k), \"aku bayar utang ke Dania 100rb\" (the user repaid Dania 100k), \"Budi udah lunasin utangnya\" (Budi fully settled what they owed). A brand new one-off payment with no prior loan context is record_transaction instead, never this tool. counterparty must be a PERSON's name, never a bank/wallet.",
+			Properties: map[string]ToolProperty{
+				"direction": {
+					Type:        "string",
+					Description: "\"received\" if counterparty is paying the user back (the user's receivable from them shrinks); \"made\" if the user is paying counterparty back (what the user owes them shrinks).",
+					Enum:        []string{"received", "made"},
+				},
+				"counterparty": {
+					Type:        "string",
+					Description: "The person's name, exactly as used when the loan was first recorded if possible (e.g. \"Budi\").",
+				},
+				"amount": {
+					Type:        "number",
+					Description: "A positive number. Never guess a number that wasn't stated or clearly implied.",
+				},
+				"currency": {
+					Type:        "string",
+					Description: "ISO 4217 code (e.g. IDR, USD). If not mentioned, use the caller-provided default currency.",
+				},
+				"description": {
+					Type:        "string",
+					Description: "A short free-text note, if the message gives one. Leave empty otherwise.",
+				},
+				"occurred_at_hint": {
+					Type:        "string",
+					Description: "ISO 8601 date (YYYY-MM-DD) this happened on. Leave empty if no time is mentioned (assume today).",
+				},
+				"account_name": {
+					Type:        "string",
+					Description: "Which of the user's own tracked accounts/wallets the cash moved from/into, ONLY when explicitly named. Leave empty to use their default account.",
+				},
+			},
+			Required: []string{"direction", "counterparty", "amount"},
+		},
+		{
+			Name:        ToolCheckDebts,
+			Description: "Call this when the message asks about outstanding loans — who owes the user money, who the user owes, or how much (e.g. \"siapa yang masih utang ke aku?\", \"utangku ke Dania berapa?\", \"do I owe anyone money?\").",
+			Properties: map[string]ToolProperty{
+				"counterparty": {
+					Type:        "string",
+					Description: "Set this ONLY when the message asks about ONE SPECIFIC named person's debt (e.g. \"utangku ke Dania berapa?\" -> \"Dania\"). Leave empty for the default, more common question: list everyone who owes the user and everyone the user owes.",
+				},
+			},
 		},
 		{
 			Name:        ToolCorrectTransaction,

@@ -14,6 +14,19 @@ const (
 	TxInvestment TransactionType = "investment"
 	TxTransfer   TransactionType = "transfer"
 	TxReward     TransactionType = "reward"
+
+	// TxLoanOut/TxLoanIn/TxRepaymentIn/TxRepaymentOut back debt tracking
+	// (transaction.Service.CreateLoan/CreateRepayment, see Debt) — each is a
+	// plain cash movement on ONE of the user's own accounts, tagged via
+	// Transaction.DebtID with who it's with. Deliberately excluded from
+	// budget.Service (which sums strictly TxExpense) and query_spending's
+	// fixed type enumeration, so lending/borrowing/repaying never pollutes a
+	// spending report or the Needs/Wants/Savings evaluation — the same
+	// "not in that list" exclusion TxTransfer/TxInvestment already get.
+	TxLoanOut      TransactionType = "loan_out"
+	TxLoanIn       TransactionType = "loan_in"
+	TxRepaymentIn  TransactionType = "repayment_in"
+	TxRepaymentOut TransactionType = "repayment_out"
 )
 
 type TransactionSource string
@@ -67,6 +80,10 @@ type Transaction struct {
 	CategoryID          *uint                   `gorm:"index"`
 	LinkedTransactionID *uint                   `gorm:"index"`
 	TransferLeg         *TransactionTransferLeg `gorm:"size:10;check:chk_transactions_transfer_leg,transfer_leg IS NULL OR transfer_leg IN ('in','out')"`
+	// DebtID links a TxLoanOut/TxLoanIn/TxRepaymentIn/TxRepaymentOut row to
+	// the Debt it's with — see Debt's own doc comment for why its remaining
+	// amount is computed from these rather than stored.
+	DebtID *uint `gorm:"index"`
 
 	Type        TransactionType `gorm:"size:15;not null;index"`
 	Description string          `gorm:"size:500"`

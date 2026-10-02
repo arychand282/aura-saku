@@ -178,6 +178,22 @@ const (
 	KeyAccountsListEmpty   = "accounts_list_empty"
 	KeyAccountsListItem    = "accounts_list_item"
 	KeyAccountsListTotal   = "accounts_list_total"
+
+	KeyDebtLentRecorded             = "debt_lent_recorded"
+	KeyDebtBorrowedRecorded         = "debt_borrowed_recorded"
+	KeyDebtRepaymentReceivedOngoing = "debt_repayment_received_ongoing"
+	KeyDebtRepaymentReceivedSettled = "debt_repayment_received_settled"
+	KeyDebtRepaymentMadeOngoing     = "debt_repayment_made_ongoing"
+	KeyDebtRepaymentMadeSettled     = "debt_repayment_made_settled"
+	KeyDebtNotFound                 = "debt_not_found"
+	KeyDebtFailed                   = "debt_failed"
+	KeyDebtsListEmpty               = "debts_list_empty"
+	KeyDebtsOwedToYouHeader         = "debts_owed_to_you_header"
+	KeyDebtsYouOweHeader            = "debts_you_owe_header"
+	KeyDebtsListItem                = "debts_list_item"
+	KeyDebtQueryOwedToYou           = "debt_query_owed_to_you"
+	KeyDebtQueryYouOwe              = "debt_query_you_owe"
+	KeyDebtQueryNone                = "debt_query_none"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -297,6 +313,22 @@ var catalog = map[models.Language]map[string]string{
 		KeyAccountsListEmpty:   "You don't have any accounts tracked yet — just tell me about a transaction or transfer naming one, e.g. \"beli kopi 20rb pake OVO\".",
 		KeyAccountsListItem:    "%s: %s",
 		KeyAccountsListTotal:   "Total: %s",
+
+		KeyDebtLentRecorded:             "Got it — you lent %s %s.",
+		KeyDebtBorrowedRecorded:         "Got it — you borrowed %s from %s.",
+		KeyDebtRepaymentReceivedOngoing: "Got it — %s paid you %s. %s still owes you %s.",
+		KeyDebtRepaymentReceivedSettled: "Got it — %s paid you %s. %s is all settled up with you now!",
+		KeyDebtRepaymentMadeOngoing:     "Got it — you paid %s %s. You still owe %s %s.",
+		KeyDebtRepaymentMadeSettled:     "Got it — you paid %s %s. You're all settled up with %s now!",
+		KeyDebtNotFound:                 "You don't have a tracked debt with %s for that.",
+		KeyDebtFailed:                   "Something went wrong recording that.",
+		KeyDebtsListEmpty:               "No outstanding debts right now.",
+		KeyDebtsOwedToYouHeader:         "People who still owe you:",
+		KeyDebtsYouOweHeader:            "People you still owe:",
+		KeyDebtsListItem:                "%s: %s",
+		KeyDebtQueryOwedToYou:           "%s still owes you %s.",
+		KeyDebtQueryYouOwe:              "You still owe %s %s.",
+		KeyDebtQueryNone:                "No tracked debt with %s.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                             "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -414,6 +446,22 @@ var catalog = map[models.Language]map[string]string{
 		KeyAccountsListEmpty:   "Kamu belum punya akun yang tercatat — cukup ceritakan transaksi atau transfer yang menyebut satu, misal \"beli kopi 20rb pake OVO\".",
 		KeyAccountsListItem:    "%s: %s",
 		KeyAccountsListTotal:   "Total: %s",
+
+		KeyDebtLentRecorded:             "Dicatat — kamu pinjemin %s sebesar %s.",
+		KeyDebtBorrowedRecorded:         "Dicatat — kamu minjem %s dari %s.",
+		KeyDebtRepaymentReceivedOngoing: "Dicatat — %s bayar %s ke kamu. Sisa utang %s ke kamu: %s.",
+		KeyDebtRepaymentReceivedSettled: "Dicatat — %s bayar %s ke kamu. Utang %s ke kamu udah lunas!",
+		KeyDebtRepaymentMadeOngoing:     "Dicatat — kamu bayar %s ke %s. Sisa utangmu ke %s: %s.",
+		KeyDebtRepaymentMadeSettled:     "Dicatat — kamu bayar %s ke %s. Utangmu ke %s udah lunas!",
+		KeyDebtNotFound:                 "Kamu nggak punya catatan utang sama %s untuk itu.",
+		KeyDebtFailed:                   "Terjadi kesalahan saat mencatat itu.",
+		KeyDebtsListEmpty:               "Nggak ada utang yang tercatat saat ini.",
+		KeyDebtsOwedToYouHeader:         "Orang yang masih punya utang ke kamu:",
+		KeyDebtsYouOweHeader:            "Utang kamu ke orang lain:",
+		KeyDebtsListItem:                "%s: %s",
+		KeyDebtQueryOwedToYou:           "%s masih punya utang %s ke kamu.",
+		KeyDebtQueryYouOwe:              "Kamu masih punya utang ke %s sebesar %s.",
+		KeyDebtQueryNone:                "Nggak ada utang yang tercatat sama %s.",
 	},
 }
 
