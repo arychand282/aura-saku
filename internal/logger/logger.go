@@ -31,6 +31,7 @@ const (
 	TelegramParseFailed    Code = "AURA-TG-001" // failed to unmarshal/normalize an inbound Telegram webhook payload
 	TelegramSendFailed     Code = "AURA-TG-002" // sendMessage/sendChatAction to Telegram failed
 	TelegramDownloadFailed Code = "AURA-TG-003" // downloading a Telegram voice note file failed
+	WebhookQueueFull       Code = "AURA-TG-004" // bounded webhook worker pool was full, update rejected (503) for Telegram to retry
 
 	SvcUserResolveFailed     Code = "AURA-SVC-001" // get-or-create User by TelegramChatID failed
 	SvcUndoFailed            Code = "AURA-SVC-002" // transaction.Service.UndoLast failed

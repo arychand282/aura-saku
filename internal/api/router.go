@@ -45,7 +45,8 @@ func Setup(app *fiber.App, deps Deps) {
 	app.Post("/webhook/telegram",
 		middleware.ParseIncomingMessage(deps.TelegramClient),
 		middleware.RateLimiter(deps.Redis, deps.Config.RateLimitWindowSeconds, deps.Config.RateLimitMaxRequests),
-		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret, deps.Redis),
+		telegram.NewWebhookHandler(deps.TelegramClient, deps.BotService, deps.Config.TelegramWebhookSecret, deps.Redis,
+			deps.Config.WebhookWorkerCount, deps.Config.WebhookQueueSize),
 	)
 
 	// Signature verification happens inside payment.Service.HandleNotification
@@ -56,7 +57,7 @@ func Setup(app *fiber.App, deps Deps) {
 	// Auth endpoints are registered directly on app (not the session-gated
 	// v1 group below) since logging in is, by definition, unauthenticated.
 	sessionTTL := time.Duration(deps.Config.SessionTTLHours) * time.Hour
-	authHandler := handlers.NewAuthHandler(deps.DB, deps.Redis, deps.Config.JWTSecret, sessionTTL)
+	authHandler := handlers.NewAuthHandler(deps.DB, deps.Redis, deps.Config.JWTSecret, sessionTTL, deps.Config.AppEnv == "production")
 	app.Post("/api/v1/auth/verify", authHandler.VerifyLoginToken)
 	app.Post("/api/v1/auth/admin-login",
 		middleware.IPRateLimiter(deps.Redis, deps.Config.AdminLoginRateLimitWindowSeconds, deps.Config.AdminLoginRateLimitMaxAttempts),

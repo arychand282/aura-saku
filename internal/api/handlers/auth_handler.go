@@ -21,14 +21,19 @@ import (
 const dummyHash = "$2a$10$7XLKe0HPMU5YuVHQ5bx9o.Gczr.K4w1VCEUfPev0/zJYNAYHlkaDi"
 
 type AuthHandler struct {
-	db          *gorm.DB
-	redisClient *redis.Client
-	jwtSecret   string
-	sessionTTL  time.Duration
+	db            *gorm.DB
+	redisClient   *redis.Client
+	jwtSecret     string
+	sessionTTL    time.Duration
+	secureCookies bool
 }
 
-func NewAuthHandler(db *gorm.DB, redisClient *redis.Client, jwtSecret string, sessionTTL time.Duration) *AuthHandler {
-	return &AuthHandler{db: db, redisClient: redisClient, jwtSecret: jwtSecret, sessionTTL: sessionTTL}
+// secureCookies should be true whenever the app is actually reachable over
+// HTTPS (config.Config.AppEnv == "production") and false for local
+// dev/testing over plain HTTP, where a Secure cookie would never be sent
+// back by the browser at all.
+func NewAuthHandler(db *gorm.DB, redisClient *redis.Client, jwtSecret string, sessionTTL time.Duration, secureCookies bool) *AuthHandler {
+	return &AuthHandler{db: db, redisClient: redisClient, jwtSecret: jwtSecret, sessionTTL: sessionTTL, secureCookies: secureCookies}
 }
 
 type verifyLoginTokenRequest struct {
@@ -53,7 +58,7 @@ func (h *AuthHandler) VerifyLoginToken(c *fiber.Ctx) error {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to create session")
 	}
 
-	setSessionCookie(c, sessionToken, h.sessionTTL)
+	setSessionCookie(c, sessionToken, h.sessionTTL, h.secureCookies)
 	return httpresponse.Success(c, fiber.StatusOK, fiber.Map{"role": auth.RoleUser, "user_id": userID})
 }
 
@@ -92,7 +97,7 @@ func (h *AuthHandler) AdminLogin(c *fiber.Ctx) error {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to create session")
 	}
 
-	setSessionCookie(c, sessionToken, h.sessionTTL)
+	setSessionCookie(c, sessionToken, h.sessionTTL, h.secureCookies)
 	return httpresponse.Success(c, fiber.StatusOK, fiber.Map{"role": role, "name": admin.Name})
 }
 
@@ -108,15 +113,13 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	return httpresponse.Success(c, fiber.StatusOK, fiber.Map{"message": "logged out"})
 }
 
-func setSessionCookie(c *fiber.Ctx, token string, ttl time.Duration) {
+func setSessionCookie(c *fiber.Ctx, token string, ttl time.Duration, secure bool) {
 	c.Cookie(&fiber.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    token,
 		Expires:  time.Now().Add(ttl),
 		HTTPOnly: true,
 		SameSite: "Lax",
-		// TODO: set Secure: true once this is deployed behind real HTTPS —
-		// left false so local dev/testing over plain HTTP still works.
-		Secure: false,
+		Secure:   secure,
 	})
 }

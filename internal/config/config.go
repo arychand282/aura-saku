@@ -113,6 +113,14 @@ type Config struct {
 	ConversationRecentLimit        int
 	ConversationSummarizeThreshold int
 
+	// WebhookWorkerCount/WebhookQueueSize bound how many Telegram webhook
+	// updates are processed concurrently (see
+	// internal/messaging/telegram.NewWebhookHandler) — replaces an
+	// unbounded `go` dispatch per webhook, which could grow goroutines
+	// without limit under a burst of traffic.
+	WebhookWorkerCount int
+	WebhookQueueSize   int
+
 	LogLevel string
 }
 
@@ -188,6 +196,9 @@ func Load() (*Config, error) {
 
 		ConversationRecentLimit:        getEnvInt("CONVERSATION_RECENT_LIMIT", 10),
 		ConversationSummarizeThreshold: getEnvInt("CONVERSATION_SUMMARIZE_THRESHOLD", 20),
+
+		WebhookWorkerCount: getEnvInt("WEBHOOK_WORKER_COUNT", 20),
+		WebhookQueueSize:   getEnvInt("WEBHOOK_QUEUE_SIZE", 200),
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
 	}
