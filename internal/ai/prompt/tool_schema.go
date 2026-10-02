@@ -225,15 +225,15 @@ func TransactionTools() []Tool {
 		},
 		{
 			Name:        ToolMoveMoney,
-			Description: "Call this ONLY when money moves between TWO OF THE USER'S OWN tracked accounts/wallets — e.g. moving savings from a bank to an e-wallet, topping up an e-wallet from a bank balance (\"pindahin 200rb dari BCA ke Gopay\", \"topup OVO 50rb dari BCA\", \"aku pindah 1 juta dari tabungan ke dompet digital\"). Do NOT call this when money is sent to another person or paid to an external party (\"transfer ke adek 500rb\", \"bayar ke toko\") — that's record_transaction with type=\"transfer\" instead, completely unchanged. from_account and to_account must both be given and must name two DIFFERENT accounts.",
+			Description: "Call this ONLY when money moves between TWO OF THE USER'S OWN tracked FINANCIAL accounts/wallets — e.g. moving savings from a bank to an e-wallet, topping up an e-wallet from a bank balance (\"pindahin 200rb dari BCA ke Gopay\", \"topup OVO 50rb dari BCA\", \"aku pindah 1 juta dari tabungan ke dompet digital\"). Both from_account and to_account must be actual financial institutions/wallets (a bank name, an e-wallet brand, \"cash\"/\"tunai\", \"tabungan\", etc.) — NEVER a person's name, even when a real account is ALSO named in the same message and even with phrasing like \"pindahin\"/\"transfer dari\"/\"kirim dari\" that superficially matches this tool's own examples. If EITHER side is a person rather than a financial account (e.g. \"pindahin 100rb dari BCA ke Dania\", \"transfer ke adek 500rb\", \"bayar ke toko\", \"kirim ke Pak Budi\") — even one named right after a real account like BCA/Gopay — that entire message is record_transaction with type=\"transfer\" instead, completely unchanged, with NO account fields set. When genuinely unsure whether a name is a wallet or a person, prefer record_transaction's type=\"transfer\" — it's the far more common case and the safer default. from_account and to_account must both be given and must name two DIFFERENT accounts.",
 			Properties: map[string]ToolProperty{
 				"from_account": {
 					Type:        "string",
-					Description: "The account/wallet the money is moving OUT of (e.g. \"BCA\").",
+					Description: "The financial account/wallet the money is moving OUT of (e.g. \"BCA\") — never a person's name.",
 				},
 				"to_account": {
 					Type:        "string",
-					Description: "The account/wallet the money is moving INTO (e.g. \"Gopay\").",
+					Description: "The financial account/wallet the money is moving INTO (e.g. \"Gopay\") — never a person's name, even if a real account was named as from_account in the same message.",
 				},
 				"amount": {
 					Type:        "number",
