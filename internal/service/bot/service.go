@@ -1606,7 +1606,10 @@ func (s *Service) handleSpendingQuery(ctx context.Context, user *models.User, ms
 	periodLabel := queryPeriodLabel(user.Language, parsed, start)
 	txType, isAllTypes := resolveQueryTransactionType(parsed)
 
-	if parsed.QueryMode == ai.QueryModeList {
+	// A non-empty search term implies a list of matching transactions on its
+	// own, regardless of whether the model also remembered to set
+	// query_mode="list" (see query_search_term's own tool description).
+	if parsed.QueryMode == ai.QueryModeList || strings.TrimSpace(parsed.QuerySearchTerm) != "" {
 		s.handleSpendingListQuery(ctx, user, parsed, start, end, periodLabel)
 		return
 	}
@@ -1805,7 +1808,12 @@ type spendingListCursor struct {
 	CategoryQuery   string `json:"category_query"`
 	Bucket          string `json:"bucket"`
 	Uncategorized   bool   `json:"uncategorized"`
-	NextOffset      int    `json:"next_offset"`
+	// SearchTerm mirrors ai.ParsedTransaction.QuerySearchTerm verbatim —
+	// included in the match check for the same reason as the fields above: a
+	// "lanjutkan" must never resume a free-text search against an unrelated
+	// category/bucket/plain list sharing the same Period, or vice versa.
+	SearchTerm string `json:"search_term"`
+	NextOffset int    `json:"next_offset"`
 }
 
 // spendingListCursorTTL is generous enough to survive a user pausing mid
@@ -1879,10 +1887,13 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	txType, isAllTypes := resolveQueryTransactionType(parsed)
 
 	uncategorized := isUncategorizedQuery(parsed)
+	searchTerm := strings.TrimSpace(parsed.QuerySearchTerm)
 	var bucket models.BudgetBucket
 	var hasBucket bool
 	categoryQuery := parsed.QueryCategory
 	switch {
+	case searchTerm != "":
+		categoryQuery = ""
 	case uncategorized:
 		categoryQuery = ""
 	default:
@@ -1896,7 +1907,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	if parsed.QueryListMore {
 		if cursor, ok := s.loadSpendingListCursor(ctx, user.ID); ok &&
 			cursor.Period == parsed.QueryPeriod && cursor.StartDate == parsed.QueryStartDate && cursor.TransactionType == parsed.QueryTransactionType &&
-			cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized {
+			cursor.CategoryQuery == categoryQuery && cursor.Bucket == string(bucket) && cursor.Uncategorized == uncategorized && cursor.SearchTerm == searchTerm {
 			offset = cursor.NextOffset
 		}
 		// No matching cursor (expired, or the model attached QueryListMore
@@ -1905,7 +1916,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 		// that's still a sensible answer to "lanjutkan".
 	}
 
-	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, txType, categoryQuery, bucket, uncategorized, offset)
+	page, err := s.reportSvc.ListTransactions(ctx, user.ID, start, end, txType, categoryQuery, bucket, uncategorized, searchTerm, offset)
 	if err != nil {
 		logger.Error(logger.SvcReportQueryFailed, fmt.Sprintf("spending list query for user %d", user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcReportQueryFailed))
@@ -1916,6 +1927,8 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	switch {
 	case uncategorized:
 		scopeLabel = i18n.T(user.Language, i18n.KeyUncategorizedLabel)
+	case searchTerm != "":
+		scopeLabel = searchTerm
 	case scopeLabel == "" && hasBucket:
 		scopeLabel = bucketDisplayName(bucket)
 	}
@@ -1978,7 +1991,7 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListMore, remaining))
 		s.saveSpendingListCursor(ctx, user.ID, spendingListCursor{
 			Period: parsed.QueryPeriod, StartDate: parsed.QueryStartDate, TransactionType: parsed.QueryTransactionType,
-			CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, NextOffset: shown,
+			CategoryQuery: categoryQuery, Bucket: string(bucket), Uncategorized: uncategorized, SearchTerm: searchTerm, NextOffset: shown,
 		})
 	} else {
 		s.clearSpendingListCursor(ctx, user.ID)

@@ -333,15 +333,18 @@ type TransactionListPage struct {
 // explicitly, not rely on an implicit default here). At most one of
 // uncategorizedOnly (Transaction.CategoryID IS NULL — e.g. a /sync "blind
 // spot" adjustment, see categoryDisplayName's own doc comment), categoryQuery
-// (ILIKE match, same convention as CategoryTotal), or bucket (same COALESCE
-// resolution as BucketSpending) should be set, checked in that order — leave
-// all three empty/zero to list every matching transaction in the period
-// regardless of category. offset is the caller-tracked pagination cursor
-// (see bot.Service's short-lived Redis cursor); this always returns at most
+// (ILIKE match, same convention as CategoryTotal), bucket (same COALESCE
+// resolution as BucketSpending), or searchTerm (ILIKE match against
+// Description OR RawInput — a specific merchant/place/item/person named by
+// name, e.g. "starbucks", as opposed to categoryQuery's general budget
+// category) should be set, checked in that order — leave all four
+// empty/zero to list every matching transaction in the period regardless of
+// category. offset is the caller-tracked pagination cursor (see
+// bot.Service's short-lived Redis cursor); this always returns at most
 // transactionListPageSize items starting from it, ordered with the row id as
 // a tiebreaker so pagination stays stable even when two transactions share
 // the exact same OccurredAt.
-func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, txType models.TransactionType, categoryQuery string, bucket models.BudgetBucket, uncategorizedOnly bool, offset int) (*TransactionListPage, error) {
+func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end time.Time, txType models.TransactionType, categoryQuery string, bucket models.BudgetBucket, uncategorizedOnly bool, searchTerm string, offset int) (*TransactionListPage, error) {
 	where := "transactions.user_id = ? AND transactions.occurred_at >= ? AND transactions.occurred_at < ?"
 	args := []interface{}{userID, start, end}
 
@@ -359,6 +362,9 @@ func (s *Service) ListTransactions(ctx context.Context, userID uint, start, end 
 	case bucket != "":
 		where += " AND COALESCE(transactions.bucket, categories.bucket, 'none') = ?"
 		args = append(args, string(bucket))
+	case searchTerm != "":
+		where += " AND (transactions.description ILIKE ? OR transactions.raw_input ILIKE ?)"
+		args = append(args, "%"+searchTerm+"%", "%"+searchTerm+"%")
 	}
 
 	var total int64

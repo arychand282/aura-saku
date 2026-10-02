@@ -353,6 +353,16 @@ Two new tools: `record_loan` (direction `lent`/`borrowed`) and `record_repayment
 
 Verified: `go build`/`vet`/`test ./...` clean, including a budget regression test proving borrowing/lending/repaying never moves the Needs/Wants limits or spent totals. Live-verified against the real Gemini API for every phrasing (lend, borrow, repay both directions, both query forms) plus an adversarial check mirroring the move_money fix above — a one-off gift with no loan framing ("aku kasih duit ke Budi 100rb buat jajan") correctly stays a plain transfer, not a misclassified loan.
 
+### Status: Transaction search by merchant/place/item (2026-10-02)
+
+Added free-text search over past transactions — "cari transaksi starbucks", "pernah beli di indomaret bulan ini?" — as opposed to `query_spending`'s existing category/bucket filters, which couldn't express "a specific merchant named by name" at all. New `query_search_term` property on `query_spending`, `ILIKE`-matched against `Transaction.Description` OR `RawInput` (mirroring the existing `categories.name ILIKE ?` convention in `report.Service.ListTransactions`), added as a 4th mutually-exclusive branch alongside uncategorized/category/bucket.
+
+Deliberately small: reuses `handleSpendingListQuery`'s existing header/empty-state templates as-is (they already take an arbitrary `scopeLabel` — a search term slots in with zero wording changes), and a non-empty search term implies list mode on its own (`handleSpendingQuery`'s dispatch check widened), so the reply is always a list even if the model forgets to also set `query_mode="list"`. The pagination cursor (`spendingListCursor`) gained a `SearchTerm` field so "lanjutkan" can never resume a mismatched list/search. List-mode only for this pass — a "how much did I spend at X" aggregate is a natural future extension, not built. No DB index added (`Description`/`RawInput` are unindexed, sequential-scan `ILIKE` is fine at this app's scale; a `pg_trgm` index is the known follow-up if that ever changes).
+
+The one real risk, same class as the `move_money`/`record_loan` hardening earlier today: the model must tell a merchant/person name (search) apart from a budget category word (`query_category`). Addressed with explicit, example-driven wording on both tool properties pointing at each other.
+
+Verified: `go build`/`vet`/`test ./...` clean, including new coverage in `report_test.go` (search matching via Description, via RawInput-only, and a no-match case) and `service_test.go` (a natural-language search with no `query_mode` set still lists, and a "lanjutkan" cursor-isolation test). Live-verified against the real Gemini API for merchant/place/person search phrasings alongside real category phrasings, confirming no cross-contamination in either direction.
+
 ### Investigated: basic cron/job runner (2026-09-29)
 
 Asked to scope what a basic scheduled-job capability would take, since several backlog items below depend on it and none of them are buildable without it first. (Superseded by the Status entry above — kept here for the reasoning that led to the design.)

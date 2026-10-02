@@ -1133,6 +1133,86 @@ func TestHandleUpdate_SpendingQuery_ListByCategory(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_SearchByMerchant covers free-text search
+// (query_search_term) — a specific merchant named in past transactions,
+// not a budget category. QueryMode is deliberately left empty here to
+// confirm a non-empty search term implies list mode on its own, regardless
+// of whether the model also set query_mode="list".
+func TestHandleUpdate_SpendingQuery_SearchByMerchant(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food", Description: "kopi di starbucks",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "kopi di starbucks 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 100_000, Currency: "IDR", CategoryName: "food", Description: "makan siang",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan siang 100000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QuerySearchTerm: "starbucks",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "cari transaksi starbucks"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "starbucks") {
+		t.Errorf("reply = %q, want the header to name the search term", got)
+	}
+	if !strings.Contains(got, "kopi di starbucks") {
+		t.Errorf("reply = %q, want the matching starbucks transaction listed", got)
+	}
+	if strings.Contains(got, "makan siang") {
+		t.Errorf("reply = %q, must not include the unrelated lunch transaction", got)
+	}
+}
+
+// TestHandleUpdate_SpendingQuery_SearchPaginationIsolatedFromCategory covers
+// the cursor-isolation guarantee: a "lanjutkan" following a search must
+// never resume a differently-scoped (category) list sharing the same
+// period, and vice versa — spendingListCursor.SearchTerm is part of the
+// match check specifically to prevent this.
+func TestHandleUpdate_SpendingQuery_SearchPaginationIsolatedFromCategory(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food", Description: "kopi di starbucks",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "kopi di starbucks 50000"})
+
+	// A plain category list establishes a cursor scoped to category="food".
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryCategory: "food", QueryMode: ai.QueryModeList,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "listing pengeluaran food bulan ini"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	t.Cleanup(func() { env.redis.Del(context.Background(), fmt.Sprintf("aura:spendinglistcursor:%d", user.ID)) })
+
+	// A "lanjutkan" claiming to continue a SEARCH (different scope than the
+	// cursor that was actually saved) must not resume from that mismatched
+	// cursor — it should silently restart from the first page instead.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QuerySearchTerm: "starbucks", QueryListMore: true,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "lanjutkan"})
+
+	got := env.messenger.last(chatID)
+	if !strings.Contains(got, "kopi di starbucks") {
+		t.Errorf("reply = %q, want the starbucks search to still find its match despite the mismatched cursor", got)
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_ListPagination covers the requested
 // pagination behavior: a list capped at 10 items with a "+N more" note, and
 // a follow-up "lanjutkan" (QueryListMore=true, same period/category) resumes

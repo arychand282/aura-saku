@@ -32,6 +32,7 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			QueryListMore:        argBool(args, "query_list_more"),
 			QueryStartDate:       argString(args, "query_start_date"),
 			QueryTransactionType: argString(args, "query_transaction_type"),
+			QuerySearchTerm:      argString(args, "query_search_term"),
 		}
 	case prompt.ToolGetBalance:
 		return &ParsedTransaction{Intent: IntentBalance, AccountName: argString(args, "account_name")}

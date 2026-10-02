@@ -269,7 +269,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Fatalf("PeriodRange: %v", err)
 	}
 
-	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, 0)
+	page1, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, "", 0)
 	if err != nil {
 		t.Fatalf("ListTransactions page 1: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestListTransactions_CategoryFilterAndPagination(t *testing.T) {
 		t.Errorf("page1.Items[0].Description = %q, want %q (most recent first)", page1.Items[0].Description, "item 12")
 	}
 
-	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, 10)
+	page2, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "food", "", false, "", 10)
 	if err != nil {
 		t.Fatalf("ListTransactions page 2: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestListTransactions_UncategorizedOnly(t *testing.T) {
 		t.Fatalf("PeriodRange: %v", err)
 	}
 
-	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "", "", true, 0)
+	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "", "", true, "", 0)
 	if err != nil {
 		t.Fatalf("ListTransactions: %v", err)
 	}
@@ -341,6 +341,59 @@ func TestListTransactions_UncategorizedOnly(t *testing.T) {
 	}
 	if total != 500_000 {
 		t.Errorf("UncategorizedTotal = %.2f, want 500000.00 (excluding the categorized food expense)", total)
+	}
+}
+
+// TestListTransactions_SearchTerm covers free-text search over a specific
+// merchant/place/item named in past transactions (query_search_term) — as
+// opposed to categoryQuery's general budget-category concept. A match in
+// either Description OR RawInput must be found, and an unrelated
+// transaction must be excluded.
+func TestListTransactions_SearchTerm(t *testing.T) {
+	gormDB := setupTestDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	// Matches via Description.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food", Description: "kopi di starbucks",
+	}, models.SourceText, "beli kopi 50rb"); err != nil {
+		t.Fatalf("create starbucks expense: %v", err)
+	}
+	// Matches via RawInput only (the AI's own Description came out generic).
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 30_000, Currency: "IDR", CategoryName: "food", Description: "coffee",
+	}, models.SourceText, "ngopi di Starbucks lagi 30rb"); err != nil {
+		t.Fatalf("create second starbucks expense: %v", err)
+	}
+	// Unrelated transaction — must never match.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "rent", Description: "sewa kos",
+	}, models.SourceText, "bayar kos 500000"); err != nil {
+		t.Fatalf("create unrelated rent expense: %v", err)
+	}
+
+	reportSvc := report.NewService(gormDB)
+	start, end, err := report.PeriodRange("monthly")
+	if err != nil {
+		t.Fatalf("PeriodRange: %v", err)
+	}
+
+	page, err := reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "", "", false, "starbucks", 0)
+	if err != nil {
+		t.Fatalf("ListTransactions (search): %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("page.Total = %d, want 2 (both starbucks expenses, one matched via Description, one via RawInput)", page.Total)
+	}
+
+	page, err = reportSvc.ListTransactions(ctx, user.ID, start, end, models.TxExpense, "", "", false, "nonexistentmerchant", 0)
+	if err != nil {
+		t.Fatalf("ListTransactions (no match): %v", err)
+	}
+	if page.Total != 0 {
+		t.Errorf("page.Total = %d, want 0 for a search term matching nothing", page.Total)
 	}
 }
 

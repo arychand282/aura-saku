@@ -230,6 +230,14 @@ type ParsedTransaction struct {
 	// is exactly the kind of thing that silently drifts wrong.
 	QueryListMore bool `json:"query_list_more,omitempty"`
 
+	// QuerySearchTerm is a free-text search over a transaction's
+	// Description/RawInput — a specific merchant/place/item/person named by
+	// name ("starbucks", "indomaret", "Budi"), as opposed to QueryCategory's
+	// general budget-category concept ("food"). Setting this implies list
+	// mode on its own (see bot.Service.handleSpendingQuery), regardless of
+	// whether QueryMode was also set to QueryModeList.
+	QuerySearchTerm string `json:"query_search_term,omitempty"`
+
 	// BudgetAgainstLatestIncome/BudgetHypotheticalAmount/
 	// BudgetHypotheticalCurrency are only meaningful for
 	// IntentBudgetAllocation — see check_budget_allocation's own field
