@@ -13,6 +13,7 @@ import (
 	"aura-saku/internal/apperror"
 	"aura-saku/internal/config"
 	"aura-saku/internal/db"
+	"aura-saku/internal/i18n"
 	"aura-saku/internal/models"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/fx"
@@ -308,6 +309,87 @@ func TestSetBudget_RejectsInvalidPercentages(t *testing.T) {
 	gormDB.Model(&models.Budget{}).Where("user_id = ?", user.ID).Count(&count)
 	if count != 0 {
 		t.Errorf("budget row count after only-invalid SetBudget calls = %d, want 0", count)
+	}
+}
+
+// TestLastMonthSurplus_PositiveAndZeroCases covers both branches
+// bot.Service.handleSurplusQuery relies on: a genuine surplus (income >
+// expense last calendar month) returns the correct positive net figure,
+// and a month with no income at all (or expense >= income) returns <= 0
+// rather than erroring — the caller decides how to phrase each case, this
+// method just reports the raw number honestly either way, unlike
+// SuggestRollover which silently returns "" for the <= 0 case (meant for
+// the proactive nudge, which has nothing to say when there's no surplus).
+func TestLastMonthSurplus_PositiveAndZeroCases(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	ctx := context.Background()
+
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	budgetSvc := budget.NewService(gormDB)
+
+	// No transactions at all yet -> no income, no expense -> surplus 0, not
+	// an error.
+	surplus, err := budgetSvc.LastMonthSurplus(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("LastMonthSurplus with no transactions: %v", err)
+	}
+	if surplus != 0 {
+		t.Errorf("surplus with no transactions = %.2f, want 0", surplus)
+	}
+	msg, err := budgetSvc.SuggestRollover(ctx, user.ID, user.DefaultCurrency, models.LanguageID)
+	if err != nil {
+		t.Fatalf("SuggestRollover with no transactions: %v", err)
+	}
+	if msg != "" {
+		t.Errorf("SuggestRollover with no surplus = %q, want empty string", msg)
+	}
+
+	now := time.Now().UTC()
+	lastMonth15th := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 14)
+	lastMonthHint := lastMonth15th.Format("2006-01-02")
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 2_000_000, Currency: "IDR", CategoryName: "salary", OccurredAtHint: lastMonthHint,
+	}, models.SourceText, "gaji bulan lalu 2000000"); err != nil {
+		t.Fatalf("create last month income: %v", err)
+	}
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 500_000, Currency: "IDR", CategoryName: "food", OccurredAtHint: lastMonthHint,
+	}, models.SourceText, "makan bulan lalu 500000"); err != nil {
+		t.Fatalf("create last month expense: %v", err)
+	}
+
+	surplus, err = budgetSvc.LastMonthSurplus(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("LastMonthSurplus: %v", err)
+	}
+	if surplus != 1_500_000 {
+		t.Errorf("surplus = %.2f, want 1500000.00 (2,000,000 income - 500,000 expense)", surplus)
+	}
+
+	msg, err = budgetSvc.SuggestRollover(ctx, user.ID, user.DefaultCurrency, models.LanguageID)
+	if err != nil {
+		t.Fatalf("SuggestRollover: %v", err)
+	}
+	wantAmount := i18n.FormatMoney(models.LanguageID, 1_500_000, "IDR")
+	if !strings.Contains(msg, wantAmount) {
+		t.Errorf("SuggestRollover message = %q, want it to contain the formatted surplus %s (not a raw unformatted float)", msg, wantAmount)
 	}
 }
 

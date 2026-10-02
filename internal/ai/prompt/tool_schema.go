@@ -31,6 +31,7 @@ const (
 	ToolCheckSubscriptionStatus    = "check_subscription_status"
 	ToolCheckBudgetAllocation      = "check_budget_allocation"
 	ToolSetBudgetAllocation        = "set_budget_allocation"
+	ToolCheckSurplus               = "check_surplus"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -315,6 +316,11 @@ func TransactionTools() []Tool {
 					Description: "ISO 4217 code for the *_amount fields (e.g. IDR, USD). Only meaningful alongside those. If not mentioned, use the caller-provided default currency.",
 				},
 			},
+		},
+		{
+			Name:        ToolCheckSurplus,
+			Description: "Call this when the message asks about last month's SURPLUS specifically — income minus expense for the PREVIOUS calendar month only, as a single net figure (e.g. \"surplusku bulan lalu berapa?\", \"berapa surplus bulan lalu?\", \"ada sisa uang ga bulan lalu?\", \"last month's surplus?\"). This is DIFFERENT from query_spending — that tool can total/list/break down spending over any stated period, but has no concept of \"income minus expense for exactly one specific prior month\" as a single answer; a plain query_spending call (even with query_start_date/query_transaction_type set to approximate this) would answer a different, broader question. Use this tool whenever the message's own word is specifically \"surplus\" (or a clear synonym like \"sisa uang\"/\"leftover\") about last month, not a generic spending/income total. Takes no parameters.",
+			Properties:  map[string]ToolProperty{},
 		},
 	}
 }

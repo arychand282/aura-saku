@@ -86,7 +86,12 @@ func (h *ReportHandler) BudgetProgress(c *fiber.Ctx) error {
 
 	// Rollover suggestion is a nice-to-have on top of the core budget
 	// status; a failure here shouldn't fail the whole response.
-	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), userID, lang)
+	var currencyUser models.User
+	defaultCurrency := "IDR"
+	if err := h.db.Select("default_currency").First(&currencyUser, userID).Error; err == nil && currencyUser.DefaultCurrency != "" {
+		defaultCurrency = currencyUser.DefaultCurrency
+	}
+	rollover, err := h.budgetSvc.SuggestRollover(c.Context(), userID, defaultCurrency, lang)
 	if err != nil {
 		rollover = ""
 	}

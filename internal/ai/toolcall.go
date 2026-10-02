@@ -86,6 +86,8 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			BudgetSetSavingsAmount:  argFloat(args, "savings_amount"),
 			BudgetSetCurrency:       argString(args, "budget_set_currency"),
 		}
+	case prompt.ToolCheckSurplus:
+		return &ParsedTransaction{Intent: IntentSurplus}
 	default:
 		return nil
 	}

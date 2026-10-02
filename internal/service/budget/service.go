@@ -99,29 +99,42 @@ func (s *Service) EvaluateBudget(ctx context.Context, userID uint, lang models.L
 	return status, nil
 }
 
-// SuggestRollover proposes shifting last calendar month's income-minus-expense
-// surplus into savings. Returns an empty string (no error) when there was no
-// surplus to suggest rolling over.
-func (s *Service) SuggestRollover(ctx context.Context, userID uint, lang models.Language) (string, error) {
+// LastMonthSurplus computes last calendar month's income-minus-expense net
+// figure — shared by SuggestRollover's proactive nudge (below) and the
+// on-demand "surplusku bulan lalu berapa?" natural-language query (see
+// ai.IntentSurplus / bot.Service.handleSurplusQuery). Unlike SuggestRollover,
+// this always returns the raw number, including zero or negative — a caller
+// answering a direct question needs to say something even when there's no
+// surplus, not silently skip the way the proactive nudge does.
+func (s *Service) LastMonthSurplus(ctx context.Context, userID uint) (float64, error) {
 	now := time.Now().UTC()
 	prevMonthStart := startOfMonth(now.AddDate(0, -1, 0))
 	thisMonthStart := startOfMonth(now)
 
 	income, err := s.sumByType(ctx, userID, models.TxIncome, prevMonthStart, thisMonthStart)
 	if err != nil {
-		return "", fmt.Errorf("sum previous period income: %w", err)
+		return 0, fmt.Errorf("sum previous period income: %w", err)
 	}
 	expense, err := s.sumByType(ctx, userID, models.TxExpense, prevMonthStart, thisMonthStart)
 	if err != nil {
-		return "", fmt.Errorf("sum previous period expense: %w", err)
+		return 0, fmt.Errorf("sum previous period expense: %w", err)
 	}
+	return income - expense, nil
+}
 
-	surplus := income - expense
+// SuggestRollover proposes shifting last calendar month's income-minus-expense
+// surplus into savings. Returns an empty string (no error) when there was no
+// surplus to suggest rolling over.
+func (s *Service) SuggestRollover(ctx context.Context, userID uint, defaultCurrency string, lang models.Language) (string, error) {
+	surplus, err := s.LastMonthSurplus(ctx, userID)
+	if err != nil {
+		return "", err
+	}
 	if surplus <= 0 {
 		return "", nil
 	}
 
-	return i18n.T(lang, i18n.KeyBudgetRollover, surplus), nil
+	return i18n.T(lang, i18n.KeyBudgetRollover, i18n.FormatMoney(lang, surplus, defaultCurrency)), nil
 }
 
 // CurrentBudget returns the user's active budget allocation, auto-creating

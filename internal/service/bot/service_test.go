@@ -2472,8 +2472,9 @@ func TestRunBudgetRolloverNudges(t *testing.T) {
 	}
 
 	got := env.messenger.last(chatID)
-	if !strings.Contains(got, "1500000.00") {
-		t.Errorf("nudge reply = %q, want it to mention the 1,500,000 surplus", got)
+	wantSurplus := i18n.FormatMoney(models.LanguageID, 1_500_000, "IDR")
+	if !strings.Contains(got, wantSurplus) {
+		t.Errorf("nudge reply = %q, want it to mention the surplus %s", got, wantSurplus)
 	}
 	if countAfterFirst := env.messenger.count(chatID); countAfterFirst != countBefore+1 {
 		t.Fatalf("message count after first RunBudgetRolloverNudges = %d, want %d (exactly one nudge sent)", countAfterFirst, countBefore+1)
@@ -2488,6 +2489,61 @@ func TestRunBudgetRolloverNudges(t *testing.T) {
 	}
 	if countAfterSecond := env.messenger.count(chatID); countAfterSecond != countBefore+1 {
 		t.Errorf("message count after a second same-month RunBudgetRolloverNudges = %d, want still %d (no duplicate nudge)", countAfterSecond, countBefore+1)
+	}
+}
+
+// TestHandleUpdate_SurplusQuery_NaturalLanguage covers a real reported bug:
+// "surplusku bulan lalu berapa?" had no matching AI tool at all, so the
+// model fell back to query_spending with a guessed date range/type filter,
+// answering a different, broader question than "what's my net income minus
+// expense for exactly last month". ai.IntentSurplus (check_surplus) now
+// answers this directly, reusing the exact same budget.Service.LastMonthSurplus
+// computation the proactive rollover nudge uses.
+func TestHandleUpdate_SurplusQuery_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lastMonth15th := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 14)
+	lastMonthHint := lastMonth15th.Format("2006-01-02")
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 16_500_000, Currency: "IDR", CategoryName: "salary", OccurredAtHint: lastMonthHint,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji bulan lalu 16500000"})
+
+	// A THIS-month expense must never leak into last month's surplus figure.
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bensin 50000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSurplus}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "surplusku bulan lalu berapa?"})
+
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeyBudgetRollover, i18n.FormatMoney(models.LanguageID, 16_500_000, "IDR"))
+	if got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_SurplusQuery_NoneYet covers the same question for a user
+// with no surplus last month — must answer directly (KeySurplusNone), never
+// silently do nothing the way the proactive nudge does for this case.
+func TestHandleUpdate_SurplusQuery_NoneYet(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSurplus}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "surplusku bulan lalu berapa?"})
+
+	got := env.messenger.last(chatID)
+	want := i18n.T(models.LanguageID, i18n.KeySurplusNone)
+	if got != want {
+		t.Errorf("reply = %q, want %q", got, want)
 	}
 }
 

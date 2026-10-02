@@ -601,6 +601,30 @@ func (s *Service) handleBudgetSetFromParsed(ctx context.Context, user *models.Us
 	s.setBudgetAndReply(ctx, user, parsed.BudgetSetNeedsPercent, parsed.BudgetSetWantsPercent, parsed.BudgetSetSavingsPercent)
 }
 
+// handleSurplusQuery answers "surplusku bulan lalu berapa?" — last calendar
+// month's income-minus-expense net figure specifically, reachable via
+// ai.IntentSurplus (see tool_schema.go's check_surplus). Before this intent
+// existed, a surplus question had no matching tool and fell back to
+// query_spending with a guessed date range/type filter, which answers a
+// different, broader question ("totals since some date") rather than the
+// one specific number being asked for. Reuses
+// budget.Service.LastMonthSurplus — the same computation
+// RunBudgetRolloverNudges' proactive nudge uses — so the on-demand answer
+// and the proactive one are always consistent.
+func (s *Service) handleSurplusQuery(ctx context.Context, user *models.User) {
+	surplus, err := s.budgetSvc.LastMonthSurplus(ctx, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("compute last month surplus for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAITrouble, logger.SvcBudgetEvalFailed))
+		return
+	}
+	if surplus <= 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySurplusNone))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBudgetRollover, i18n.FormatMoney(user.Language, surplus, user.DefaultCurrency)))
+}
+
 // handleBudgetShow answers "what's my budget allocation" — the configured
 // Needs/Wants/Savings percentage split itself, not how much was spent in any
 // of them (that's a normal query_spending/query_bucket question instead).
@@ -1003,6 +1027,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentBudgetSet {
 		s.handleBudgetSetFromParsed(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentSurplus {
+		s.handleSurplusQuery(ctx, user)
 		return
 	}
 
@@ -2089,7 +2118,7 @@ func (s *Service) RunBudgetRolloverNudges(ctx context.Context) error {
 			continue
 		}
 
-		msg, err := s.budgetSvc.SuggestRollover(ctx, user.ID, user.Language)
+		msg, err := s.budgetSvc.SuggestRollover(ctx, user.ID, user.DefaultCurrency, user.Language)
 		if err != nil {
 			logger.Error(logger.SvcRolloverNudgeFailed, fmt.Sprintf("suggest rollover for user %d", user.ID), err)
 			continue

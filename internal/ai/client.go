@@ -21,6 +21,7 @@ const (
 	IntentSubscriptionStatus = "subscription_status"
 	IntentBudgetAllocation   = "budget_allocation"
 	IntentBudgetSet          = "budget_set"
+	IntentSurplus            = "surplus"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -342,7 +343,7 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		default:
 			return false
 		}
-	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus, IntentBudgetAllocation:
+	case IntentBalance, IntentDelete, IntentSubscribe, IntentSubscriptionStatus, IntentBudgetAllocation, IntentSurplus:
 		return true
 	case IntentBudgetSet:
 		percentSum := pt.BudgetSetNeedsPercent + pt.BudgetSetWantsPercent + pt.BudgetSetSavingsPercent
