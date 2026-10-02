@@ -56,6 +56,17 @@ const categoryInsightInterval = 24 * time.Hour
 // exact-time precision.
 const subscriptionExpiryInterval = 24 * time.Hour
 
+// dailyReminderInterval controls how often RunDailyTransactionReminder
+// ticks — unlike the 24-hour jobs above, this one targets a SPECIFIC
+// wall-clock hour (21:00 WIB, see bot.Service.dailyReminderHourWIB), which a
+// once-a-day ticker can't reliably catch (it only fires at whatever
+// arbitrary time the server process happened to start). A 15-minute tick
+// lands well within that target hour regardless of server start time, while
+// per-user-per-day Redis idempotency (inside the job itself) keeps it from
+// notifying more than once even though most ticks land outside the hour and
+// are no-ops, and several ticks land inside it.
+const dailyReminderInterval = 15 * time.Minute
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -126,6 +137,11 @@ func main() {
 			Name:     "subscription-expiry",
 			Interval: subscriptionExpiryInterval,
 			Run:      botSvc.RunSubscriptionExpiry,
+		},
+		scheduler.Job{
+			Name:     "daily-transaction-reminder",
+			Interval: dailyReminderInterval,
+			Run:      botSvc.RunDailyTransactionReminder,
 		},
 	).Start(schedulerCtx)
 

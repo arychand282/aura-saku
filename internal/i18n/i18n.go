@@ -110,6 +110,7 @@ const (
 	KeyBudgetWantsPace               = "budget_wants_pace"
 	KeyBudgetRollover                = "budget_rollover"
 	KeySurplusNone                   = "surplus_none"
+	KeyDailyTransactionReminder      = "daily_transaction_reminder"
 	KeyBudgetSetUsage                = "budget_set_usage"
 	KeyBudgetSetInvalid              = "budget_set_invalid"
 	KeyBudgetSetFailed               = "budget_set_failed"
@@ -218,6 +219,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsPace:               "Your Wants spending pace is projected to reach %.2f by month end, above your %.2f allocation — consider slowing down.",
 		KeyBudgetRollover:                "You had a surplus of %s last month — consider moving it into savings or investments.",
 		KeySurplusNone:                   "You didn't have a surplus last month — your expenses matched or exceeded your income.",
+		KeyDailyTransactionReminder:      "👋 Just a heads up — you haven't recorded any transactions today. Don't forget to log your spending before the day ends!",
 		KeyBudgetSetUsage:                "Usage: /budget <needs%> <wants%> <savings%> — must sum to 100, e.g. /budget 50 30 20. Send /budget with no arguments to see your current allocation.",
 		KeyBudgetSetInvalid:              "Those percentages must each be zero or more and sum to exactly 100.",
 		KeyBudgetSetFailed:               "Something went wrong updating your budget allocation.",
@@ -324,6 +326,7 @@ var catalog = map[models.Language]map[string]string{
 		KeyBudgetWantsPace:               "Laju pengeluaran Wants-mu diperkirakan mencapai %.2f di akhir bulan, melebihi alokasi %.2f — pertimbangkan untuk mengurangi pengeluaran.",
 		KeyBudgetRollover:                "Kamu punya surplus %s bulan lalu — pertimbangkan untuk memindahkannya ke tabungan atau investasi.",
 		KeySurplusNone:                   "Kamu nggak ada surplus bulan lalu — pengeluaranmu sama besar atau lebih besar dari pemasukanmu.",
+		KeyDailyTransactionReminder:      "👋 Pengingat santai — kamu belum mencatat transaksi apa pun hari ini. Jangan lupa catat pengeluaranmu sebelum hari berakhir, ya!",
 		KeyBudgetSetUsage:                "Cara pakai: /budget <needs%> <wants%> <savings%> — harus berjumlah 100, contoh: /budget 50 30 20. Kirim /budget tanpa argumen untuk melihat alokasi saat ini.",
 		KeyBudgetSetInvalid:              "Persentase harus masing-masing nol atau lebih dan berjumlah tepat 100.",
 		KeyBudgetSetFailed:               "Terjadi kesalahan saat memperbarui alokasi budgetmu.",

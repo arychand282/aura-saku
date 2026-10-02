@@ -2492,6 +2492,103 @@ func TestRunBudgetRolloverNudges(t *testing.T) {
 	}
 }
 
+// testNowWIB builds a deterministic "now" for RunDailyTransactionReminderAt,
+// sharing TODAY's real WIB calendar date (so a transaction created via the
+// normal flow — occurred_at defaults to the real time.Now().UTC() — lands
+// in the same WIB day the test computes) but with an explicit, fixed hour,
+// avoiding any flakiness from running exactly during a particular real
+// wall-clock hour.
+func testNowWIB(hour int) time.Time {
+	realNowWIB := time.Now().UTC().Add(7 * time.Hour)
+	return time.Date(realNowWIB.Year(), realNowWIB.Month(), realNowWIB.Day(), hour, 30, 0, 0, time.UTC)
+}
+
+// TestRunDailyTransactionReminder_OutsideTargetHourIsNoOp confirms the job
+// does nothing on every tick that doesn't land in the target WIB hour —
+// this is what lets a sub-hourly scheduler ticker safely call it without
+// spamming the user on every tick.
+func TestRunDailyTransactionReminder_OutsideTargetHourIsNoOp(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// A user with zero transactions at all — if the hour gate were broken,
+	// this is exactly who'd get reminded.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/start"})
+	countBefore := env.messenger.count(chatID)
+
+	if err := svc.RunDailyTransactionReminderAt(ctx, testNowWIB(14)); err != nil {
+		t.Fatalf("RunDailyTransactionReminderAt: %v", err)
+	}
+	if countAfter := env.messenger.count(chatID); countAfter != countBefore {
+		t.Errorf("message count after an outside-target-hour tick = %d, want unchanged %d (must be a no-op)", countAfter, countBefore)
+	}
+}
+
+// TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday
+// covers the core logic during the target hour: a user with zero
+// transactions today gets reminded, a user who already recorded something
+// today does not, and a second call within the same WIB day never
+// double-sends (idempotency).
+func TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	// newChatID() is time.Now().UnixNano() — two calls back-to-back can
+	// collide on some platforms/clock resolutions, which would silently
+	// merge these into the same test user. +1 guarantees two genuinely
+	// distinct chat IDs regardless.
+	silentChatID := newChatID()
+	activeChatID := silentChatID + 1
+	t.Cleanup(func() { cleanupChat(t, env, silentChatID); cleanupChat(t, env, activeChatID) })
+	ctx := context.Background()
+
+	// silentChatID: a real user, but no transaction recorded today.
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: silentChatID, Command: "/start"})
+
+	// activeChatID: already recorded an expense today.
+	env.ai.parseResult = &ai.ParsedTransaction{Type: "expense", Amount: 25_000, Currency: "IDR", CategoryName: "food"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: activeChatID, Text: "makan 25000"})
+
+	var silentUser, activeUser models.User
+	if err := env.db.Where("telegram_chat_id = ?", silentChatID).First(&silentUser).Error; err != nil {
+		t.Fatalf("load silent user: %v", err)
+	}
+	if err := env.db.Where("telegram_chat_id = ?", activeChatID).First(&activeUser).Error; err != nil {
+		t.Fatalf("load active user: %v", err)
+	}
+	wibDate := testNowWIB(bot.DailyReminderHourWIB).Format("2006-01-02")
+	t.Cleanup(func() {
+		env.redis.Del(context.Background(), fmt.Sprintf("aura:seen:daily-transaction-reminder:%s:%d", wibDate, silentUser.ID))
+		env.redis.Del(context.Background(), fmt.Sprintf("aura:seen:daily-transaction-reminder:%s:%d", wibDate, activeUser.ID))
+	})
+
+	silentCountBefore := env.messenger.count(silentChatID)
+	activeCountBefore := env.messenger.count(activeChatID)
+
+	if err := svc.RunDailyTransactionReminderAt(ctx, testNowWIB(bot.DailyReminderHourWIB)); err != nil {
+		t.Fatalf("RunDailyTransactionReminderAt (first call): %v", err)
+	}
+
+	wantReminder := i18n.T(models.LanguageID, i18n.KeyDailyTransactionReminder)
+	if got := env.messenger.last(silentChatID); got != wantReminder {
+		t.Errorf("silent user reply = %q, want the reminder %q", got, wantReminder)
+	}
+	if got := env.messenger.count(activeChatID); got != activeCountBefore {
+		t.Errorf("active user message count = %d, want unchanged %d (already recorded today, no reminder expected)", got, activeCountBefore)
+	}
+	if got := env.messenger.count(silentChatID); got != silentCountBefore+1 {
+		t.Errorf("silent user message count = %d, want %d (exactly one reminder)", got, silentCountBefore+1)
+	}
+
+	// A second call within the same WIB day must not send a duplicate.
+	if err := svc.RunDailyTransactionReminderAt(ctx, testNowWIB(bot.DailyReminderHourWIB)); err != nil {
+		t.Fatalf("RunDailyTransactionReminderAt (second call): %v", err)
+	}
+	if got := env.messenger.count(silentChatID); got != silentCountBefore+1 {
+		t.Errorf("silent user message count after a second same-day call = %d, want still %d (no duplicate reminder)", got, silentCountBefore+1)
+	}
+}
+
 // TestHandleUpdate_SurplusQuery_NaturalLanguage covers a real reported bug:
 // "surplusku bulan lalu berapa?" had no matching AI tool at all, so the
 // model fell back to query_spending with a guessed date range/type filter,

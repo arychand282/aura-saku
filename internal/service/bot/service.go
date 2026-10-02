@@ -2134,6 +2134,93 @@ func (s *Service) RunBudgetRolloverNudges(ctx context.Context) error {
 	return nil
 }
 
+// wibOffset is the fixed UTC+7 (WIB — Waktu Indonesia Barat) offset
+// RunDailyTransactionReminder targets below. Not a general per-user
+// timezone: models.User.TimezoneOffset exists but is otherwise unused
+// anywhere in this codebase, and the request this job was built for was
+// specifically "remind at 21:00 WIB" for this bot's primarily-Indonesian
+// audience — real per-user timezone support would be a much bigger feature
+// than this single fixed-time daily reminder needs.
+const wibOffset = 7 * time.Hour
+
+// DailyReminderHourWIB is the wall-clock WIB hour (24h) RunDailyTransactionReminder
+// targets. The job's own scheduler.Job interval (see cmd/server/main.go) ticks
+// more often than once a day so it can actually catch this hour promptly;
+// the function itself is a no-op every tick outside this hour, and per-user
+// Redis idempotency (keyed by the WIB calendar date) stops it from notifying
+// more than once even while several ticks land inside the same hour.
+const DailyReminderHourWIB = 21
+
+// dailyReminderTTL mirrors quota.go's own 26-hour convention: outlives a
+// full WIB calendar day so the idempotency key never expires a moment early
+// near the day boundary, regardless of how often the scheduler ticks.
+const dailyReminderTTL = 26 * time.Hour
+
+// RunDailyTransactionReminder is the scheduler.Job entry point — see
+// RunDailyTransactionReminderAt's doc comment for the actual behavior. This
+// thin wrapper only exists to supply the real current time; split out so a
+// test can drive the time-of-day gate and the WIB-calendar-day boundary
+// with a fixed, deterministic instant instead of being at the mercy of
+// whatever wall-clock hour the test happens to run at.
+func (s *Service) RunDailyTransactionReminder(ctx context.Context) error {
+	return s.RunDailyTransactionReminderAt(ctx, time.Now().UTC().Add(wibOffset))
+}
+
+// RunDailyTransactionReminderAt messages every active user who hasn't
+// recorded a single transaction yet today (the WIB calendar day containing
+// nowWIB) once the clock reaches DailyReminderHourWIB WIB — a no-op outside
+// that hour, and idempotent per user per WIB calendar day so a scheduler
+// restart or several ticks landing inside the target hour never
+// double-send. One user's failure (a bad lookup, a Redis hiccup) is logged
+// and skipped rather than aborting the whole run — every other user must
+// still get checked.
+func (s *Service) RunDailyTransactionReminderAt(ctx context.Context, nowWIB time.Time) error {
+	if nowWIB.Hour() != DailyReminderHourWIB {
+		return nil
+	}
+
+	// WIB midnight expressed as the equivalent UTC instant: build a UTC
+	// time.Time from nowWIB's own (already WIB-shifted) date components,
+	// then subtract the same offset back out — occurred_at is stored in UTC,
+	// so comparing against this gives the correct WIB calendar day
+	// regardless of the server process's own local timezone.
+	wibMidnightUTC := time.Date(nowWIB.Year(), nowWIB.Month(), nowWIB.Day(), 0, 0, 0, 0, time.UTC).Add(-wibOffset)
+	wibTomorrowMidnightUTC := wibMidnightUTC.Add(24 * time.Hour)
+
+	var users []models.User
+	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Find(&users).Error; err != nil {
+		return fmt.Errorf("list active users for daily transaction reminder: %w", err)
+	}
+
+	namespace := "daily-transaction-reminder:" + nowWIB.Format("2006-01-02")
+	for _, user := range users {
+		isNew, err := idempotency.MarkSeen(ctx, s.redisClient, namespace, strconv.FormatUint(uint64(user.ID), 10), dailyReminderTTL)
+		if err != nil {
+			logger.Error(logger.RedisOpFailed, fmt.Sprintf("daily reminder idempotency check for user %d, skipping this tick", user.ID), err)
+			continue
+		}
+		if !isNew {
+			// Already notified for this WIB calendar day.
+			continue
+		}
+
+		var count int64
+		if err := s.db.WithContext(ctx).Model(&models.Transaction{}).
+			Where("user_id = ? AND occurred_at >= ? AND occurred_at < ?", user.ID, wibMidnightUTC, wibTomorrowMidnightUTC).
+			Count(&count).Error; err != nil {
+			logger.Error(logger.SvcDailyReminderFailed, fmt.Sprintf("count today's transactions for user %d", user.ID), err)
+			continue
+		}
+		if count > 0 {
+			// Already recorded something today — nothing to remind about.
+			continue
+		}
+
+		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeyDailyTransactionReminder))
+	}
+	return nil
+}
+
 // RunRecurringTransactions acts on every recurring transaction / bill
 // reminder whose schedule has come due (see recurring.Service.Due).
 // ReminderOnly rows (see models.RecurringTransaction) only get a
