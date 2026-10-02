@@ -216,3 +216,65 @@ func TestListWithBalances(t *testing.T) {
 		t.Errorf("Balance = %.2f, want -20000.00", list[0].Balance)
 	}
 }
+
+// TestListWithBalances_SkipsAccountsWithNoActiveTransactions covers the
+// safeguard against a mis-parsed account (the AI mishears a name, or
+// guesses a wrong move_money destination) cluttering /accounts forever:
+// since there's no rename/delete command, an account that never got a real
+// transaction — or whose only transaction was undone/corrected away — must
+// not show up at all, rather than appearing at a ₱0 balance with no way to
+// clean it up.
+func TestListWithBalances_SkipsAccountsWithNoActiveTransactions(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	// Never had any transaction at all (e.g. a stray account created by a
+	// misfire that never actually completed).
+	if _, err := account.GetOrCreateByName(ctx, gormDB, user.ID, "NeverUsed"); err != nil {
+		t.Fatalf("GetOrCreateByName: %v", err)
+	}
+
+	// Had a transaction, but it was corrected away — simulating "the AI
+	// mis-attributed this to the wrong account and the user fixed it."
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	mistaken, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food", AccountName: "Gopai",
+	}, models.SourceText, "beli kopi 20rb pake Gopai")
+	if err != nil {
+		t.Fatalf("create mistaken transaction: %v", err)
+	}
+	if _, err := txSvc.DeleteTransaction(ctx, user.ID, mistaken.ID); err != nil {
+		t.Fatalf("undo mistaken transaction: %v", err)
+	}
+
+	// A real, actively-used account for comparison — must still show up.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 15_000, Currency: "IDR", CategoryName: "food", AccountName: "Gopay",
+	}, models.SourceText, "beli kopi 15rb pake Gopay"); err != nil {
+		t.Fatalf("create real transaction: %v", err)
+	}
+
+	list, err := account.ListWithBalances(ctx, gormDB, user.ID)
+	if err != nil {
+		t.Fatalf("ListWithBalances: %v", err)
+	}
+	if len(list) != 1 {
+		names := make([]string, len(list))
+		for i, ab := range list {
+			names[i] = ab.Account.Name
+		}
+		t.Fatalf("expected only the actively-used Gopay account, got %d: %v", len(list), names)
+	}
+	if list[0].Account.Name != "Gopay" {
+		t.Errorf("Account.Name = %q, want %q", list[0].Account.Name, "Gopay")
+	}
+
+	// The stray accounts still exist in the DB (no deletion), just hidden
+	// from the list.
+	var strayCount int64
+	gormDB.Model(&models.Account{}).Where("user_id = ? AND name IN ?", user.ID, []string{"NeverUsed", "Gopai"}).Count(&strayCount)
+	if strayCount != 2 {
+		t.Errorf("expected both stray accounts to still exist (just hidden), found %d", strayCount)
+	}
+}

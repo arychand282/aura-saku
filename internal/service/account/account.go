@@ -85,9 +85,20 @@ type AccountBalance struct {
 	Balance float64
 }
 
-// ListWithBalances returns every one of the user's active accounts
-// (oldest/Default first, matching creation order) alongside each one's own
+// ListWithBalances returns every one of the user's active accounts that
+// has at least one active (non-deleted) transaction posted to it (oldest/
+// Default first, matching creation order), alongside each one's own
 // calculated Balance.
+//
+// An account with zero active transactions is skipped rather than listed
+// at a ₱0 balance — this is what keeps a mis-parsed account (the AI
+// mishears a name, or guesses a wrong move_money destination) from
+// cluttering /accounts forever: there's no rename/delete command, but once
+// the mistaken transaction is undone/corrected away, GetOrCreateByName's
+// auto-created account for it naturally drops out of this list on its own,
+// with no cleanup step needed. A legitimately-used account that nets to a
+// real ₱0 balance (e.g. income and expense canceling out) still has active
+// transactions and is unaffected by this filter.
 func ListWithBalances(ctx context.Context, db *gorm.DB, userID uint) ([]AccountBalance, error) {
 	var accounts []models.Account
 	if err := db.WithContext(ctx).Where("user_id = ?", userID).Order("created_at ASC").Find(&accounts).Error; err != nil {
@@ -96,6 +107,14 @@ func ListWithBalances(ctx context.Context, db *gorm.DB, userID uint) ([]AccountB
 
 	result := make([]AccountBalance, 0, len(accounts))
 	for _, acc := range accounts {
+		var txCount int64
+		if err := db.WithContext(ctx).Model(&models.Transaction{}).Where("account_id = ?", acc.ID).Count(&txCount).Error; err != nil {
+			return nil, fmt.Errorf("count transactions for account %d: %w", acc.ID, err)
+		}
+		if txCount == 0 {
+			continue
+		}
+
 		balance, err := Balance(ctx, db, acc.ID)
 		if err != nil {
 			return nil, fmt.Errorf("compute balance for account %d: %w", acc.ID, err)
