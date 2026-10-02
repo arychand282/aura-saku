@@ -355,6 +355,149 @@ func TestMostRecentByType(t *testing.T) {
 	}
 }
 
+// TestCreateTransfer_CreatesLinkedLegsWithOppositeDirection covers
+// move_money/ai.IntentAccountTransfer: moving money between two of the
+// user's own accounts must create two rows, linked to each other, sharing
+// the same amount/currency/rate, with opposite TransferLeg values.
+func TestCreateTransfer_CreatesLinkedLegsWithOppositeDirection(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	out, in, err := svc.CreateTransfer(ctx, user.ID, user.DefaultCurrency, "BCA", "Gopay", 200_000, "IDR", "topup", "")
+	if err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	if out.LinkedTransactionID == nil || *out.LinkedTransactionID != in.ID {
+		t.Errorf("out leg LinkedTransactionID = %v, want %d", out.LinkedTransactionID, in.ID)
+	}
+	if in.LinkedTransactionID == nil || *in.LinkedTransactionID != out.ID {
+		t.Errorf("in leg LinkedTransactionID = %v, want %d", in.LinkedTransactionID, out.ID)
+	}
+	if out.TransferLeg == nil || *out.TransferLeg != models.TransferLegOut {
+		t.Errorf("out leg TransferLeg = %v, want %q", out.TransferLeg, models.TransferLegOut)
+	}
+	if in.TransferLeg == nil || *in.TransferLeg != models.TransferLegIn {
+		t.Errorf("in leg TransferLeg = %v, want %q", in.TransferLeg, models.TransferLegIn)
+	}
+	if out.ConvertedAmount != 200_000 || in.ConvertedAmount != 200_000 {
+		t.Errorf("ConvertedAmount mismatch: out=%.2f in=%.2f, want both 200000.00", out.ConvertedAmount, in.ConvertedAmount)
+	}
+	if out.AccountID == nil || in.AccountID == nil || *out.AccountID == *in.AccountID {
+		t.Fatal("expected the two legs to target two different accounts")
+	}
+}
+
+// TestCreateTransfer_SameAccountReturnsError covers the guard against a
+// no-op transfer to itself, after both names resolve to real accounts.
+func TestCreateTransfer_SameAccountReturnsError(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	// Different casing of the same account name must still resolve to the
+	// same account and be rejected.
+	if _, _, err := svc.CreateTransfer(ctx, user.ID, user.DefaultCurrency, "BCA", "bca", 100_000, "IDR", "", ""); !errors.Is(err, apperror.ErrSameAccountTransfer) {
+		t.Errorf("CreateTransfer(same account) err = %v, want ErrSameAccountTransfer", err)
+	}
+}
+
+// TestUndoLast_CascadesToLinkedTransferLeg covers the atomicity guarantee
+// centralized in undoTransaction: undoing either leg of an inter-account
+// transfer must revert both, never leaving one leg dangling.
+func TestUndoLast_CascadesToLinkedTransferLeg(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{TelegramChatID: time.Now().UnixNano(), DefaultCurrency: "IDR", Tier: models.TierFree}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, gormDB, user.ID) })
+
+	svc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	out, in, err := svc.CreateTransfer(ctx, user.ID, user.DefaultCurrency, "BCA", "Gopay", 150_000, "IDR", "", "")
+	if err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	// UndoLast resolves to the most recently created row, which is the "in"
+	// leg (created second) — undoing it must also revert the "out" leg.
+	undone, err := svc.UndoLast(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UndoLast: %v", err)
+	}
+	if undone.ID != in.ID {
+		t.Fatalf("UndoLast reverted transaction %d, want the most recent in-leg %d", undone.ID, in.ID)
+	}
+
+	var outAfter, inAfter models.Transaction
+	if err := gormDB.Unscoped().First(&outAfter, out.ID).Error; err != nil {
+		t.Fatalf("fetch out leg: %v", err)
+	}
+	if err := gormDB.Unscoped().First(&inAfter, in.ID).Error; err != nil {
+		t.Fatalf("fetch in leg: %v", err)
+	}
+	if !outAfter.DeletedAt.Valid {
+		t.Error("expected the out leg to be soft-deleted too, was not")
+	}
+	if !inAfter.DeletedAt.Valid {
+		t.Error("expected the in leg to be soft-deleted")
+	}
+
+	var undoneHistoryCount int64
+	gormDB.Model(&models.UndoHistory{}).Where("transaction_id IN ? AND action = ?", []uint{out.ID, in.ID}, "undone").Count(&undoneHistoryCount)
+	if undoneHistoryCount != 2 {
+		t.Errorf("expected 2 UndoHistory(undone) rows (one per leg), got %d", undoneHistoryCount)
+	}
+}
+
 func cleanupUser(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})

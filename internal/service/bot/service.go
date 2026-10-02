@@ -23,6 +23,7 @@ import (
 	"aura-saku/internal/models"
 	"aura-saku/internal/quota"
 	"aura-saku/internal/reward"
+	"aura-saku/internal/service/account"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/payment"
@@ -151,6 +152,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleBudget(ctx, user, msg)
 	case "/goal":
 		s.handleGoal(ctx, user, msg)
+	case "/accounts":
+		s.handleAccounts(ctx, user)
 	case "/subscribe":
 		s.handleSubscribe(ctx, user, msg)
 	case "/mysubscription":
@@ -214,8 +217,9 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 	if strings.TrimSpace(msg.CommandArgs) == "" {
 		// No actual balance to reconcile against — just report the
 		// calculated balance, same as the natural-language "what's my
-		// balance" path (see handleBalanceQuery).
-		s.handleBalanceQuery(ctx, user, msg)
+		// balance" path (see handleBalanceQuery). /sync has no
+		// account-selection UX, so this always asks for the total.
+		s.handleBalanceQuery(ctx, user, "")
 		return
 	}
 
@@ -244,15 +248,94 @@ func (s *Service) handleSync(ctx context.Context, user *models.User, msg *messag
 // handleBalanceQuery answers "what's my balance" with no reconciliation
 // side effects (no BalanceReconciliation row, no adjustment) — shared by
 // /sync with no argument and the natural-language ai.IntentBalance path, so
-// both report the exact same number via the same reply text.
-func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
-	balance, err := s.reconSvc.Balance(ctx, user.ID)
+// both report the exact same number via the same reply text. An empty
+// accountName (always the case for /sync, which has no account-selection
+// UX) reports the total across every one of the user's accounts; a
+// non-empty one narrows it to that single named account, replying with
+// KeyAccountNotFound if the user has no account by that name rather than
+// silently creating one just because it was asked about.
+func (s *Service) handleBalanceQuery(ctx context.Context, user *models.User, accountName string) {
+	if strings.TrimSpace(accountName) == "" {
+		balance, err := s.reconSvc.Balance(ctx, user.ID)
+		if err != nil {
+			logger.Error(logger.SvcSyncFailed, fmt.Sprintf("compute balance for user %d", user.ID), err)
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
+			return
+		}
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+		return
+	}
+
+	acc, err := account.FindByName(ctx, s.db, user.ID, accountName)
 	if err != nil {
-		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("compute balance for user %d", user.ID), err)
+		if errors.Is(err, apperror.ErrAccountNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountNotFound, accountName))
+			return
+		}
+		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("find account %q for user %d", accountName, user.ID), err)
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
 		return
 	}
-	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyBalance, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+
+	balance, err := account.Balance(ctx, s.db, acc.ID)
+	if err != nil {
+		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("compute balance for account %d", acc.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountBalance, acc.Name, i18n.FormatMoney(user.Language, balance, user.DefaultCurrency)))
+}
+
+// handleAccountTransfer moves money between two of the user's own accounts
+// (ai.IntentAccountTransfer — move_money), as opposed to a plain
+// Type=transfer record_transaction entry (money sent to someone else,
+// unaffected by this). See transaction.Service.CreateTransfer.
+func (s *Service) handleAccountTransfer(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	currency := parsed.Currency
+	if currency == "" {
+		currency = user.DefaultCurrency
+	}
+
+	_, _, err := s.txSvc.CreateTransfer(ctx, user.ID, user.DefaultCurrency,
+		parsed.FromAccountName, parsed.ToAccountName, parsed.Amount, currency, parsed.Description, parsed.OccurredAtHint)
+	if err != nil {
+		if errors.Is(err, apperror.ErrSameAccountTransfer) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeySameAccountTransfer))
+			return
+		}
+		logger.Error(logger.SvcTransferFailed, fmt.Sprintf("create transfer for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyTransferFailed))
+		return
+	}
+
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyTransferRecorded,
+		i18n.FormatMoney(user.Language, parsed.Amount, currency), parsed.FromAccountName, parsed.ToAccountName))
+}
+
+// handleAccounts backs /accounts — a quick glanceable list of every one of
+// the user's accounts and each one's own balance, same style as
+// handleRecurring's list reply.
+func (s *Service) handleAccounts(ctx context.Context, user *models.User) {
+	accounts, err := account.ListWithBalances(ctx, s.db, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("list accounts for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySyncFailed))
+		return
+	}
+	if len(accounts) == 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountsListEmpty))
+		return
+	}
+
+	var total float64
+	lines := make([]string, 0, len(accounts)+1)
+	for _, ab := range accounts {
+		lines = append(lines, i18n.T(user.Language, i18n.KeyAccountsListItem,
+			ab.Account.Name, i18n.FormatMoney(user.Language, ab.Balance, user.DefaultCurrency)))
+		total += ab.Balance
+	}
+	lines = append(lines, i18n.T(user.Language, i18n.KeyAccountsListTotal, i18n.FormatMoney(user.Language, total, user.DefaultCurrency)))
+	s.reply(ctx, user, strings.Join(lines, "\n"))
 }
 
 // handleSubscribe starts (or resumes) a Pro-tier checkout — reachable via
@@ -981,7 +1064,7 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 	}
 
 	if first.Intent == ai.IntentBalance {
-		s.handleBalanceQuery(ctx, user, msg)
+		s.handleBalanceQuery(ctx, user, first.AccountName)
 		return
 	}
 
@@ -1032,6 +1115,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentSurplus {
 		s.handleSurplusQuery(ctx, user)
+		return
+	}
+
+	if first.Intent == ai.IntentAccountTransfer {
+		s.handleAccountTransfer(ctx, user, first)
 		return
 	}
 

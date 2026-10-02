@@ -42,7 +42,7 @@ func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) 
 		return nil, err
 	}
 
-	calculated, err := s.calculatedBalance(ctx, acc.ID)
+	calculated, err := account.Balance(ctx, s.db, acc.ID)
 	if err != nil {
 		return nil, fmt.Errorf("compute calculated balance: %w", err)
 	}
@@ -89,48 +89,11 @@ func (s *Service) Sync(ctx context.Context, userID uint, actualBalance float64) 
 // effects — no BalanceReconciliation row, no adjustment transaction, just
 // the number. Used by the bot's /sync-with-no-argument and "what's my
 // balance" natural-language paths, as distinct from Sync's full
-// reconcile-against-a-self-reported-actual-balance flow above.
+// reconcile-against-a-self-reported-actual-balance flow above. This now
+// means the user's total across every one of their accounts (their real
+// net worth), not just the single default account — see
+// account.TotalBalance, which is also where the sign logic for an
+// inter-account transfer's two legs netting to zero lives.
 func (s *Service) Balance(ctx context.Context, userID uint) (float64, error) {
-	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
-	if err != nil {
-		return 0, err
-	}
-	return s.calculatedBalance(ctx, acc.ID)
-}
-
-func (s *Service) calculatedBalance(ctx context.Context, accountID uint) (float64, error) {
-	type totalRow struct {
-		Type  string
-		Total float64
-	}
-	var rows []totalRow
-	err := s.db.WithContext(ctx).Model(&models.Transaction{}).
-		Select("type, COALESCE(SUM(converted_amount), 0) as total").
-		Where("account_id = ?", accountID).
-		Group("type").
-		Scan(&rows).Error
-	if err != nil {
-		return 0, err
-	}
-
-	var balance float64
-	for _, r := range rows {
-		balance += balanceSign(models.TransactionType(r.Type)) * r.Total
-	}
-	return balance, nil
-}
-
-// balanceSign determines whether a transaction type increases or decreases
-// the user's tracked cash balance.
-//
-// TODO: once multi-account support exists, "transfer" should net to zero
-// across the source/destination accounts instead of always decreasing the
-// single tracked balance.
-func balanceSign(t models.TransactionType) float64 {
-	switch t {
-	case models.TxIncome, models.TxReward:
-		return 1
-	default: // expense, investment, transfer
-		return -1
-	}
+	return account.TotalBalance(ctx, s.db, userID)
 }

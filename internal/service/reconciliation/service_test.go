@@ -163,6 +163,64 @@ func TestBalance(t *testing.T) {
 	}
 }
 
+// TestBalance_SumsAcrossMultipleAccounts covers the behavior change this
+// feature introduces: Balance now means the user's total net worth across
+// every account, not just the single default one — a tagged expense
+// against a named account and an inter-account transfer must both be
+// reflected correctly in the one returned total.
+func TestBalance_SumsAcrossMultipleAccounts(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("skipping integration test, config load failed: %v", err)
+	}
+	gormDB, err := db.NewPostgres(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test, postgres not reachable: %v", err)
+	}
+	if err := db.RunMigrations(gormDB); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	ctx := context.Background()
+	user := models.User{
+		TelegramChatID:  time.Now().UnixNano(),
+		DefaultCurrency: "IDR",
+		Tier:            models.TierFree,
+	}
+	if err := gormDB.WithContext(ctx).Create(&user).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { cleanup(t, gormDB, user.ID) })
+
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+	reconSvc := reconciliation.NewService(gormDB, txSvc)
+
+	// 1,000,000 on Default (no account named).
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "salary 1000000"); err != nil {
+		t.Fatalf("create income: %v", err)
+	}
+	// 500,000 income tagged to a second account, "BCA".
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 500_000, Currency: "IDR", CategoryName: "bonus", AccountName: "BCA",
+	}, models.SourceText, "bonus 500000 ke BCA"); err != nil {
+		t.Fatalf("create income into BCA: %v", err)
+	}
+	// Moving 300,000 between the two must not change the total.
+	if _, _, err := txSvc.CreateTransfer(ctx, user.ID, user.DefaultCurrency, "BCA", "Default", 300_000, "IDR", "", ""); err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	balance, err := reconSvc.Balance(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != 1_500_000 {
+		t.Errorf("Balance = %.2f, want 1500000.00 (total across both accounts, unaffected by the transfer between them)", balance)
+	}
+}
+
 func cleanup(t *testing.T, gormDB *gorm.DB, userID uint) {
 	t.Helper()
 	gormDB.Unscoped().Where("user_id = ?", userID).Delete(&models.UndoHistory{})

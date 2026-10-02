@@ -34,7 +34,7 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			QueryTransactionType: argString(args, "query_transaction_type"),
 		}
 	case prompt.ToolGetBalance:
-		return &ParsedTransaction{Intent: IntentBalance}
+		return &ParsedTransaction{Intent: IntentBalance, AccountName: argString(args, "account_name")}
 	case prompt.ToolDeleteTransaction:
 		return &ParsedTransaction{
 			Intent:              IntentDelete,
@@ -88,6 +88,16 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 		}
 	case prompt.ToolCheckSurplus:
 		return &ParsedTransaction{Intent: IntentSurplus}
+	case prompt.ToolMoveMoney:
+		return &ParsedTransaction{
+			Intent:          IntentAccountTransfer,
+			FromAccountName: argString(args, "from_account"),
+			ToAccountName:   argString(args, "to_account"),
+			Amount:          argFloat(args, "amount"),
+			Currency:        argString(args, "currency"),
+			Description:     argString(args, "description"),
+			OccurredAtHint:  argString(args, "occurred_at_hint"),
+		}
 	default:
 		return nil
 	}
@@ -102,6 +112,7 @@ func transactionFromArgs(args map[string]interface{}) *ParsedTransaction {
 		Bucket:         argString(args, "bucket"),
 		Description:    argString(args, "description"),
 		OccurredAtHint: argString(args, "occurred_at_hint"),
+		AccountName:    argString(args, "account_name"),
 	}
 }
 

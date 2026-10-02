@@ -32,6 +32,7 @@ const (
 	ToolCheckBudgetAllocation      = "check_budget_allocation"
 	ToolSetBudgetAllocation        = "set_budget_allocation"
 	ToolCheckSurplus               = "check_surplus"
+	ToolMoveMoney                  = "move_money"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -150,6 +151,10 @@ func transactionProperties() map[string]ToolProperty {
 			Type:        "string",
 			Description: "ISO 8601 date (YYYY-MM-DD) the transaction actually happened on, computed from today's date and any relative time language in the message (\"yesterday\", \"kemarin\", \"3 days ago\"). Leave empty if no time is mentioned (assume today).",
 		},
+		"account_name": {
+			Type:        "string",
+			Description: "Which of the user's own tracked accounts/wallets this applies to, ONLY when the message explicitly names one (e.g. \"beli kopi 20rb pake OVO\" -> \"OVO\", \"gaji masuk ke BCA\" -> \"BCA\"). Leave empty to use their default account — never guess an account that wasn't actually mentioned.",
+		},
 	}
 }
 
@@ -210,8 +215,44 @@ func TransactionTools() []Tool {
 		},
 		{
 			Name:        ToolGetBalance,
-			Description: "Call this when the message asks what the user's current total balance / how much money they have right now is — not scoped to any time period or category (e.g. \"what's my balance?\", \"berapa saldo aku sekarang?\", \"sisa uang aku berapa?\"). Takes no parameters.",
-			Properties:  map[string]ToolProperty{},
+			Description: "Call this when the message asks what the user's current balance / how much money they have right now is — not scoped to any time period or category (e.g. \"what's my balance?\", \"berapa saldo aku sekarang?\", \"sisa uang aku berapa?\", \"saldo di Gopay berapa?\").",
+			Properties: map[string]ToolProperty{
+				"account_name": {
+					Type:        "string",
+					Description: "Set this ONLY when the message asks about ONE SPECIFIC named account/wallet's balance (e.g. \"saldo di Gopay berapa?\" -> \"Gopay\", \"how much is left in my BCA account?\" -> \"BCA\"). Leave empty for the default, far more common question: total balance across ALL of the user's accounts combined.",
+				},
+			},
+		},
+		{
+			Name:        ToolMoveMoney,
+			Description: "Call this ONLY when money moves between TWO OF THE USER'S OWN tracked accounts/wallets — e.g. moving savings from a bank to an e-wallet, topping up an e-wallet from a bank balance (\"pindahin 200rb dari BCA ke Gopay\", \"topup OVO 50rb dari BCA\", \"aku pindah 1 juta dari tabungan ke dompet digital\"). Do NOT call this when money is sent to another person or paid to an external party (\"transfer ke adek 500rb\", \"bayar ke toko\") — that's record_transaction with type=\"transfer\" instead, completely unchanged. from_account and to_account must both be given and must name two DIFFERENT accounts.",
+			Properties: map[string]ToolProperty{
+				"from_account": {
+					Type:        "string",
+					Description: "The account/wallet the money is moving OUT of (e.g. \"BCA\").",
+				},
+				"to_account": {
+					Type:        "string",
+					Description: "The account/wallet the money is moving INTO (e.g. \"Gopay\").",
+				},
+				"amount": {
+					Type:        "number",
+					Description: "A positive number. Never guess a number that wasn't stated or clearly implied.",
+				},
+				"currency": {
+					Type:        "string",
+					Description: "ISO 4217 code (e.g. IDR, USD). If not mentioned, use the caller-provided default currency.",
+				},
+				"description": {
+					Type:        "string",
+					Description: "A short free-text note about this transfer, in the user's own words, if the message gives one (e.g. \"topup buat jajan\"). Leave empty if the message states nothing beyond the accounts and amount.",
+				},
+				"occurred_at_hint": {
+					Type:        "string",
+					Description: "ISO 8601 date (YYYY-MM-DD) this move actually happened on, computed from today's date and any relative time language in the message. Leave empty if no time is mentioned (assume today).",
+				},
+			},
+			Required: []string{"from_account", "to_account", "amount"},
 		},
 		{
 			Name:        ToolCorrectTransaction,

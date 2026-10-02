@@ -122,6 +122,8 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyGoalProgress, KeyGoalProgressToGo, KeyGoalProgressDeadline, KeyGoalReached, KeyGoalCancelSuccess,
 		KeySubscribeLink, KeySubscribePending, KeySubscribeUnavailable, KeySubscribeSuccess, KeySubscribeFailed,
 		KeySubscriptionExpired, KeyMySubscriptionPro, KeyMySubscriptionFree,
+		KeyAccountBalance, KeyAccountNotFound, KeyTransferRecorded, KeySameAccountTransfer, KeyTransferFailed,
+		KeyAccountsListEmpty, KeyAccountsListItem, KeyAccountsListTotal,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

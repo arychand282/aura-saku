@@ -169,6 +169,15 @@ const (
 	KeySubscriptionExpired  = "subscription_expired"
 	KeyMySubscriptionPro    = "my_subscription_pro"
 	KeyMySubscriptionFree   = "my_subscription_free"
+
+	KeyAccountBalance      = "account_balance"
+	KeyAccountNotFound     = "account_not_found"
+	KeyTransferRecorded    = "transfer_recorded"
+	KeySameAccountTransfer = "same_account_transfer"
+	KeyTransferFailed      = "transfer_failed"
+	KeyAccountsListEmpty   = "accounts_list_empty"
+	KeyAccountsListItem    = "accounts_list_item"
+	KeyAccountsListTotal   = "accounts_list_total"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -279,6 +288,15 @@ var catalog = map[models.Language]map[string]string{
 		KeySubscriptionExpired:  "Your Pro subscription has expired. Send /subscribe to renew and keep unlimited daily use.",
 		KeyMySubscriptionPro:    "You're on the Pro tier — unlimited daily use. Renews on %s.",
 		KeyMySubscriptionFree:   "You're on the Free tier. Send /subscribe (or just tell me you want to upgrade) to go Pro for unlimited daily use.",
+
+		KeyAccountBalance:      "Balance in %s: %s.",
+		KeyAccountNotFound:     "You don't have an account named \"%s\" yet.",
+		KeyTransferRecorded:    "Moved %s from %s to %s.",
+		KeySameAccountTransfer: "The source and destination accounts can't be the same.",
+		KeyTransferFailed:      "Something went wrong recording that transfer.",
+		KeyAccountsListEmpty:   "You don't have any accounts tracked yet — just tell me about a transaction or transfer naming one, e.g. \"beli kopi 20rb pake OVO\".",
+		KeyAccountsListItem:    "%s: %s",
+		KeyAccountsListTotal:   "Total: %s",
 	},
 	models.LanguageID: {
 		KeyWelcome:                             "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -387,6 +405,15 @@ var catalog = map[models.Language]map[string]string{
 		KeySubscriptionExpired:  "Langganan Pro kamu sudah habis masa berlakunya. Kirim /subscribe untuk perpanjang dan tetap dapat pemakaian tanpa batas.",
 		KeyMySubscriptionPro:    "Kamu di tier Pro — pemakaian harian tanpa batas. Perpanjangan pada %s.",
 		KeyMySubscriptionFree:   "Kamu di tier Free. Kirim /subscribe (atau bilang aja mau upgrade) untuk jadi Pro dan dapat pemakaian harian tanpa batas.",
+
+		KeyAccountBalance:      "Saldo di %s: %s.",
+		KeyAccountNotFound:     "Kamu belum punya akun bernama \"%s\".",
+		KeyTransferRecorded:    "Dipindahkan %s dari %s ke %s.",
+		KeySameAccountTransfer: "Akun asal dan tujuan nggak boleh sama.",
+		KeyTransferFailed:      "Terjadi kesalahan saat mencatat transfer itu.",
+		KeyAccountsListEmpty:   "Kamu belum punya akun yang tercatat — cukup ceritakan transaksi atau transfer yang menyebut satu, misal \"beli kopi 20rb pake OVO\".",
+		KeyAccountsListItem:    "%s: %s",
+		KeyAccountsListTotal:   "Total: %s",
 	},
 }
 

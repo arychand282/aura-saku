@@ -1935,6 +1935,120 @@ func TestHandleUpdate_BalanceQuery_NaturalLanguage(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_BalanceQuery_NamedAccount covers narrowing a balance
+// question to one specific account (ai.ParsedTransaction.AccountName) —
+// the reply must report only that account's own balance, not the total
+// across every account.
+func TestHandleUpdate_BalanceQuery_NamedAccount(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 300_000, Currency: "IDR", CategoryName: "salary",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 300000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 500_000, Currency: "IDR", CategoryName: "bonus", AccountName: "BCA",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bonus 500000 ke BCA"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBalance, AccountName: "BCA"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "saldo di BCA berapa?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyAccountBalance, "BCA", i18n.FormatMoney(models.LanguageID, 500_000, "IDR"))
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_BalanceQuery_AccountNotFound covers asking about an
+// account the user has never mentioned — this must reply with a clear
+// "no such account" message rather than silently creating one just because
+// it was asked about (see account.FindByName).
+func TestHandleUpdate_BalanceQuery_AccountNotFound(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentBalance, AccountName: "Jenius"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "saldo di Jenius berapa?"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyAccountNotFound, "Jenius")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_AccountTransfer_NaturalLanguage covers move_money/
+// ai.IntentAccountTransfer: moving money between two of the user's own
+// accounts must create both legs and reply with a confirmation naming both
+// accounts, distinct from a plain record_transaction type=transfer (which
+// stays on a single account, unaffected by this).
+func TestHandleUpdate_AccountTransfer_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary", AccountName: "BCA",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 1 juta ke BCA"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentAccountTransfer, FromAccountName: "BCA", ToAccountName: "Gopay",
+		Amount: 200_000, Currency: "IDR", Description: "topup",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "pindahin 200rb dari BCA ke Gopay"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyTransferRecorded,
+		i18n.FormatMoney(models.LanguageID, 200_000, "IDR"), "BCA", "Gopay")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	balance, err := reconciliation.NewService(env.db, nil).Balance(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != 1_000_000 {
+		t.Errorf("total balance = %.2f, want 1000000.00 (the transfer must net to zero)", balance)
+	}
+}
+
+// TestHandleUpdate_AccountsCommand_ListsEveryAccountWithBalance covers
+// /accounts: every account the user has tagged a transaction to must show
+// up with its own balance, plus a total line.
+func TestHandleUpdate_AccountsCommand_ListsEveryAccountWithBalance(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food", AccountName: "OVO",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "beli kopi 20rb pake OVO"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/accounts"})
+	reply := env.messenger.last(chatID)
+	if !strings.Contains(reply, "OVO") {
+		t.Errorf("reply = %q, want it to mention the OVO account", reply)
+	}
+	wantAmount := i18n.FormatMoney(models.LanguageID, 20_000, "IDR")
+	if !strings.Contains(reply, wantAmount) {
+		t.Errorf("reply = %q, want it to contain the formatted balance %q", reply, wantAmount)
+	}
+}
+
 // TestHandleUpdate_BudgetAllocation_NaturalLanguage covers a user asking
 // "pembagian budgeting ku gimana?" (what's my budget allocation) — this must
 // show the configured Needs/Wants/Savings PERCENTAGE split (the default

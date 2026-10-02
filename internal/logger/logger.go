@@ -45,6 +45,7 @@ const (
 	SvcGoalFailed            Code = "AURA-SVC-011" // savingsgoal.Service create/progress/cancel failed
 	SvcPaymentFailed         Code = "AURA-SVC-012" // payment.Service checkout/notification/expiry handling failed
 	SvcDailyReminderFailed   Code = "AURA-SVC-013" // bot.Service.RunDailyTransactionReminder failed for one user (skipped, other users still processed)
+	SvcTransferFailed        Code = "AURA-SVC-014" // transaction.Service.CreateTransfer failed
 
 	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )

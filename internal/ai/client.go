@@ -22,6 +22,7 @@ const (
 	IntentBudgetAllocation   = "budget_allocation"
 	IntentBudgetSet          = "budget_set"
 	IntentSurplus            = "surplus"
+	IntentAccountTransfer    = "account_transfer"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -73,6 +74,24 @@ type ParsedTransaction struct {
 	CategoryName   string  `json:"category_name"`
 	Description    string  `json:"description"`
 	OccurredAtHint string  `json:"occurred_at_hint,omitempty"`
+
+	// AccountName is which of the user's own tracked accounts/wallets this
+	// applies to, when the message explicitly names one (e.g. "beli kopi
+	// 20rb pake OVO" -> "OVO") — empty means "use their default account."
+	// Meaningful for IntentRecord/IntentCorrect/IntentRecurringCreate (goes
+	// through transactionFromArgs, same as CategoryName) and also for
+	// IntentBalance, where it narrows a balance question to one specific
+	// account instead of the total across all of them (see
+	// bot.Service.handleBalanceQuery).
+	AccountName string `json:"account_name,omitempty"`
+
+	// FromAccountName/ToAccountName are only meaningful for
+	// IntentAccountTransfer (move_money) — moving money between two of the
+	// user's OWN accounts, as opposed to a plain Type=transfer record
+	// (money sent to someone else, which stays on a single account exactly
+	// as before this field existed). See transaction.Service.CreateTransfer.
+	FromAccountName string `json:"from_account,omitempty"`
+	ToAccountName   string `json:"to_account,omitempty"`
 
 	// DayOfMonth is only populated for IntentRecurringCreate: the day of the
 	// month (1-31) the transaction repeats on, as stated by the message. A
@@ -369,6 +388,15 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		// Type/Amount switch below, which would otherwise reject every
 		// goal for having an empty Type.
 		return strings.TrimSpace(pt.GoalName) != "" && pt.Amount > 0
+	case IntentAccountTransfer:
+		// Also has no Type, so this returns directly too — both account
+		// names must be given, must be different accounts (a model-level
+		// guard; transaction.Service.CreateTransfer double-checks after
+		// resolving both names against real accounts), and a positive
+		// amount.
+		from := strings.TrimSpace(pt.FromAccountName)
+		to := strings.TrimSpace(pt.ToAccountName)
+		return from != "" && to != "" && !strings.EqualFold(from, to) && pt.Amount > 0
 	}
 
 	switch pt.Type {

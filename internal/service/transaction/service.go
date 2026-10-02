@@ -38,7 +38,7 @@ func (s *Service) CreateFromParsed(ctx context.Context, userID uint, defaultCurr
 		return nil, fmt.Errorf("resolve category: %w", err)
 	}
 
-	acc, err := account.GetOrCreateDefault(ctx, s.db, userID)
+	acc, err := account.GetOrCreateByName(ctx, s.db, userID, parsed.AccountName)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +139,98 @@ func (s *Service) CreateAdjustment(ctx context.Context, userID uint, amount floa
 	}
 
 	return tx, nil
+}
+
+// CreateTransfer moves money between two of the user's OWN accounts (e.g.
+// "pindahin 200rb dari BCA ke Gopay" — ai.IntentAccountTransfer/move_money),
+// as opposed to a plain Type=transfer record_transaction entry (money sent
+// to someone else, which stays on a single account unchanged). It records
+// TWO linked rows — an "out" leg on fromAccountName's account, an "in" leg
+// on toAccountName's — both resolved/created by name the same way
+// CreateFromParsed resolves a category (see account.GetOrCreateByName).
+// Both legs share the exact same OriginalAmount/OriginalCurrency/
+// ExchangeRate/ConvertedAmount, which is what makes them net to exactly
+// zero across the user's total balance (see account.TotalBalance) while
+// correctly shifting each individual account's own balance.
+func (s *Service) CreateTransfer(ctx context.Context, userID uint, defaultCurrency, fromAccountName, toAccountName string, amount float64, currency, description, occurredAtHint string) (fromTx, toTx *models.Transaction, err error) {
+	fromAcc, err := account.GetOrCreateByName(ctx, s.db, userID, fromAccountName)
+	if err != nil {
+		return nil, nil, err
+	}
+	toAcc, err := account.GetOrCreateByName(ctx, s.db, userID, toAccountName)
+	if err != nil {
+		return nil, nil, err
+	}
+	if fromAcc.ID == toAcc.ID {
+		return nil, nil, apperror.ErrSameAccountTransfer
+	}
+
+	occurredAt := resolveOccurredAt(occurredAtHint)
+
+	currency = strings.ToUpper(currency)
+	if currency == "" {
+		currency = strings.ToUpper(defaultCurrency)
+	}
+
+	rate, err := s.fxSvc.GetExchangeRate(ctx, currency, defaultCurrency, occurredAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve exchange rate: %w", err)
+	}
+	convertedAmount := amount * rate
+
+	outLeg := models.TransferLegOut
+	inLeg := models.TransferLegIn
+	out := &models.Transaction{
+		UserID:           userID,
+		AccountID:        &fromAcc.ID,
+		TransferLeg:      &outLeg,
+		Type:             models.TxTransfer,
+		Description:      description,
+		OriginalAmount:   amount,
+		OriginalCurrency: currency,
+		ExchangeRate:     rate,
+		ConvertedAmount:  convertedAmount,
+		Source:           models.SourceText,
+		RawInput:         description,
+		OccurredAt:       occurredAt,
+	}
+	in := &models.Transaction{
+		UserID:           userID,
+		AccountID:        &toAcc.ID,
+		TransferLeg:      &inLeg,
+		Type:             models.TxTransfer,
+		Description:      description,
+		OriginalAmount:   amount,
+		OriginalCurrency: currency,
+		ExchangeRate:     rate,
+		ConvertedAmount:  convertedAmount,
+		Source:           models.SourceText,
+		RawInput:         description,
+		OccurredAt:       occurredAt,
+	}
+
+	err = s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Omit("User").Create(out).Error; err != nil {
+			return fmt.Errorf("insert transfer out-leg: %w", err)
+		}
+		in.LinkedTransactionID = &out.ID
+		if err := txDB.Omit("User").Create(in).Error; err != nil {
+			return fmt.Errorf("insert transfer in-leg: %w", err)
+		}
+		out.LinkedTransactionID = &in.ID
+		if err := txDB.Model(out).Update("linked_transaction_id", in.ID).Error; err != nil {
+			return fmt.Errorf("link transfer out-leg: %w", err)
+		}
+		if err := writeUndoHistory(txDB, userID, out, "created"); err != nil {
+			return err
+		}
+		return writeUndoHistory(txDB, userID, in, "created")
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return out, in, nil
 }
 
 // MostRecent returns the user's most recent transaction without modifying
@@ -321,12 +413,37 @@ func (s *Service) CorrectLast(ctx context.Context, userID uint, defaultCurrency 
 // snapshot in the same DB transaction — shared by UndoLast (targets the
 // user's most recent transaction) and CorrectLast (targets a transaction
 // captured before a new one was created).
+// If tx is one leg of an inter-account transfer (see CreateTransfer),
+// LinkedTransactionID identifies its other leg — that leg is reverted in
+// the same DB transaction too, so undoing/correcting/deleting either side
+// of a transfer always cancels the whole thing atomically, never leaving
+// one leg dangling. A linked leg that's already gone (e.g. a concurrent
+// double-undo) is tolerated rather than treated as a failure, since the
+// goal state — both legs gone — is already satisfied.
 func (s *Service) undoTransaction(ctx context.Context, userID uint, tx *models.Transaction) (*models.Transaction, error) {
 	err := s.db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		if err := txDB.Delete(tx).Error; err != nil {
 			return fmt.Errorf("soft-delete transaction: %w", err)
 		}
-		return writeUndoHistory(txDB, userID, tx, "undone")
+		if err := writeUndoHistory(txDB, userID, tx, "undone"); err != nil {
+			return err
+		}
+
+		if tx.LinkedTransactionID == nil {
+			return nil
+		}
+		var linked models.Transaction
+		err := txDB.Where("user_id = ? AND id = ?", userID, *tx.LinkedTransactionID).First(&linked).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("find linked transfer leg: %w", err)
+		}
+		if err := txDB.Delete(&linked).Error; err != nil {
+			return fmt.Errorf("soft-delete linked transfer leg: %w", err)
+		}
+		return writeUndoHistory(txDB, userID, &linked, "undone")
 	})
 	if err != nil {
 		return nil, err

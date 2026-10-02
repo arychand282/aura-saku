@@ -26,28 +26,47 @@ const (
 	SourceRecurring TransactionSource = "recurring"
 )
 
+// TransactionTransferLeg distinguishes the two sides of an inter-account
+// transfer created by transaction.Service.CreateTransfer (see
+// move_money/ai.IntentAccountTransfer) — nil for every other transaction,
+// including the plain external transfer="type" case (e.g. "transfer ke
+// adek 500rb"), which still just decreases the single account's balance
+// exactly as before this field existed.
+type TransactionTransferLeg string
+
+const (
+	TransferLegOut TransactionTransferLeg = "out"
+	TransferLegIn  TransactionTransferLeg = "in"
+)
+
 // Transaction stores both the original amount/currency as reported by the
 // user and the converted amount in the user's default currency (using the
 // historical exchange rate at the time of the transaction), so monthly
 // aggregation is always done in a single consistent currency without ever
 // mutating the original recorded values.
 // AccountID is nullable rather than required: it's always set by the
-// application (via internal/service/account.GetOrCreateDefault) going
-// forward, but nullable avoids a risky NOT NULL migration on a table that
-// may already have rows, mirroring the CategoryID pattern below.
+// application (via internal/service/account.GetOrCreateDefault or
+// GetOrCreateByName) going forward, but nullable avoids a risky NOT NULL
+// migration on a table that may already have rows, mirroring the
+// CategoryID pattern below.
 //
-// Future multi-account note: when a second account becomes
-// selectable, a "transfer" between two of the user's own accounts should be
-// recorded as two linked Transaction rows (an outflow from the source
-// account, an inflow to the destination) rather than adding a ToAccountID
-// column — at that point a LinkedTransactionID field will be needed so
-// /undo can revert both legs atomically. Not added yet since there's no
-// caller that can create a second account.
+// Multi-account transfers: moving money between two of the user's own
+// accounts (transaction.Service.CreateTransfer) records TWO linked rows —
+// an "out" leg on the source account and an "in" leg on the destination,
+// both Type=transfer, linked via LinkedTransactionID (each points at the
+// other) and distinguished by TransferLeg. account.Balance/TotalBalance
+// use TransferLeg to sign each leg oppositely, so the pair always nets to
+// zero across the user's total balance while correctly shifting each
+// individual account's own balance. LinkedTransactionID also lets
+// transaction.Service.undoTransaction revert both legs atomically when
+// either one is undone/corrected/deleted.
 type Transaction struct {
-	ID         uint  `gorm:"primaryKey"`
-	UserID     uint  `gorm:"not null;index"`
-	AccountID  *uint `gorm:"index"`
-	CategoryID *uint `gorm:"index"`
+	ID                  uint                    `gorm:"primaryKey"`
+	UserID              uint                    `gorm:"not null;index"`
+	AccountID           *uint                   `gorm:"index"`
+	CategoryID          *uint                   `gorm:"index"`
+	LinkedTransactionID *uint                   `gorm:"index"`
+	TransferLeg         *TransactionTransferLeg `gorm:"size:10;check:chk_transactions_transfer_leg,transfer_leg IS NULL OR transfer_leg IN ('in','out')"`
 
 	Type        TransactionType `gorm:"size:15;not null;index"`
 	Description string          `gorm:"size:500"`
