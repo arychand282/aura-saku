@@ -2526,12 +2526,13 @@ func TestRunDailyTransactionReminder_OutsideTargetHourIsNoOp(t *testing.T) {
 	}
 }
 
-// TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday
-// covers the core logic during the target hour: a user with zero
-// transactions today gets reminded, a user who already recorded something
-// today does not, and a second call within the same WIB day never
-// double-sends (idempotency).
-func TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday(t *testing.T) {
+// TestRunDailyTransactionReminder_MessagesEveryUserWithTheRightVariant
+// covers the core logic during the target hour: EVERY active user gets
+// messaged either way — a user with zero transactions today gets the
+// reminder, a user who already recorded something gets an acknowledgment
+// naming the count instead (not silence) — and a second call within the
+// same WIB day never double-sends (idempotency).
+func TestRunDailyTransactionReminder_MessagesEveryUserWithTheRightVariant(t *testing.T) {
 	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
 	// newChatID() is time.Now().UnixNano() — two calls back-to-back can
 	// collide on some platforms/clock resolutions, which would silently
@@ -2573,8 +2574,12 @@ func TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday(t *t
 	if got := env.messenger.last(silentChatID); got != wantReminder {
 		t.Errorf("silent user reply = %q, want the reminder %q", got, wantReminder)
 	}
-	if got := env.messenger.count(activeChatID); got != activeCountBefore {
-		t.Errorf("active user message count = %d, want unchanged %d (already recorded today, no reminder expected)", got, activeCountBefore)
+	wantAck := i18n.T(models.LanguageID, i18n.KeyDailyTransactionRecordedAck, 1)
+	if got := env.messenger.last(activeChatID); got != wantAck {
+		t.Errorf("active user reply = %q, want the acknowledgment %q (not silence)", got, wantAck)
+	}
+	if got := env.messenger.count(activeChatID); got != activeCountBefore+1 {
+		t.Errorf("active user message count = %d, want %d (exactly one acknowledgment)", got, activeCountBefore+1)
 	}
 	if got := env.messenger.count(silentChatID); got != silentCountBefore+1 {
 		t.Errorf("silent user message count = %d, want %d (exactly one reminder)", got, silentCountBefore+1)
@@ -2586,6 +2591,9 @@ func TestRunDailyTransactionReminder_RemindsOnlyUsersWithNoTransactionToday(t *t
 	}
 	if got := env.messenger.count(silentChatID); got != silentCountBefore+1 {
 		t.Errorf("silent user message count after a second same-day call = %d, want still %d (no duplicate reminder)", got, silentCountBefore+1)
+	}
+	if got := env.messenger.count(activeChatID); got != activeCountBefore+1 {
+		t.Errorf("active user message count after a second same-day call = %d, want still %d (no duplicate acknowledgment)", got, activeCountBefore+1)
 	}
 }
 

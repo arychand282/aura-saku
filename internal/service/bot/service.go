@@ -2166,14 +2166,15 @@ func (s *Service) RunDailyTransactionReminder(ctx context.Context) error {
 	return s.RunDailyTransactionReminderAt(ctx, time.Now().UTC().Add(wibOffset))
 }
 
-// RunDailyTransactionReminderAt messages every active user who hasn't
-// recorded a single transaction yet today (the WIB calendar day containing
-// nowWIB) once the clock reaches DailyReminderHourWIB WIB — a no-op outside
-// that hour, and idempotent per user per WIB calendar day so a scheduler
-// restart or several ticks landing inside the target hour never
-// double-send. One user's failure (a bad lookup, a Redis hiccup) is logged
-// and skipped rather than aborting the whole run — every other user must
-// still get checked.
+// RunDailyTransactionReminderAt messages EVERY active user once the clock
+// reaches DailyReminderHourWIB WIB — a reminder for anyone with zero
+// transactions yet today (the WIB calendar day containing nowWIB), or an
+// acknowledgment naming how many they've already recorded for anyone who
+// has at least one. A no-op outside that hour, and idempotent per user per
+// WIB calendar day so a scheduler restart or several ticks landing inside
+// the target hour never double-send. One user's failure (a bad lookup, a
+// Redis hiccup) is logged and skipped rather than aborting the whole run —
+// every other user must still get checked.
 func (s *Service) RunDailyTransactionReminderAt(ctx context.Context, nowWIB time.Time) error {
 	if nowWIB.Hour() != DailyReminderHourWIB {
 		return nil
@@ -2211,12 +2212,16 @@ func (s *Service) RunDailyTransactionReminderAt(ctx context.Context, nowWIB time
 			logger.Error(logger.SvcDailyReminderFailed, fmt.Sprintf("count today's transactions for user %d", user.ID), err)
 			continue
 		}
-		if count > 0 {
-			// Already recorded something today — nothing to remind about.
-			continue
-		}
 
-		s.reply(ctx, &user, i18n.T(user.Language, i18n.KeyDailyTransactionReminder))
+		// Every active user gets messaged either way — a reminder for
+		// zero transactions, or an acknowledgment naming how many they
+		// already recorded — rather than silently skipping anyone who
+		// already logged something today.
+		if count == 0 {
+			s.reply(ctx, &user, i18n.T(user.Language, i18n.KeyDailyTransactionReminder))
+		} else {
+			s.reply(ctx, &user, i18n.T(user.Language, i18n.KeyDailyTransactionRecordedAck, count))
+		}
 	}
 	return nil
 }

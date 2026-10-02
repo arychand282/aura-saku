@@ -106,7 +106,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyQueryTypeTotal, KeyQueryAllTypesHeader, KeyQueryAllTypesItem,
 		KeyLanguageUsage, KeyLanguageSet,
 		KeyBudgetNoIncome, KeyBudgetNeedsExceeded, KeyBudgetWantsExceeded,
-		KeyBudgetWantsPace, KeyBudgetRollover, KeySurplusNone, KeyDailyTransactionReminder,
+		KeyBudgetWantsPace, KeyBudgetRollover, KeySurplusNone, KeyDailyTransactionReminder, KeyDailyTransactionRecordedAck,
 		KeyBudgetSetUsage, KeyBudgetSetInvalid, KeyBudgetSetFailed, KeyBudgetSetSuccess, KeyBudgetShow,
 		KeyBudgetShowAgainstIncome, KeyBudgetShowAgainstHypothetical, KeyBudgetShowNoIncome,
 		KeyQuotaExceededWithReward, KeyQuotaExceededNoReward,
