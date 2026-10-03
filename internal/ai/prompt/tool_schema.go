@@ -36,6 +36,7 @@ const (
 	ToolRecordLoan                 = "record_loan"
 	ToolRecordRepayment            = "record_repayment"
 	ToolCheckDebts                 = "check_debts"
+	ToolSetSpendingAlert           = "set_spending_alert"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -451,6 +452,36 @@ func TransactionTools() []Tool {
 			Name:        ToolCheckSurplus,
 			Description: "Call this when the message asks about last month's SURPLUS specifically — income minus expense for the PREVIOUS calendar month only, as a single net figure (e.g. \"surplusku bulan lalu berapa?\", \"berapa surplus bulan lalu?\", \"ada sisa uang ga bulan lalu?\", \"last month's surplus?\"). This is DIFFERENT from query_spending — that tool can total/list/break down spending over any stated period, but has no concept of \"income minus expense for exactly one specific prior month\" as a single answer; a plain query_spending call (even with query_start_date/query_transaction_type set to approximate this) would answer a different, broader question. Use this tool whenever the message's own word is specifically \"surplus\" (or a clear synonym like \"sisa uang\"/\"leftover\") about last month, not a generic spending/income total. Takes no parameters.",
 			Properties:  map[string]ToolProperty{},
+		},
+		{
+			Name:        ToolSetSpendingAlert,
+			Description: "Call this when the message asks to be NOTIFIED/WARNED in the FUTURE if spending crosses a specific amount — a standing threshold the user wants watched going forward (e.g. \"kasih tau kalau pengeluaran makan lebih dari 2 juta bulan ini\", \"alert aku kalau pengeluaran wants lewat 1 juta\", \"warn me if my total spending crosses 5 million this month\"). This is DIFFERENT from query_spending, which only answers a one-off question about spending SO FAR — never call this for a plain \"how much have I spent\" question with no future-watching language (\"kasih tau\"/\"alert\"/\"warn me if\"/\"notify me if\").",
+			Properties: map[string]ToolProperty{
+				"scope": {
+					Type:        "string",
+					Description: "What the threshold is measured against: \"category\" for one specific spending category (set category_name too), \"bucket\" for an entire Needs/Wants/Savings bucket (set bucket too), or \"total\" for overall spending with no filter at all.",
+					Enum:        []string{"category", "bucket", "total"},
+				},
+				"category_name": {
+					Type:        "string",
+					Description: "Required when scope is \"category\" — a short free-text category, in English, same convention as record_transaction's own category_name (e.g. \"food\"). Leave empty otherwise.",
+				},
+				"bucket": {
+					Type:        "string",
+					Description: "Required when scope is \"bucket\". Leave empty otherwise.",
+					Enum:        []string{"needs", "wants", "savings"},
+				},
+				"threshold_amount": {
+					Type:        "number",
+					Description: "A positive number, in the user's own default currency — never guess a number that wasn't stated or clearly implied.",
+				},
+				"period": {
+					Type:        "string",
+					Description: "Which period the threshold resets with. Default to \"monthly\" if unstated or unclear — there is no way to ask a follow-up, so never leave this empty.",
+					Enum:        []string{"daily", "weekly", "monthly", "yearly"},
+				},
+			},
+			Required: []string{"scope", "threshold_amount", "period"},
 		},
 	}
 }

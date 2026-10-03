@@ -26,6 +26,7 @@ const (
 	IntentDebtLend           = "debt_lend"
 	IntentDebtRepay          = "debt_repay"
 	IntentDebtQuery          = "debt_query"
+	IntentSetSpendingAlert   = "set_spending_alert"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -107,6 +108,15 @@ type ParsedTransaction struct {
 	// transaction.Service.CreateLoan/CreateRepayment.
 	DebtCounterparty string `json:"counterparty,omitempty"`
 	DebtDirection    string `json:"direction,omitempty"`
+
+	// AlertScope is only meaningful for IntentSetSpendingAlert
+	// (set_spending_alert) — "category"/"bucket"/"total". Everything else a
+	// spending alert needs is reused from fields already above: CategoryName
+	// for a category-scoped alert, Bucket for a bucket-scoped one, Amount as
+	// the threshold amount, and QueryPeriod (below) as the reset period —
+	// the same "reuse existing fields across intents" convention
+	// IntentSavingsGoalCreate already uses for Amount/Currency.
+	AlertScope string `json:"scope,omitempty"`
 
 	// DayOfMonth is only populated for IntentRecurringCreate: the day of the
 	// month (1-31) the transaction repeats on, as stated by the message. A
@@ -436,6 +446,28 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		return strings.TrimSpace(pt.DebtCounterparty) != "" && pt.Amount > 0
 	case IntentDebtQuery:
 		return true
+	case IntentSetSpendingAlert:
+		switch pt.AlertScope {
+		case "category":
+			if strings.TrimSpace(pt.CategoryName) == "" {
+				return false
+			}
+		case "bucket":
+			switch pt.Bucket {
+			case "needs", "wants", "savings":
+			default:
+				return false
+			}
+		case "total":
+		default:
+			return false
+		}
+		switch pt.QueryPeriod {
+		case PeriodDaily, PeriodWeekly, PeriodMonthly, PeriodYearly:
+		default:
+			return false
+		}
+		return pt.Amount > 0
 	}
 
 	switch pt.Type {

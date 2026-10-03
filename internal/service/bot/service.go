@@ -24,6 +24,7 @@ import (
 	"aura-saku/internal/quota"
 	"aura-saku/internal/reward"
 	"aura-saku/internal/service/account"
+	"aura-saku/internal/service/alert"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
 	"aura-saku/internal/service/debt"
@@ -157,6 +158,8 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 		s.handleAccounts(ctx, user)
 	case "/debts":
 		s.handleDebtQuery(ctx, user, "")
+	case "/alerts":
+		s.handleAlerts(ctx, user, msg.CommandArgs)
 	case "/subscribe":
 		s.handleSubscribe(ctx, user, msg)
 	case "/mysubscription":
@@ -476,6 +479,113 @@ func (s *Service) handleDebtQuery(ctx context.Context, user *models.User, counte
 		return
 	}
 	s.reply(ctx, user, strings.Join(replies, "\n"))
+}
+
+// handleSetSpendingAlert sets up (or updates in place — see alert.Create) a
+// standing spend-threshold alert (ai.IntentSetSpendingAlert — set_spending_alert).
+func (s *Service) handleSetSpendingAlert(ctx context.Context, user *models.User, parsed *ai.ParsedTransaction) {
+	var scope models.SpendingAlertScope
+	var bucketPtr *models.BudgetBucket
+	switch parsed.AlertScope {
+	case "category":
+		scope = models.AlertScopeCategory
+	case "bucket":
+		scope = models.AlertScopeBucket
+		b := models.BudgetBucket(parsed.Bucket)
+		bucketPtr = &b
+	default:
+		scope = models.AlertScopeTotal
+	}
+
+	a, err := alert.Create(ctx, s.db, user.ID, scope, parsed.CategoryName, bucketPtr, parsed.Amount, parsed.QueryPeriod)
+	if err != nil {
+		logger.Error(logger.SvcAlertFailed, fmt.Sprintf("create spending alert for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertFailed))
+		return
+	}
+
+	periodLabel := i18n.PeriodLabel(user.Language, a.Period)
+	thresholdStr := i18n.FormatMoney(user.Language, a.ThresholdAmount, user.DefaultCurrency)
+	if scope == models.AlertScopeTotal {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertSetTotal, periodLabel, thresholdStr))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertSetScoped, alertScopeLabel(user.Language, *a), periodLabel, thresholdStr))
+}
+
+// handleAlerts backs /alerts: no args lists every active alert with its id
+// and current period-to-date spend vs. threshold (computed the exact same
+// way checkSpendingAlerts detects a crossing — see currentAlertSpend);
+// "cancel <id>" deactivates one, mirroring handleRecurring's own
+// args-dispatch shape.
+func (s *Service) handleAlerts(ctx context.Context, user *models.User, commandArgs string) {
+	args := strings.Fields(commandArgs)
+	if len(args) == 2 && strings.EqualFold(args[0], "cancel") {
+		s.handleAlertCancel(ctx, user, args[1])
+		return
+	}
+	if len(args) > 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertCancelUsage))
+		return
+	}
+
+	alerts, err := alert.ListActive(ctx, s.db, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcAlertFailed, fmt.Sprintf("list active spending alerts for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertFailed))
+		return
+	}
+	if len(alerts) == 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertsListEmpty))
+		return
+	}
+
+	lines := make([]string, 0, len(alerts))
+	for _, a := range alerts {
+		spend, _, _, err := s.currentAlertSpend(ctx, a)
+		if err != nil {
+			logger.Error(logger.SvcAlertFailed, fmt.Sprintf("compute spend for alert %d", a.ID), err)
+			continue
+		}
+		spendStr := i18n.FormatMoney(user.Language, spend, user.DefaultCurrency)
+		thresholdStr := i18n.FormatMoney(user.Language, a.ThresholdAmount, user.DefaultCurrency)
+		periodLabel := i18n.PeriodLabel(user.Language, a.Period)
+		if a.Scope == models.AlertScopeTotal {
+			lines = append(lines, i18n.T(user.Language, i18n.KeyAlertsListItemTotal, a.ID, periodLabel, spendStr, thresholdStr))
+			continue
+		}
+		lines = append(lines, i18n.T(user.Language, i18n.KeyAlertsListItemScoped, a.ID, alertScopeLabel(user.Language, a), periodLabel, spendStr, thresholdStr))
+	}
+	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// handleAlertCancel backs "/alerts cancel <id>". idArg is validated as a
+// plain non-negative integer here rather than left to alert.Cancel — a
+// malformed id gets the same usage reply as no id at all, instead of an
+// opaque "not found", mirroring handleRecurringCancel's own convention.
+func (s *Service) handleAlertCancel(ctx context.Context, user *models.User, idArg string) {
+	id, err := strconv.ParseUint(idArg, 10, 64)
+	if err != nil {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertCancelUsage))
+		return
+	}
+
+	a, err := alert.Cancel(ctx, s.db, user.ID, uint(id))
+	if err != nil {
+		if errors.Is(err, apperror.ErrSpendingAlertNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertCancelNotFound))
+			return
+		}
+		logger.Error(logger.SvcAlertFailed, fmt.Sprintf("cancel spending alert for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertFailed))
+		return
+	}
+
+	if a.Scope == models.AlertScopeTotal {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertCancelSuccessTotal))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAlertCancelSuccessScoped, alertScopeLabel(user.Language, *a)))
 }
 
 // handleSubscribe starts (or resumes) a Pro-tier checkout — reachable via
@@ -1278,6 +1388,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 		return
 	}
 
+	if first.Intent == ai.IntentSetSpendingAlert {
+		s.handleSetSpendingAlert(ctx, user, first)
+		return
+	}
+
 	s.handleTransactionRecordBatch(ctx, user, msg, parsedList, source, raw)
 }
 
@@ -1573,12 +1688,119 @@ func (s *Service) appendBudgetWarnings(ctx context.Context, user *models.User, t
 	status, err := s.budgetSvc.EvaluateBudget(ctx, user.ID, user.Language)
 	if err != nil {
 		logger.Error(logger.SvcBudgetEvalFailed, fmt.Sprintf("evaluate budget for user %d", user.ID), err)
-		return reply
+	} else {
+		for _, warning := range status.Warnings {
+			reply += "\n⚠️ " + warning
+		}
 	}
-	for _, warning := range status.Warnings {
+	for _, warning := range s.checkSpendingAlerts(ctx, user) {
 		reply += "\n⚠️ " + warning
 	}
 	return reply
+}
+
+// currentAlertSpend resolves a spending alert's own period
+// (report.PeriodRange(alert.Period), re-anchored to "now" on every call —
+// the same semantics query_spending's own period already has) and computes
+// how much has been spent so far within it, dispatching to whichever
+// report.Service method matches the alert's scope. Shared by
+// checkSpendingAlerts (the post-transaction check) and handleAlerts (the
+// /alerts listing), so the number shown there is computed exactly the same
+// way crossing is actually detected.
+func (s *Service) currentAlertSpend(ctx context.Context, a models.SpendingAlert) (spend float64, start, end time.Time, err error) {
+	start, end, err = report.PeriodRange(a.Period)
+	if err != nil {
+		return 0, start, end, err
+	}
+
+	switch a.Scope {
+	case models.AlertScopeCategory:
+		total, _, catErr := s.reportSvc.CategoryTotalRange(ctx, a.UserID, start, end, a.CategoryName)
+		return total, start, end, catErr
+	case models.AlertScopeBucket:
+		bucket := models.BudgetBucket("")
+		if a.Bucket != nil {
+			bucket = *a.Bucket
+		}
+		breakdown, bucketErr := s.reportSvc.BucketSpendingRange(ctx, a.UserID, start, end, bucket)
+		if bucketErr != nil {
+			return 0, start, end, bucketErr
+		}
+		return breakdown.Total, start, end, nil
+	default: // models.AlertScopeTotal
+		totals, totalErr := s.reportSvc.SummaryRange(ctx, a.UserID, start, end)
+		if totalErr != nil {
+			return 0, start, end, totalErr
+		}
+		return totals[string(models.TxExpense)], start, end, nil
+	}
+}
+
+// alertIdempotencyExtraTTL pads a spending alert's idempotency key past its
+// own period's end, so the key is guaranteed to have expired (not just
+// about to) by the time that period could possibly recur.
+const alertIdempotencyExtraTTL = 24 * time.Hour
+
+// checkSpendingAlerts returns one not-yet-"⚠️ "-prefixed warning line per
+// active alert that has JUST crossed its threshold — fired at most once per
+// alert per period via idempotency.MarkSeen (the same Redis SETNX pattern
+// the daily-reminder/rollover-nudge jobs already use), keyed by the alert's
+// own id plus its period's start date so a new period naturally resets
+// eligibility with no "last notified" column needed. A failure computing
+// any single alert is logged and skipped rather than failing the whole
+// transaction-recording reply over it — same defensive philosophy as
+// appendBudgetWarnings' own budget-evaluation failure handling.
+func (s *Service) checkSpendingAlerts(ctx context.Context, user *models.User) []string {
+	alerts, err := alert.ListActive(ctx, s.db, user.ID)
+	if err != nil {
+		logger.Error(logger.SvcAlertFailed, fmt.Sprintf("list active spending alerts for user %d", user.ID), err)
+		return nil
+	}
+
+	var warnings []string
+	for _, a := range alerts {
+		spend, start, end, err := s.currentAlertSpend(ctx, a)
+		if err != nil {
+			logger.Error(logger.SvcAlertFailed, fmt.Sprintf("compute spend for alert %d", a.ID), err)
+			continue
+		}
+		if spend < a.ThresholdAmount {
+			continue
+		}
+
+		isNew, err := idempotency.MarkSeen(ctx, s.redisClient, "spending-alert",
+			fmt.Sprintf("%d:%s", a.ID, start.UTC().Format("2006-01-02")), end.Sub(start)+alertIdempotencyExtraTTL)
+		if err != nil {
+			logger.Error(logger.RedisOpFailed, fmt.Sprintf("spending alert idempotency check for alert %d", a.ID), err)
+			continue
+		}
+		if !isNew {
+			continue
+		}
+
+		periodLabel := i18n.PeriodLabel(user.Language, a.Period)
+		thresholdStr := i18n.FormatMoney(user.Language, a.ThresholdAmount, user.DefaultCurrency)
+		if a.Scope == models.AlertScopeTotal {
+			warnings = append(warnings, i18n.T(user.Language, i18n.KeyAlertCrossedTotal, periodLabel, thresholdStr))
+			continue
+		}
+		warnings = append(warnings, i18n.T(user.Language, i18n.KeyAlertCrossedScoped, alertScopeLabel(user.Language, a), periodLabel, thresholdStr))
+	}
+	return warnings
+}
+
+// alertScopeLabel is a spending alert's display label for its scope — the
+// category name, or the translated bucket display name — used both in the
+// crossed-threshold warning and the /alerts listing. Only meaningful for
+// AlertScopeCategory/AlertScopeBucket; AlertScopeTotal uses its own
+// dedicated (label-free) templates instead, since "total spending" reads
+// awkwardly forced into the same "spending on X" shape a category/bucket
+// label fits naturally.
+func alertScopeLabel(lang models.Language, a models.SpendingAlert) string {
+	if a.Scope == models.AlertScopeBucket && a.Bucket != nil {
+		return bucketDisplayName(*a.Bucket)
+	}
+	return categoryDisplayName(lang, a.CategoryName)
 }
 
 // handleSpendingQuery answers a "how much have I spent" style question

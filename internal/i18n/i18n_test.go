@@ -128,6 +128,9 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyDebtRepaymentMadeOngoing, KeyDebtRepaymentMadeSettled, KeyDebtNotFound, KeyDebtFailed,
 		KeyDebtsListEmpty, KeyDebtsOwedToYouHeader, KeyDebtsYouOweHeader, KeyDebtsListItem,
 		KeyDebtQueryOwedToYou, KeyDebtQueryYouOwe, KeyDebtQueryNone,
+		KeyAlertSetScoped, KeyAlertSetTotal, KeyAlertCrossedScoped, KeyAlertCrossedTotal,
+		KeyAlertsListEmpty, KeyAlertsListItemScoped, KeyAlertsListItemTotal,
+		KeyAlertCancelUsage, KeyAlertCancelNotFound, KeyAlertCancelSuccessScoped, KeyAlertCancelSuccessTotal, KeyAlertFailed,
 	}
 	for _, lang := range []models.Language{models.LanguageEN, models.LanguageID} {
 		for _, key := range keys {

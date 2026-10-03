@@ -126,6 +126,15 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Intent:           IntentDebtQuery,
 			DebtCounterparty: argString(args, "counterparty"),
 		}
+	case prompt.ToolSetSpendingAlert:
+		return &ParsedTransaction{
+			Intent:       IntentSetSpendingAlert,
+			AlertScope:   argString(args, "scope"),
+			CategoryName: argString(args, "category_name"),
+			Bucket:       argString(args, "bucket"),
+			Amount:       argFloat(args, "threshold_amount"),
+			QueryPeriod:  argString(args, "period"),
+		}
 	default:
 		return nil
 	}

@@ -25,4 +25,5 @@ var (
 	ErrAccountNotFound          = errors.New("no account found with that name for this user")
 	ErrSameAccountTransfer      = errors.New("transfer source and destination accounts must be different")
 	ErrDebtNotFound             = errors.New("no open debt found with that counterparty for this user")
+	ErrSpendingAlertNotFound    = errors.New("no active spending alert found with that id for this user")
 )

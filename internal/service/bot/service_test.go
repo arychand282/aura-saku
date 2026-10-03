@@ -20,6 +20,7 @@ import (
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
 	"aura-saku/internal/quota"
+	"aura-saku/internal/service/alert"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
 	"aura-saku/internal/service/conversation"
@@ -287,6 +288,7 @@ func cleanupChat(t *testing.T, env *testEnv, chatID int64) {
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UndoHistory{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Transaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Debt{})
+		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.SpendingAlert{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.RecurringTransaction{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.SavingsGoal{})
 		env.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Budget{})
@@ -2256,6 +2258,138 @@ func TestHandleUpdate_DebtsCommand_ListsOwedAndOwing(t *testing.T) {
 	wantAmount := i18n.FormatMoney(models.LanguageID, 300_000, "IDR")
 	if !strings.Contains(reply, wantAmount) {
 		t.Errorf("reply = %q, want it to contain %q", reply, wantAmount)
+	}
+}
+
+// TestHandleUpdate_SetSpendingAlert_CategoryNaturalLanguage covers creating
+// a category-scoped spend-threshold alert (ai.IntentSetSpendingAlert —
+// set_spending_alert) via natural language.
+func TestHandleUpdate_SetSpendingAlert_CategoryNaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentSetSpendingAlert, AlertScope: "category", CategoryName: "food", Amount: 2_000_000, QueryPeriod: ai.PeriodMonthly,
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "kasih tau kalau pengeluaran makan lebih dari 2 juta bulan ini"})
+
+	got := env.messenger.last(chatID)
+	wantAmount := i18n.FormatMoney(models.LanguageID, 2_000_000, "IDR")
+	if !strings.Contains(got, wantAmount) {
+		t.Errorf("reply = %q, want it to confirm the threshold amount %q", got, wantAmount)
+	}
+	if !strings.Contains(got, "food") {
+		t.Errorf("reply = %q, want it to name the category", got)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	active, err := alert.ListActive(ctx, env.db, user.ID)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(active) != 1 || active[0].Scope != models.AlertScopeCategory || active[0].ThresholdAmount != 2_000_000 {
+		t.Errorf("active alerts = %+v, want exactly one category alert at 2000000.00", active)
+	}
+}
+
+// TestHandleUpdate_SpendingAlert_CrossedOnceThenSuppressed covers the
+// idempotency guarantee: a transaction that crosses an alert's threshold
+// must trigger the warning exactly once — a second qualifying transaction
+// in the SAME period must not re-fire it.
+func TestHandleUpdate_SpendingAlert_CrossedOnceThenSuppressed(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	// A generous income keeps budget.Service's OWN Needs/Wants warnings
+	// from also firing and confusing the assertions below, which must
+	// distinguish the alert-specific warning from any other "⚠️" line.
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 10_000_000, Currency: "IDR", CategoryName: "salary",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 10 juta"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if _, err := alert.Create(ctx, env.db, user.ID, models.AlertScopeCategory, "food", nil, 100_000, "monthly"); err != nil {
+		t.Fatalf("create alert: %v", err)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 150_000, Currency: "IDR", CategoryName: "food",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 150000"})
+
+	firstReply := env.messenger.last(chatID)
+	if !strings.Contains(firstReply, "alert kamu") {
+		t.Errorf("firstReply = %q, want the alert-crossed warning on the transaction that crosses it", firstReply)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "food",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan lagi 50000"})
+
+	secondReply := env.messenger.last(chatID)
+	if strings.Contains(secondReply, "alert kamu") {
+		t.Errorf("secondReply = %q, must not re-fire the same alert again within the same period", secondReply)
+	}
+}
+
+// TestHandleUpdate_AlertsCommand_ListsAndCancel covers /alerts: listing
+// shows the active alert with its current spend, and canceling by id
+// removes it from the list (soft-deactivates) — with an empty-list reply
+// once nothing is left.
+func TestHandleUpdate_AlertsCommand_ListsAndCancel(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/alerts"})
+	want := i18n.T(models.LanguageID, i18n.KeyAlertsListEmpty)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("empty list reply = %q, want %q", got, want)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 20000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	a, err := alert.Create(ctx, env.db, user.ID, models.AlertScopeCategory, "food", nil, 100_000, "monthly")
+	if err != nil {
+		t.Fatalf("create alert: %v", err)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/alerts"})
+	listReply := env.messenger.last(chatID)
+	if !strings.Contains(listReply, "food") {
+		t.Errorf("listReply = %q, want it to name the food category", listReply)
+	}
+	wantSpend := i18n.FormatMoney(models.LanguageID, 20_000, "IDR")
+	if !strings.Contains(listReply, wantSpend) {
+		t.Errorf("listReply = %q, want it to show the current spend %q", listReply, wantSpend)
+	}
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/alerts", CommandArgs: fmt.Sprintf("cancel %d", a.ID)})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/alerts"})
+	want = i18n.T(models.LanguageID, i18n.KeyAlertsListEmpty)
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("after cancel, reply = %q, want %q", got, want)
 	}
 }
 

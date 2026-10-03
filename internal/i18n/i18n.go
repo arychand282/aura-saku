@@ -194,6 +194,19 @@ const (
 	KeyDebtQueryOwedToYou           = "debt_query_owed_to_you"
 	KeyDebtQueryYouOwe              = "debt_query_you_owe"
 	KeyDebtQueryNone                = "debt_query_none"
+
+	KeyAlertSetScoped           = "alert_set_scoped"
+	KeyAlertSetTotal            = "alert_set_total"
+	KeyAlertCrossedScoped       = "alert_crossed_scoped"
+	KeyAlertCrossedTotal        = "alert_crossed_total"
+	KeyAlertsListEmpty          = "alerts_list_empty"
+	KeyAlertsListItemScoped     = "alerts_list_item_scoped"
+	KeyAlertsListItemTotal      = "alerts_list_item_total"
+	KeyAlertCancelUsage         = "alert_cancel_usage"
+	KeyAlertCancelNotFound      = "alert_cancel_not_found"
+	KeyAlertCancelSuccessScoped = "alert_cancel_success_scoped"
+	KeyAlertCancelSuccessTotal  = "alert_cancel_success_total"
+	KeyAlertFailed              = "alert_failed"
 )
 
 var catalog = map[models.Language]map[string]string{
@@ -329,6 +342,19 @@ var catalog = map[models.Language]map[string]string{
 		KeyDebtQueryOwedToYou:           "%s still owes you %s.",
 		KeyDebtQueryYouOwe:              "You still owe %s %s.",
 		KeyDebtQueryNone:                "No tracked debt with %s.",
+
+		KeyAlertSetScoped:           "Got it — I'll let you know if your spending on %s %s crosses %s.",
+		KeyAlertSetTotal:            "Got it — I'll let you know if your total spending %s crosses %s.",
+		KeyAlertCrossedScoped:       "Your spending on %s %s has crossed %s (your alert).",
+		KeyAlertCrossedTotal:        "Your total spending %s has crossed %s (your alert).",
+		KeyAlertsListEmpty:          "You don't have any spending alerts set up yet — just tell me, e.g. \"let me know if food spending goes over 2 million this month\".",
+		KeyAlertsListItemScoped:     "#%d: %s, %s — %s / %s",
+		KeyAlertsListItemTotal:      "#%d: total spending, %s — %s / %s",
+		KeyAlertCancelUsage:         "Usage: /alerts cancel <id>",
+		KeyAlertCancelNotFound:      "Couldn't find an alert with that id.",
+		KeyAlertCancelSuccessScoped: "Okay, turned off the alert for %s.",
+		KeyAlertCancelSuccessTotal:  "Okay, turned off the total spending alert.",
+		KeyAlertFailed:              "Something went wrong with that alert.",
 	},
 	models.LanguageID: {
 		KeyWelcome:                             "Selamat datang di Aura-Saku! Kirim pesan seperti \"makan siang 25000\" untuk mencatat pengeluaran, atau kirim voice note. Gunakan /language en atau /language id untuk mengganti bahasa balasanku kapan saja.",
@@ -462,6 +488,19 @@ var catalog = map[models.Language]map[string]string{
 		KeyDebtQueryOwedToYou:           "%s masih punya utang %s ke kamu.",
 		KeyDebtQueryYouOwe:              "Kamu masih punya utang ke %s sebesar %s.",
 		KeyDebtQueryNone:                "Nggak ada utang yang tercatat sama %s.",
+
+		KeyAlertSetScoped:           "Oke, aku bakal kasih tau kalau pengeluaranmu untuk %s %s ngelewatin %s.",
+		KeyAlertSetTotal:            "Oke, aku bakal kasih tau kalau total pengeluaranmu %s ngelewatin %s.",
+		KeyAlertCrossedScoped:       "Pengeluaranmu untuk %s %s udah lewat %s (alert kamu).",
+		KeyAlertCrossedTotal:        "Total pengeluaranmu %s udah lewat %s (alert kamu).",
+		KeyAlertsListEmpty:          "Kamu belum punya alert pengeluaran — cukup bilang aja, misal \"kasih tau kalau pengeluaran makan lebih dari 2 juta bulan ini\".",
+		KeyAlertsListItemScoped:     "#%d: %s, %s — %s / %s",
+		KeyAlertsListItemTotal:      "#%d: total pengeluaran, %s — %s / %s",
+		KeyAlertCancelUsage:         "Pakai: /alerts cancel <id>",
+		KeyAlertCancelNotFound:      "Nggak ketemu alert dengan id itu.",
+		KeyAlertCancelSuccessScoped: "Oke, alert buat %s udah aku matiin.",
+		KeyAlertCancelSuccessTotal:  "Oke, alert total pengeluaran udah aku matiin.",
+		KeyAlertFailed:              "Terjadi kesalahan sama alert itu.",
 	},
 }
 
