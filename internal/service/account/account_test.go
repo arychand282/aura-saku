@@ -278,3 +278,86 @@ func TestListWithBalances_SkipsAccountsWithNoActiveTransactions(t *testing.T) {
 		t.Errorf("expected both stray accounts to still exist (just hidden), found %d", strayCount)
 	}
 }
+
+// TestSetDefault_MovesTheFlagNotTheName covers the core guarantee: after
+// re-designating BCA as default, a subsequent unnamed transaction must
+// resolve to BCA (via GetOrCreateDefault, which filters by the IsDefault
+// flag, never the literal name "Default") — while the original Default
+// account keeps its own name and existing transactions untouched.
+func TestSetDefault_MovesTheFlagNotTheName(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	// Establish the original Default account with a real transaction on it.
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary",
+	}, models.SourceText, "gaji 1 juta"); err != nil {
+		t.Fatalf("create income into Default: %v", err)
+	}
+
+	bca, err := account.SetDefault(ctx, gormDB, user.ID, "BCA")
+	if err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	if bca.Name != "BCA" || !bca.IsDefault {
+		t.Fatalf("SetDefault returned %+v, want Name=BCA IsDefault=true", bca)
+	}
+
+	oldDefault, err := account.FindByName(ctx, gormDB, user.ID, "Default")
+	if err != nil {
+		t.Fatalf("find old Default account: %v", err)
+	}
+	if oldDefault.IsDefault {
+		t.Error("expected the old Default account to no longer be flagged default")
+	}
+
+	// A subsequent unnamed expense must now land on BCA.
+	tx, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food",
+	}, models.SourceText, "makan 20000")
+	if err != nil {
+		t.Fatalf("create unnamed expense: %v", err)
+	}
+	if tx.AccountID == nil || *tx.AccountID != bca.ID {
+		t.Errorf("unnamed expense landed on account %v, want BCA (%d)", tx.AccountID, bca.ID)
+	}
+
+	// The original income transaction keeps pointing at the old account —
+	// history is never retroactively reassigned.
+	oldBalance, err := account.Balance(ctx, gormDB, oldDefault.ID)
+	if err != nil {
+		t.Fatalf("Balance(old Default): %v", err)
+	}
+	if oldBalance != 1_000_000 {
+		t.Errorf("old Default balance = %.2f, want 1000000.00 (untouched)", oldBalance)
+	}
+}
+
+// TestSetDefault_AlreadyDefaultIsANoOp covers calling SetDefault on the
+// account that's already the default — must succeed idempotently, not
+// error or create a duplicate.
+func TestSetDefault_AlreadyDefaultIsANoOp(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	first, err := account.SetDefault(ctx, gormDB, user.ID, "Default")
+	if err != nil {
+		t.Fatalf("SetDefault (first): %v", err)
+	}
+	second, err := account.SetDefault(ctx, gormDB, user.ID, "default")
+	if err != nil {
+		t.Fatalf("SetDefault (already default, different casing): %v", err)
+	}
+	if second.ID != first.ID || !second.IsDefault {
+		t.Errorf("SetDefault (no-op case) = %+v, want the same already-default account", second)
+	}
+
+	var defaultCount int64
+	gormDB.Model(&models.Account{}).Where("user_id = ? AND is_default = ?", user.ID, true).Count(&defaultCount)
+	if defaultCount != 1 {
+		t.Errorf("expected exactly 1 default account, got %d", defaultCount)
+	}
+}

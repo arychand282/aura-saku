@@ -27,6 +27,7 @@ const (
 	IntentDebtRepay          = "debt_repay"
 	IntentDebtQuery          = "debt_query"
 	IntentSetSpendingAlert   = "set_spending_alert"
+	IntentSetDefaultAccount  = "set_default_account"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -86,7 +87,9 @@ type ParsedTransaction struct {
 	// through transactionFromArgs, same as CategoryName) and also for
 	// IntentBalance, where it narrows a balance question to one specific
 	// account instead of the total across all of them (see
-	// bot.Service.handleBalanceQuery).
+	// bot.Service.handleBalanceQuery). For IntentSetDefaultAccount
+	// (set_default_account) it's REQUIRED — the account that should become
+	// the new default (see account.SetDefault).
 	AccountName string `json:"account_name,omitempty"`
 
 	// FromAccountName/ToAccountName are only meaningful for
@@ -468,6 +471,8 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 			return false
 		}
 		return pt.Amount > 0
+	case IntentSetDefaultAccount:
+		return strings.TrimSpace(pt.AccountName) != ""
 	}
 
 	switch pt.Type {

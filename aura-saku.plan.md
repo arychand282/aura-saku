@@ -353,6 +353,16 @@ Two new tools: `record_loan` (direction `lent`/`borrowed`) and `record_repayment
 
 Verified: `go build`/`vet`/`test ./...` clean, including a budget regression test proving borrowing/lending/repaying never moves the Needs/Wants limits or spent totals. Live-verified against the real Gemini API for every phrasing (lend, borrow, repay both directions, both query forms) plus an adversarial check mirroring the move_money fix above — a one-off gift with no loan framing ("aku kasih duit ke Budi 100rb buat jajan") correctly stays a plain transfer, not a misclassified loan.
 
+### Status: Change which account is the default (2026-10-03)
+
+Found via user testing: after tagging transactions to a second account (BCA) and transferring money there via `move_money`, there was no way to make BCA the account untagged messages fall back to — "Move default account to BCA" correctly failed since nothing supported it. `models.Account.IsDefault` was always permanently stuck on whichever account `account.GetOrCreateDefault` first auto-created (literally named "Default").
+
+New `account.SetDefault(ctx, db, userID, targetName)`: resolves the target by name (auto-creating it if it's never been mentioned, same as any other account reference), then atomically unsets `IsDefault` on whichever account currently holds it and sets it on the target — inside one DB transaction so there's never a moment with zero or two defaults. Deliberately only moves the FLAG, not the NAME: the account previously flagged default keeps showing as "Default" in `/accounts` (now just an ordinary named account), and every transaction already posted to either account is untouched — `AccountID` is fixed at creation time, so this only changes where a FUTURE unnamed transaction lands. `GetOrCreateDefault` already resolves by the `IsDefault` flag rather than the literal name "Default", so this needed no change to the resolution path itself.
+
+New tool `set_default_account` (`ai.IntentSetDefaultAccount`, reusing the existing `AccountName` field rather than adding a new one) plus `/accounts default <name>`.
+
+Verified: `go build`/`vet`/`test ./...` clean, including new coverage proving the flag-not-name semantics (old account's history and name untouched, a subsequent unnamed transaction correctly lands on the new default) and idempotency (setting default to the account already holding it is a no-op, never creates a duplicate). Live-verified against the real Gemini API for four phrasing variants in both languages, confirming no regression on `move_money`/tagged-expense phrasings.
+
 ### Status: Proactive spend-threshold alerts (2026-10-03)
 
 Added standing, user-configured spend-threshold alerts ("kasih tau kalau pengeluaran makan lebih dari 2 juta bulan ini", "warn me if my total spending crosses 5 million this month") — `budget.Service.EvaluateBudget` already warned reactively against the fixed 50/30/20 Needs/Wants split, but there was no way for the user to set their own threshold. New `models.SpendingAlert` (scope: category/bucket/total, a threshold always in the user's own default currency, a reset period) + a thin `internal/service/alert` CRUD package mirroring `internal/service/account`'s shape.

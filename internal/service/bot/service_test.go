@@ -20,6 +20,7 @@ import (
 	"aura-saku/internal/messaging"
 	"aura-saku/internal/models"
 	"aura-saku/internal/quota"
+	"aura-saku/internal/service/account"
 	"aura-saku/internal/service/alert"
 	"aura-saku/internal/service/bot"
 	"aura-saku/internal/service/budget"
@@ -2183,6 +2184,67 @@ func TestHandleUpdate_AccountsCommand_ListsEveryAccountWithBalance(t *testing.T)
 	wantAmount := i18n.FormatMoney(models.LanguageID, 20_000, "IDR")
 	if !strings.Contains(reply, wantAmount) {
 		t.Errorf("reply = %q, want it to contain the formatted balance %q", reply, wantAmount)
+	}
+}
+
+// TestHandleUpdate_SetDefaultAccount_NaturalLanguage covers re-designating
+// the default account via natural language (ai.IntentSetDefaultAccount —
+// set_default_account): a subsequent unnamed expense must land on the new
+// default, not the original "Default" account.
+func TestHandleUpdate_SetDefaultAccount_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "income", Amount: 1_000_000, Currency: "IDR", CategoryName: "salary", AccountName: "BCA",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "gaji 1 juta ke BCA"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentSetDefaultAccount, AccountName: "BCA"}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "jadiin BCA akun default"})
+
+	want := i18n.T(models.LanguageID, i18n.KeySetDefaultAccountSuccess, "BCA")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 20000"})
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	bca, err := account.FindByName(ctx, env.db, user.ID, "BCA")
+	if err != nil {
+		t.Fatalf("find BCA: %v", err)
+	}
+	var tx models.Transaction
+	if err := env.db.Where("user_id = ?", user.ID).Order("created_at DESC").First(&tx).Error; err != nil {
+		t.Fatalf("load most recent transaction: %v", err)
+	}
+	if tx.AccountID == nil || *tx.AccountID != bca.ID {
+		t.Errorf("unnamed expense landed on account %v, want BCA (%d)", tx.AccountID, bca.ID)
+	}
+}
+
+// TestHandleUpdate_AccountsCommand_SetDefault covers "/accounts default
+// <name>".
+func TestHandleUpdate_AccountsCommand_SetDefault(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/accounts", CommandArgs: "default BCA"})
+
+	want := i18n.T(models.LanguageID, i18n.KeySetDefaultAccountSuccess, "BCA")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
 	}
 }
 

@@ -49,6 +49,7 @@ const (
 	SvcTransferFailed        Code = "AURA-SVC-014" // transaction.Service.CreateTransfer failed
 	SvcDebtFailed            Code = "AURA-SVC-015" // transaction.Service.CreateLoan/CreateRepayment failed
 	SvcAlertFailed           Code = "AURA-SVC-016" // alert.Service CRUD or bot.Service.checkSpendingAlerts failed
+	SvcAccountFailed         Code = "AURA-SVC-017" // account.SetDefault or other account-management operation failed
 
 	SchedulerJobFailed Code = "AURA-SCHED-001" // a scheduler.Job's Run returned an error on one tick (logged, that job's future ticks are unaffected)
 )

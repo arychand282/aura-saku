@@ -37,6 +37,7 @@ const (
 	ToolRecordRepayment            = "record_repayment"
 	ToolCheckDebts                 = "check_debts"
 	ToolSetSpendingAlert           = "set_spending_alert"
+	ToolSetDefaultAccount          = "set_default_account"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -482,6 +483,17 @@ func TransactionTools() []Tool {
 				},
 			},
 			Required: []string{"scope", "threshold_amount", "period"},
+		},
+		{
+			Name:        ToolSetDefaultAccount,
+			Description: "Call this when the message asks to CHANGE which of the user's accounts untagged/unspecified transactions should fall back to from now on — e.g. \"jadiin BCA akun default\", \"set default account to BCA\", \"ganti akun default ke BCA\", \"mulai sekarang pakai Gopay sebagai default\". This does NOT move any money between accounts (that's move_money) and does NOT change any past transaction's account — it only changes where a FUTURE message with no account named lands.",
+			Properties: map[string]ToolProperty{
+				"account_name": {
+					Type:        "string",
+					Description: "The account that should become the new default (e.g. \"BCA\"). Required — never leave this empty.",
+				},
+			},
+			Required: []string{"account_name"},
 		},
 	}
 }

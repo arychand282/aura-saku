@@ -135,6 +135,11 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Amount:       argFloat(args, "threshold_amount"),
 			QueryPeriod:  argString(args, "period"),
 		}
+	case prompt.ToolSetDefaultAccount:
+		return &ParsedTransaction{
+			Intent:      IntentSetDefaultAccount,
+			AccountName: argString(args, "account_name"),
+		}
 	default:
 		return nil
 	}

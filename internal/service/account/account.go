@@ -78,6 +78,47 @@ func FindByName(ctx context.Context, db *gorm.DB, userID uint, name string) (*mo
 	return &acc, nil
 }
 
+// SetDefault re-designates which of the user's accounts untagged
+// transactions fall back to — resolving targetName via GetOrCreateByName
+// (so "jadiin BCA akun default" works even the first time BCA is ever
+// mentioned), then atomically unsetting IsDefault on whichever account
+// currently holds it and setting it on the target. Only the flag moves:
+// the account previously flagged default keeps its own literal name
+// ("Default" or whatever it was) and every transaction already posted to
+// either account is untouched — AccountID is fixed at creation time, so
+// this only changes where a FUTURE unnamed transaction lands (see
+// GetOrCreateDefault, which resolves by the IsDefault flag, never by the
+// literal name "Default").
+func SetDefault(ctx context.Context, db *gorm.DB, userID uint, targetName string) (*models.Account, error) {
+	target, err := GetOrCreateByName(ctx, db, userID, targetName)
+	if err != nil {
+		return nil, err
+	}
+	if target.IsDefault {
+		return target, nil
+	}
+
+	err = db.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		if err := txDB.Model(&models.Account{}).
+			Where("user_id = ? AND is_default = ?", userID, true).
+			Update("is_default", false).Error; err != nil {
+			return fmt.Errorf("unset current default account: %w", err)
+		}
+		if err := txDB.Model(&models.Account{}).
+			Where("id = ?", target.ID).
+			Update("is_default", true).Error; err != nil {
+			return fmt.Errorf("set new default account: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	target.IsDefault = true
+	return target, nil
+}
+
 // AccountBalance pairs an account with its own calculated balance — backs
 // ListWithBalances/the /accounts command.
 type AccountBalance struct {

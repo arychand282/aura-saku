@@ -155,7 +155,7 @@ func (s *Service) HandleUpdate(ctx context.Context, msg *messaging.IncomingMessa
 	case "/goal":
 		s.handleGoal(ctx, user, msg)
 	case "/accounts":
-		s.handleAccounts(ctx, user)
+		s.handleAccounts(ctx, user, msg.CommandArgs)
 	case "/debts":
 		s.handleDebtQuery(ctx, user, "")
 	case "/alerts":
@@ -321,7 +321,17 @@ func (s *Service) handleAccountTransfer(ctx context.Context, user *models.User, 
 // handleAccounts backs /accounts — a quick glanceable list of every one of
 // the user's accounts and each one's own balance, same style as
 // handleRecurring's list reply.
-func (s *Service) handleAccounts(ctx context.Context, user *models.User) {
+func (s *Service) handleAccounts(ctx context.Context, user *models.User, commandArgs string) {
+	args := strings.Fields(commandArgs)
+	if len(args) >= 2 && strings.EqualFold(args[0], "default") {
+		s.handleSetDefaultAccount(ctx, user, strings.Join(args[1:], " "))
+		return
+	}
+	if len(args) > 0 {
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySetDefaultAccountUsage))
+		return
+	}
+
 	accounts, err := account.ListWithBalances(ctx, s.db, user.ID)
 	if err != nil {
 		logger.Error(logger.SvcSyncFailed, fmt.Sprintf("list accounts for user %d", user.ID), err)
@@ -342,6 +352,21 @@ func (s *Service) handleAccounts(ctx context.Context, user *models.User) {
 	}
 	lines = append(lines, i18n.T(user.Language, i18n.KeyAccountsListTotal, i18n.FormatMoney(user.Language, total, user.DefaultCurrency)))
 	s.reply(ctx, user, strings.Join(lines, "\n"))
+}
+
+// handleSetDefaultAccount re-designates which account untagged/unspecified
+// transactions fall back to — reachable via "/accounts default <name>" or
+// the natural-language ai.IntentSetDefaultAccount path (set_default_account),
+// both converging here. See account.SetDefault for what this does and
+// doesn't change (only future transactions, never past ones).
+func (s *Service) handleSetDefaultAccount(ctx context.Context, user *models.User, accountName string) {
+	acc, err := account.SetDefault(ctx, s.db, user.ID, accountName)
+	if err != nil {
+		logger.Error(logger.SvcAccountFailed, fmt.Sprintf("set default account for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySetDefaultAccountFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeySetDefaultAccountSuccess, acc.Name))
 }
 
 // handleDebtLend records lending money to, or borrowing money from, a
@@ -1390,6 +1415,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentSetSpendingAlert {
 		s.handleSetSpendingAlert(ctx, user, first)
+		return
+	}
+
+	if first.Intent == ai.IntentSetDefaultAccount {
+		s.handleSetDefaultAccount(ctx, user, first.AccountName)
 		return
 	}
 
