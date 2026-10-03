@@ -68,7 +68,7 @@ func run(c *gemini.Client, label, msg string) {
 }
 
 func main() {
-	c := gemini.New(os.Getenv("GEMINI_API_KEY"), os.Getenv("GEMINI_MODEL"), "")
+	c := gemini.New(os.Getenv("GEMINI_API_KEY"), os.Getenv("GEMINI_MODEL"), "", "")
 
 	run(c, "PARTIAL CORRECTION (should chain)", "eh salah, harusnya 1 juta aja deh")
 	run(c, "FULL CORRECTION (should NOT chain)", "eh maaf salah, harusnya expense 50000 buat makan siang, bukan reksa dana")

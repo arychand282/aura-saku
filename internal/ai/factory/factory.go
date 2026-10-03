@@ -19,7 +19,7 @@ import (
 func NewAIClient(cfg *config.Config) (ai.AIClient, error) {
 	switch strings.ToLower(cfg.AIProvider) {
 	case "gemini":
-		return gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiBaseURL), nil
+		return gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiBaseURL, cfg.GeminiFallbackModel), nil
 	case "openai":
 		return openai.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIBaseURL), nil
 	case "anthropic":

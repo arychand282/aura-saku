@@ -13,6 +13,7 @@ import (
 
 	"aura-saku/internal/ai"
 	"aura-saku/internal/ai/prompt"
+	"aura-saku/internal/logger"
 )
 
 // defaultBaseURL is used when baseURL isn't overridden via config
@@ -24,22 +25,27 @@ const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 // (no SDK dependency) using generateContent, including inline audio parts
 // for native voice-note transcription+parsing in a single call.
 type Client struct {
-	apiKey     string
-	model      string
-	baseURL    string
-	httpClient *http.Client
+	apiKey        string
+	model         string
+	fallbackModel string
+	baseURL       string
+	httpClient    *http.Client
 }
 
 // New builds a Client. An empty baseURL falls back to defaultBaseURL.
-func New(apiKey, model, baseURL string) *Client {
+// fallbackModel, when non-empty and different from model, is tried (with
+// its own short retry) whenever model's own requests keep failing with a
+// retriable error — see doRequest.
+func New(apiKey, model, baseURL, fallbackModel string) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	return &Client{
-		apiKey:     apiKey,
-		model:      model,
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		apiKey:        apiKey,
+		model:         model,
+		fallbackModel: fallbackModel,
+		baseURL:       baseURL,
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -238,38 +244,103 @@ func (c *Client) tryParseToolCalls(resp *genResponse) ([]*ai.ParsedTransaction, 
 	return []*ai.ParsedTransaction{{IsAmbiguous: true, ClarificationQuestion: text}}, true
 }
 
+// retryableStatus marks the two Gemini failure modes worth retrying/falling
+// back on: 503 ("high demand", the model itself is temporarily overloaded —
+// Google's own error text says spikes are "usually temporary") and 429
+// (rate-limited). Any other status (400 bad request, 401/403 auth, ...) is
+// a client-side or configuration problem that retrying — on this model or
+// a fallback one — would never fix, so doRequest fails immediately instead.
+var retryableStatus = map[int]bool{
+	http.StatusServiceUnavailable: true,
+	http.StatusTooManyRequests:    true,
+}
+
+// maxAttemptsPerModel/retryDelay bound how long a single logical AI call
+// can take under sustained high demand: at most 2 attempts per model with a
+// short pause between them, before moving on to the fallback model (if any)
+// with the same budget — a few seconds of added latency in the worst case,
+// not tens of seconds, since a chat reply waiting on this is still
+// user-facing.
+const (
+	maxAttemptsPerModel = 2
+	retryDelay          = 400 * time.Millisecond
+)
+
 func (c *Client) doRequest(ctx context.Context, body genRequest) (*genResponse, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal gemini request: %w", err)
+	models := []string{c.model}
+	if c.fallbackModel != "" && c.fallbackModel != c.model {
+		models = append(models, c.fallbackModel)
 	}
 
-	url := fmt.Sprintf("%s/%s:generateContent?key=%s", c.baseURL, c.model, c.apiKey)
+	var lastErr error
+	for modelIndex, model := range models {
+		if modelIndex > 0 {
+			logger.Error(logger.AIProviderFallback,
+				fmt.Sprintf("gemini model %q kept failing with a retriable error, falling back to %q", models[modelIndex-1], model), lastErr)
+		}
+		for attempt := 1; attempt <= maxAttemptsPerModel; attempt++ {
+			resp, statusCode, err := c.doRequestOnModel(ctx, model, body)
+			if err == nil {
+				return resp, nil
+			}
+			lastErr = err
+			if !retryableStatus[statusCode] {
+				return nil, err
+			}
+
+			isLastAttemptOverall := modelIndex == len(models)-1 && attempt == maxAttemptsPerModel
+			if isLastAttemptOverall {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// doRequestOnModel is doRequest's single-attempt, single-model core — split
+// out so doRequest's retry/fallback loop above can call it repeatedly
+// against different models without duplicating the HTTP plumbing. The
+// returned status code is 0 for a request that never got a response at all
+// (network failure, bad payload) — never a value retryableStatus matches,
+// so those fail doRequest immediately rather than being retried, same as
+// any other non-retriable status.
+func (c *Client) doRequestOnModel(ctx context.Context, model string, body genRequest) (*genResponse, int, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal gemini request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/%s:generateContent?key=%s", c.baseURL, model, c.apiKey)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build gemini request: %w", err)
+		return nil, 0, fmt.Errorf("build gemini request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("gemini request failed: %w", err)
+		return nil, 0, fmt.Errorf("gemini request failed: %w", err)
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read gemini response: %w", err)
+		return nil, 0, fmt.Errorf("read gemini response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, httpResp.StatusCode, fmt.Errorf("gemini API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 
 	var parsed genResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("unmarshal gemini response: %w", err)
+		return nil, httpResp.StatusCode, fmt.Errorf("unmarshal gemini response: %w", err)
 	}
-	return &parsed, nil
+	return &parsed, httpResp.StatusCode, nil
 }
 
 func (c *Client) ParseTransactionText(ctx context.Context, userText string, defaultCurrency string, preferredLanguage string, history ai.ConversationContext) ([]*ai.ParsedTransaction, *ai.UsageMetadata, error) {

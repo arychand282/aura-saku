@@ -44,6 +44,12 @@ type Config struct {
 	GeminiAPIKey  string
 	GeminiModel   string
 	GeminiBaseURL string
+	// GeminiFallbackModel is tried (with its own short retry) whenever
+	// GeminiModel's own requests keep failing with a retriable error (503
+	// "high demand", 429 rate-limited) — see gemini.Client.doRequest. Empty
+	// disables fallback entirely; the same value as GeminiModel is a no-op
+	// (never worth retrying the identical model under a different name).
+	GeminiFallbackModel string
 
 	OpenAIAPIKey  string
 	OpenAIModel   string
@@ -153,9 +159,10 @@ func Load() (*Config, error) {
 
 		AIProvider: getEnv("AI_PROVIDER", "gemini"),
 
-		GeminiAPIKey:  getEnv("GEMINI_API_KEY", ""),
-		GeminiModel:   getEnv("GEMINI_MODEL", "gemini-2.0-flash"),
-		GeminiBaseURL: getEnv("GEMINI_BASE_URL", ""),
+		GeminiAPIKey:        getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:         getEnv("GEMINI_MODEL", "gemini-3.8-flash"),
+		GeminiBaseURL:       getEnv("GEMINI_BASE_URL", ""),
+		GeminiFallbackModel: getEnv("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite"),
 
 		OpenAIAPIKey:  getEnv("OPENAI_API_KEY", ""),
 		OpenAIModel:   getEnv("OPENAI_MODEL", "gpt-4o-mini"),

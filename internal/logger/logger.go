@@ -24,6 +24,7 @@ const (
 	AIParseFailed          Code = "AURA-AI-002" // AIClient.ParseTransactionText/TranscribeAndParseAudio returned an error
 	AISuggestSavingsFailed Code = "AURA-AI-003" // AIClient.SuggestSavings failed for one user's monthly category insight (logged, the deterministic part of that message still sends)
 	AIPhraseListFailed     Code = "AURA-AI-004" // AIClient.PhraseTransactionList/PhraseSpendingBreakdown failed, or its output dropped/altered a value (logged, the deterministic template reply is sent instead)
+	AIProviderFallback     Code = "AURA-AI-005" // gemini.Client.doRequest fell back to GeminiFallbackModel after the primary model kept failing with a retriable error (503/429)
 
 	ServerListenFailed   Code = "AURA-SRV-001" // fiber.App.Listen failed to bind
 	ServerShutdownFailed Code = "AURA-SRV-002" // graceful shutdown did not complete cleanly within the timeout
