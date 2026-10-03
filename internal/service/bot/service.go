@@ -2176,19 +2176,34 @@ func (s *Service) handleSpendingListQuery(ctx context.Context, user *models.User
 	default:
 		lines = []string{i18n.T(user.Language, i18n.KeyQuerySpendingListHeaderAll, periodLabel)}
 	}
-	for i, item := range page.Items {
+	// Grouped by date — one bare date header per distinct date (in the
+	// order items are already sorted, most-recent-first), its own items
+	// listed underneath as "- " bullets with no date repeated per item.
+	// Matches phraseSpendingList's own AI-phrasing instruction so a
+	// continuation page (always this deterministic template, never
+	// AI-phrased) reads the same shape as a successfully AI-phrased first
+	// page. lastDate is reset per call, so a page that starts mid-date
+	// (continuing from the previous page) simply re-shows that date's own
+	// header rather than needing any cross-page state.
+	lastDate := ""
+	for _, item := range page.Items {
+		dateStr := item.OccurredAt.UTC().Format("2 Jan")
+		if dateStr != lastDate {
+			lines = append(lines, dateStr+":")
+			lastDate = dateStr
+		}
 		// A mixed-type list (isAllTypes) names each row's own type, since
 		// nothing else on the line would otherwise distinguish an income
 		// row from an expense row; a single-type list already says so in
 		// its header and would just repeat the same word on every line.
 		if isAllTypes {
 			lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItemWithType,
-				offset+i+1, item.OccurredAt.UTC().Format("2 Jan"), string(item.Type), categoryDisplayName(user.Language, item.CategoryName),
+				string(item.Type), categoryDisplayName(user.Language, item.CategoryName),
 				i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 			continue
 		}
 		lines = append(lines, i18n.T(user.Language, i18n.KeyQuerySpendingListItem,
-			offset+i+1, item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName),
+			categoryDisplayName(user.Language, item.CategoryName),
 			i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency), item.Description))
 	}
 
@@ -2252,6 +2267,7 @@ func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, ite
 	amounts := make([]string, len(items))
 	for i, item := range items {
 		amounts[i] = i18n.FormatMoney(user.Language, item.Amount, user.DefaultCurrency)
+		dateStr := item.OccurredAt.UTC().Format("2 Jan")
 		// includeType is only true for a mixed-type ("all") list — the model
 		// needs each row's actual type to correctly call an income row
 		// "income" rather than mislabeling everything as spending; a
@@ -2259,11 +2275,11 @@ func (s *Service) phraseSpendingList(ctx context.Context, user *models.User, ite
 		// so the field is omitted there to keep the summary shorter.
 		if includeType {
 			fmt.Fprintf(&summary, "- Date: %s | Type: %s | Category: %s | Amount: %s | Description: %s\n",
-				item.OccurredAt.UTC().Format("2 Jan"), string(item.Type), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
+				dateStr, string(item.Type), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
 			continue
 		}
 		fmt.Fprintf(&summary, "- Date: %s | Category: %s | Amount: %s | Description: %s\n",
-			item.OccurredAt.UTC().Format("2 Jan"), categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
+			dateStr, categoryDisplayName(user.Language, item.CategoryName), amounts[i], item.Description)
 	}
 
 	text, usageMeta, err := s.aiClient.PhraseTransactionList(ctx, summary.String(), string(user.Language))

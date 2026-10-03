@@ -1135,6 +1135,60 @@ func TestHandleUpdate_SpendingQuery_ListByCategory(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_SpendingQuery_ListGroupedByDateWithDashPrefix is a
+// regression test for a reported inconsistency: a first-page list reply
+// (AI-phrased) and a "lanjutkan" continuation (always the deterministic
+// template) used to look different — numbered items with the date repeated
+// inline vs. free-form prose. This covers the deterministic template's
+// fallback shape directly (no env.ai.phraseListResult set, so
+// phraseSpendingList's own amount-verification fails and this falls back):
+// items spanning two different dates must be grouped under one bare date
+// header each, every item dash-prefixed, and no numbered-list formatting
+// anywhere.
+func TestHandleUpdate_SpendingQuery_ListGroupedByDateWithDashPrefix(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 20_000, Currency: "IDR", CategoryName: "food", Description: "makan hari ini",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 20000"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 15_000, Currency: "IDR", CategoryName: "transport", Description: "parkir kemarin", OccurredAtHint: "yesterday",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "parkir 15000 kemarin"})
+
+	// Forces the AI-phrasing path to fail so this exercises the
+	// deterministic template directly — the mock otherwise just echoes the
+	// raw internal summary back (trivially passing amount verification),
+	// which looks like neither real AI prose nor the deterministic
+	// template's own user-facing format.
+	env.ai.phraseListErr = errors.New("simulated AI outage")
+
+	env.ai.parseResult = &ai.ParsedTransaction{Intent: ai.IntentQuery, QueryPeriod: ai.PeriodMonthly, QueryMode: ai.QueryModeList}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "list semua transaksi bulan ini"})
+
+	got := env.messenger.last(chatID)
+
+	todayHeader := time.Now().UTC().Format("2 Jan") + ":"
+	yesterdayHeader := time.Now().UTC().AddDate(0, 0, -1).Format("2 Jan") + ":"
+	if !strings.Contains(got, todayHeader) {
+		t.Errorf("reply = %q, want a date header %q", got, todayHeader)
+	}
+	if !strings.Contains(got, yesterdayHeader) {
+		t.Errorf("reply = %q, want a date header %q", got, yesterdayHeader)
+	}
+	if !strings.Contains(got, "- food:") || !strings.Contains(got, "- transport:") {
+		t.Errorf("reply = %q, want dash-prefixed items for both categories", got)
+	}
+	if strings.Contains(got, "1. ") || strings.Contains(got, "2. ") {
+		t.Errorf("reply = %q, must not use numbered-list formatting", got)
+	}
+}
+
 // TestHandleUpdate_SpendingQuery_SearchByMerchant covers free-text search
 // (query_search_term) — a specific merchant named in past transactions,
 // not a budget category. QueryMode is deliberately left empty here to
