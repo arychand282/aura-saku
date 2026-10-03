@@ -198,7 +198,7 @@ func TransactionTools() []Tool {
 				},
 				"query_mode": {
 					Type:        "string",
-					Description: "Set to \"list\" when the message asks to SEE or LIST the actual individual transactions/purchases, not a sum — e.g. \"beli apa aja buat food bulan ini?\" (what did I buy for food this month?), \"listing semua pengeluaran untuk makanan\", \"rincian pengeluaran wants\", \"what did I buy this month\". Leave empty (defaults to a plain total/breakdown) for a \"how much\" style question — that's the far more common case.",
+					Description: "Set to \"list\" ONLY when the message asks to SEE or LIST the actual individual transactions/purchases themselves, not a number — e.g. \"beli apa aja buat food bulan ini?\" (what did I buy for food this month?), \"listing semua pengeluaran untuk makanan\", \"what did I buy this month\". Leave empty (defaults to a plain total — WITH a per-category percentage breakdown already included automatically) for a \"how much\" question, INCLUDING one that explicitly asks for that breakdown by category — e.g. \"total pengeluaran hari ini beserta kategorinya\" (today's total spending along with its categories), \"rincian pengeluaran bulan ini\" (this month's breakdown), \"breakdown per kategori gimana?\" are ALL the default empty mode, never \"list\": they want a TOTAL split across categories, not a list of individual purchases, and the default total response already provides exactly that breakdown with no extra tool call needed.",
 					Enum:        []string{"total", "list"},
 				},
 				"query_list_more": {
