@@ -119,6 +119,42 @@ func SetDefault(ctx context.Context, db *gorm.DB, userID uint, targetName string
 	return target, nil
 }
 
+// Rename changes an existing account's display name — e.g. "ganti nama akun
+// bank Jago jadi Bank Jago" (just fixing casing) or renaming it to
+// something else entirely. Unlike GetOrCreateByName, oldName must already
+// exist (apperror.ErrAccountNotFound otherwise) — renaming isn't a
+// creation path. newName is rejected with apperror.ErrAccountNameTaken only
+// when it collides with a DIFFERENT existing account; renaming an account
+// to a casing variant of its own current name (e.g. "bca" -> "BCA") is
+// allowed, since that resolves to the same account being renamed, not a
+// collision. This never touches IsDefault or any transaction's AccountID —
+// purely a display-name change.
+func Rename(ctx context.Context, db *gorm.DB, userID uint, oldName, newName string) (*models.Account, error) {
+	target, err := FindByName(ctx, db, userID, oldName)
+	if err != nil {
+		return nil, err
+	}
+
+	trimmedNew := strings.TrimSpace(newName)
+	if trimmedNew == "" {
+		return nil, fmt.Errorf("new account name must not be empty")
+	}
+
+	if existing, findErr := FindByName(ctx, db, userID, trimmedNew); findErr == nil {
+		if existing.ID != target.ID {
+			return nil, apperror.ErrAccountNameTaken
+		}
+	} else if !errors.Is(findErr, apperror.ErrAccountNotFound) {
+		return nil, findErr
+	}
+
+	if err := db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", target.ID).Update("name", trimmedNew).Error; err != nil {
+		return nil, fmt.Errorf("rename account %d: %w", target.ID, err)
+	}
+	target.Name = trimmedNew
+	return target, nil
+}
+
 // AccountBalance pairs an account with its own calculated balance — backs
 // ListWithBalances/the /accounts command.
 type AccountBalance struct {

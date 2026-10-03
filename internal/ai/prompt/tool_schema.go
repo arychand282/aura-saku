@@ -38,6 +38,7 @@ const (
 	ToolCheckDebts                 = "check_debts"
 	ToolSetSpendingAlert           = "set_spending_alert"
 	ToolSetDefaultAccount          = "set_default_account"
+	ToolRenameAccount              = "rename_account"
 )
 
 // ToolProperty.Type uses lowercase JSON Schema primitives ("string",
@@ -494,6 +495,21 @@ func TransactionTools() []Tool {
 				},
 			},
 			Required: []string{"account_name"},
+		},
+		{
+			Name:        ToolRenameAccount,
+			Description: "Call this when the message asks to RENAME one of the user's existing tracked accounts/wallets — e.g. \"rename akun dari 'bank Jago' ke 'Bank Jago'\", \"ganti nama akun BCA jadi Bank BCA\", \"ubah nama OVO jadi E-wallet\". This only changes the account's display name — it does NOT move any money and does NOT affect any past transaction.",
+			Properties: map[string]ToolProperty{
+				"old_name": {
+					Type:        "string",
+					Description: "The account's CURRENT name, exactly as the user refers to it.",
+				},
+				"new_name": {
+					Type:        "string",
+					Description: "What the account should be renamed to.",
+				},
+			},
+			Required: []string{"old_name", "new_name"},
 		},
 	}
 }

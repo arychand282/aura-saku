@@ -125,6 +125,7 @@ func TestCatalogCompleteness(t *testing.T) {
 		KeyAccountBalance, KeyAccountNotFound, KeyTransferRecorded, KeySameAccountTransfer, KeyTransferFailed,
 		KeyAccountsListEmpty, KeyAccountsListItem, KeyAccountsListTotal,
 		KeySetDefaultAccountSuccess, KeySetDefaultAccountUsage, KeySetDefaultAccountFailed,
+		KeyAccountRenameSuccess, KeyAccountRenameNameTaken, KeyAccountRenameUsage, KeyAccountRenameFailed,
 		KeyDebtLentRecorded, KeyDebtBorrowedRecorded, KeyDebtRepaymentReceivedOngoing, KeyDebtRepaymentReceivedSettled,
 		KeyDebtRepaymentMadeOngoing, KeyDebtRepaymentMadeSettled, KeyDebtNotFound, KeyDebtFailed,
 		KeyDebtsListEmpty, KeyDebtsOwedToYouHeader, KeyDebtsYouOweHeader, KeyDebtsListItem,

@@ -181,6 +181,10 @@ const (
 	KeySetDefaultAccountSuccess = "set_default_account_success"
 	KeySetDefaultAccountUsage   = "set_default_account_usage"
 	KeySetDefaultAccountFailed  = "set_default_account_failed"
+	KeyAccountRenameSuccess     = "account_rename_success"
+	KeyAccountRenameNameTaken   = "account_rename_name_taken"
+	KeyAccountRenameUsage       = "account_rename_usage"
+	KeyAccountRenameFailed      = "account_rename_failed"
 
 	KeyDebtLentRecorded             = "debt_lent_recorded"
 	KeyDebtBorrowedRecorded         = "debt_borrowed_recorded"
@@ -332,6 +336,10 @@ var catalog = map[models.Language]map[string]string{
 		KeySetDefaultAccountSuccess: "Okay, %s is now your default account for anything that doesn't name one.",
 		KeySetDefaultAccountUsage:   "Usage: /accounts default <account name>",
 		KeySetDefaultAccountFailed:  "Something went wrong changing the default account.",
+		KeyAccountRenameSuccess:     "Okay, %s is now called %s.",
+		KeyAccountRenameNameTaken:   "You already have an account named %s.",
+		KeyAccountRenameUsage:       "Usage: /accounts rename <current name> <new name>",
+		KeyAccountRenameFailed:      "Something went wrong renaming that account.",
 
 		KeyDebtLentRecorded:             "Got it — you lent %s %s.",
 		KeyDebtBorrowedRecorded:         "Got it — you borrowed %s from %s.",
@@ -481,6 +489,10 @@ var catalog = map[models.Language]map[string]string{
 		KeySetDefaultAccountSuccess: "Oke, %s sekarang jadi akun default kamu buat yang nggak nyebut akun.",
 		KeySetDefaultAccountUsage:   "Pakai: /accounts default <nama akun>",
 		KeySetDefaultAccountFailed:  "Terjadi kesalahan saat mengganti akun default.",
+		KeyAccountRenameSuccess:     "Oke, %s sekarang jadi %s.",
+		KeyAccountRenameNameTaken:   "Kamu udah punya akun bernama %s.",
+		KeyAccountRenameUsage:       "Pakai: /accounts rename <nama sekarang> <nama baru>",
+		KeyAccountRenameFailed:      "Terjadi kesalahan saat mengganti nama akun itu.",
 
 		KeyDebtLentRecorded:             "Dicatat — kamu pinjemin %s sebesar %s.",
 		KeyDebtBorrowedRecorded:         "Dicatat — kamu minjem %s dari %s.",

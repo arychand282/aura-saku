@@ -28,6 +28,7 @@ const (
 	IntentDebtQuery          = "debt_query"
 	IntentSetSpendingAlert   = "set_spending_alert"
 	IntentSetDefaultAccount  = "set_default_account"
+	IntentRenameAccount      = "rename_account"
 )
 
 // Valid values for ParsedTransaction.QueryPeriod — matches the period
@@ -92,11 +93,15 @@ type ParsedTransaction struct {
 	// the new default (see account.SetDefault).
 	AccountName string `json:"account_name,omitempty"`
 
-	// FromAccountName/ToAccountName are only meaningful for
-	// IntentAccountTransfer (move_money) — moving money between two of the
-	// user's OWN accounts, as opposed to a plain Type=transfer record
-	// (money sent to someone else, which stays on a single account exactly
-	// as before this field existed). See transaction.Service.CreateTransfer.
+	// FromAccountName/ToAccountName are meaningful for two different
+	// intents, never both in the same parse: IntentAccountTransfer
+	// (move_money) — moving money between two of the user's OWN accounts,
+	// as opposed to a plain Type=transfer record (money sent to someone
+	// else, which stays on a single account exactly as before this field
+	// existed) — see transaction.Service.CreateTransfer; and
+	// IntentRenameAccount (rename_account), where they're reused as
+	// old_name/new_name instead of adding a separate pair of fields for the
+	// same "two account names" shape — see account.Rename.
 	FromAccountName string `json:"from_account,omitempty"`
 	ToAccountName   string `json:"to_account,omitempty"`
 
@@ -473,6 +478,8 @@ func ValidateParsedTransaction(pt *ParsedTransaction) bool {
 		return pt.Amount > 0
 	case IntentSetDefaultAccount:
 		return strings.TrimSpace(pt.AccountName) != ""
+	case IntentRenameAccount:
+		return strings.TrimSpace(pt.FromAccountName) != "" && strings.TrimSpace(pt.ToAccountName) != ""
 	}
 
 	switch pt.Type {

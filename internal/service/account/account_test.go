@@ -361,3 +361,77 @@ func TestSetDefault_AlreadyDefaultIsANoOp(t *testing.T) {
 		t.Errorf("expected exactly 1 default account, got %d", defaultCount)
 	}
 }
+
+// TestRename_ChangesNameKeepsEverythingElse covers the core guarantee: the
+// account's name changes, but its IsDefault flag, id, and every
+// transaction already posted to it are untouched.
+func TestRename_ChangesNameKeepsEverythingElse(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+	txSvc := transaction.NewService(gormDB, fx.NewStaticService())
+
+	if _, err := txSvc.CreateFromParsed(ctx, user.ID, user.DefaultCurrency, &ai.ParsedTransaction{
+		Type: "expense", Amount: 30_000, Currency: "IDR", CategoryName: "transport", AccountName: "bank Jago",
+	}, models.SourceText, "parkir 30rb pake bank Jago"); err != nil {
+		t.Fatalf("create expense into bank Jago: %v", err)
+	}
+
+	renamed, err := account.Rename(ctx, gormDB, user.ID, "bank Jago", "Bank Jago")
+	if err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if renamed.Name != "Bank Jago" {
+		t.Errorf("Name = %q, want %q", renamed.Name, "Bank Jago")
+	}
+
+	if _, err := account.FindByName(ctx, gormDB, user.ID, "bank Jago"); err != nil {
+		t.Fatalf("find by old name (case-insensitive match should still resolve to the renamed account): %v", err)
+	}
+	found, err := account.FindByName(ctx, gormDB, user.ID, "Bank Jago")
+	if err != nil {
+		t.Fatalf("find by new name: %v", err)
+	}
+	if found.ID != renamed.ID {
+		t.Errorf("found a different account (%d) than the one renamed (%d)", found.ID, renamed.ID)
+	}
+
+	balance, err := account.Balance(ctx, gormDB, renamed.ID)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != -30_000 {
+		t.Errorf("balance after rename = %.2f, want -30000.00 (the transaction must be untouched)", balance)
+	}
+}
+
+// TestRename_NonexistentOldNameReturnsError covers renaming an account
+// that was never mentioned.
+func TestRename_NonexistentOldNameReturnsError(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	if _, err := account.Rename(ctx, gormDB, user.ID, "Nonexistent", "Whatever"); !errors.Is(err, apperror.ErrAccountNotFound) {
+		t.Errorf("Rename err = %v, want ErrAccountNotFound", err)
+	}
+}
+
+// TestRename_CollidingNewNameReturnsError covers renaming into a name a
+// DIFFERENT account already has.
+func TestRename_CollidingNewNameReturnsError(t *testing.T) {
+	gormDB := setupDB(t)
+	ctx := context.Background()
+	user := newTestUser(t, gormDB)
+
+	if _, err := account.GetOrCreateByName(ctx, gormDB, user.ID, "BCA"); err != nil {
+		t.Fatalf("create BCA: %v", err)
+	}
+	if _, err := account.GetOrCreateByName(ctx, gormDB, user.ID, "Gopay"); err != nil {
+		t.Fatalf("create Gopay: %v", err)
+	}
+
+	if _, err := account.Rename(ctx, gormDB, user.ID, "Gopay", "BCA"); !errors.Is(err, apperror.ErrAccountNameTaken) {
+		t.Errorf("Rename err = %v, want ErrAccountNameTaken", err)
+	}
+}

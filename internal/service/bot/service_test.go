@@ -2248,6 +2248,97 @@ func TestHandleUpdate_AccountsCommand_SetDefault(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_RenameAccount_NaturalLanguage covers renaming an
+// account via natural language (ai.IntentRenameAccount — rename_account),
+// including that the account's history survives the rename.
+func TestHandleUpdate_RenameAccount_NaturalLanguage(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 50_000, Currency: "IDR", CategoryName: "transport", AccountName: "bank Jago",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "bensin 50rb pake bank Jago"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRenameAccount, FromAccountName: "bank Jago", ToAccountName: "Bank Jago",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "rename akun dari 'bank Jago' ke 'Bank Jago'"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyAccountRenameSuccess, "bank Jago", "Bank Jago")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+
+	var user models.User
+	if err := env.db.Where("telegram_chat_id = ?", chatID).First(&user).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	renamed, err := account.FindByName(ctx, env.db, user.ID, "Bank Jago")
+	if err != nil {
+		t.Fatalf("find Bank Jago: %v", err)
+	}
+	balance, err := account.Balance(ctx, env.db, renamed.ID)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != -50_000 {
+		t.Errorf("balance after rename = %.2f, want -50000.00 (history must survive)", balance)
+	}
+}
+
+// TestHandleUpdate_AccountsCommand_RenameWithQuotedMultiWordNames covers
+// "/accounts rename" parsing quoted multi-word account names correctly
+// (strings.Fields alone can't tell "bank Jago" apart as one name).
+func TestHandleUpdate_AccountsCommand_RenameWithQuotedMultiWordNames(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 5})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 10_000, Currency: "IDR", CategoryName: "transport", AccountName: "bank Jago",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "parkir 10rb pake bank Jago"})
+
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Command: "/accounts", CommandArgs: `rename "bank Jago" "Bank Jago"`})
+
+	want := i18n.T(models.LanguageID, i18n.KeyAccountRenameSuccess, "bank Jago", "Bank Jago")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
+// TestHandleUpdate_RenameAccount_CollidingNameRepliesTaken covers renaming
+// into a name a different account already has.
+func TestHandleUpdate_RenameAccount_CollidingNameRepliesTaken(t *testing.T) {
+	svc, env := setupTestEnv(t, bot.Config{FreeTierDailyQuota: 10})
+	chatID := newChatID()
+	t.Cleanup(func() { cleanupChat(t, env, chatID) })
+	ctx := context.Background()
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 10_000, Currency: "IDR", CategoryName: "food", AccountName: "BCA",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 10rb pake BCA"})
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Type: "expense", Amount: 10_000, Currency: "IDR", CategoryName: "food", AccountName: "Gopay",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "makan 10rb pake Gopay"})
+
+	env.ai.parseResult = &ai.ParsedTransaction{
+		Intent: ai.IntentRenameAccount, FromAccountName: "Gopay", ToAccountName: "BCA",
+	}
+	svc.HandleUpdate(ctx, &messaging.IncomingMessage{ChatID: chatID, Text: "ganti nama Gopay jadi BCA"})
+
+	want := i18n.T(models.LanguageID, i18n.KeyAccountRenameNameTaken, "BCA")
+	if got := env.messenger.last(chatID); got != want {
+		t.Errorf("reply = %q, want %q", got, want)
+	}
+}
+
 // TestHandleUpdate_DebtLend_NaturalLanguage covers lending money to someone
 // (ai.IntentDebtLend — record_loan) and the reply confirming it.
 func TestHandleUpdate_DebtLend_NaturalLanguage(t *testing.T) {

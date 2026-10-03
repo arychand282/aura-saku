@@ -140,6 +140,12 @@ func ParsedTransactionFromToolCall(name string, args map[string]interface{}) *Pa
 			Intent:      IntentSetDefaultAccount,
 			AccountName: argString(args, "account_name"),
 		}
+	case prompt.ToolRenameAccount:
+		return &ParsedTransaction{
+			Intent:          IntentRenameAccount,
+			FromAccountName: argString(args, "old_name"),
+			ToAccountName:   argString(args, "new_name"),
+		}
 	default:
 		return nil
 	}

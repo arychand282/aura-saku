@@ -26,4 +26,5 @@ var (
 	ErrSameAccountTransfer      = errors.New("transfer source and destination accounts must be different")
 	ErrDebtNotFound             = errors.New("no open debt found with that counterparty for this user")
 	ErrSpendingAlertNotFound    = errors.New("no active spending alert found with that id for this user")
+	ErrAccountNameTaken         = errors.New("an account with that name already exists for this user")
 )

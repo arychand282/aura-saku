@@ -327,6 +327,21 @@ func (s *Service) handleAccounts(ctx context.Context, user *models.User, command
 		s.handleSetDefaultAccount(ctx, user, strings.Join(args[1:], " "))
 		return
 	}
+	if len(args) > 0 && strings.EqualFold(args[0], "rename") {
+		// Quote-aware so a multi-word account name (e.g. "bank Jago") can be
+		// given on the command line at all — strings.Fields alone can't
+		// tell "rename bank Jago Bank Jago" apart from old="bank"/new="Jago
+		// Bank Jago". Natural language (which the model parses with real
+		// NLU, not positional splitting) is the more robust way to rename a
+		// multi-word account; this just needs to not silently misparse one.
+		renameArgs := quotedFields(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(commandArgs), args[0])))
+		if len(renameArgs) != 2 {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountRenameUsage))
+			return
+		}
+		s.handleRenameAccount(ctx, user, renameArgs[0], renameArgs[1])
+		return
+	}
 	if len(args) > 0 {
 		s.reply(ctx, user, i18n.T(user.Language, i18n.KeySetDefaultAccountUsage))
 		return
@@ -367,6 +382,29 @@ func (s *Service) handleSetDefaultAccount(ctx context.Context, user *models.User
 		return
 	}
 	s.reply(ctx, user, i18n.T(user.Language, i18n.KeySetDefaultAccountSuccess, acc.Name))
+}
+
+// handleRenameAccount changes an existing account's display name —
+// reachable via "/accounts rename <old> <new>" or the natural-language
+// ai.IntentRenameAccount path (rename_account), both converging here. See
+// account.Rename for what this does and doesn't change (only the name,
+// never IsDefault or any past transaction).
+func (s *Service) handleRenameAccount(ctx context.Context, user *models.User, oldName, newName string) {
+	acc, err := account.Rename(ctx, s.db, user.ID, oldName, newName)
+	if err != nil {
+		if errors.Is(err, apperror.ErrAccountNotFound) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountNotFound, oldName))
+			return
+		}
+		if errors.Is(err, apperror.ErrAccountNameTaken) {
+			s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountRenameNameTaken, newName))
+			return
+		}
+		logger.Error(logger.SvcAccountFailed, fmt.Sprintf("rename account for user %d", user.ID), err)
+		s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountRenameFailed))
+		return
+	}
+	s.reply(ctx, user, i18n.T(user.Language, i18n.KeyAccountRenameSuccess, oldName, acc.Name))
 }
 
 // handleDebtLend records lending money to, or borrowing money from, a
@@ -1187,6 +1225,28 @@ func isSubscribeIntentText(text string) bool {
 	return subscribeIntentPattern.MatchString(text)
 }
 
+// quotedTokenPattern matches either a "double-quoted phrase" (quotes
+// stripped by quotedFields below) or a single bare word — used to parse
+// "/accounts rename <old> <new>" so a quoted multi-word account name (e.g.
+// "bank Jago") survives a plain whitespace split.
+var quotedTokenPattern = regexp.MustCompile(`"([^"]*)"|(\S+)`)
+
+// quotedFields splits s into tokens the same way strings.Fields does,
+// except a "double-quoted phrase" counts as one token (its quotes
+// stripped) instead of being split on its own internal spaces.
+func quotedFields(s string) []string {
+	matches := quotedTokenPattern.FindAllStringSubmatch(s, -1)
+	tokens := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if m[1] != "" {
+			tokens = append(tokens, m[1])
+			continue
+		}
+		tokens = append(tokens, m[2])
+	}
+	return tokens
+}
+
 func (s *Service) handleTransactionInput(ctx context.Context, user *models.User, msg *messaging.IncomingMessage) {
 	// Checked first, before input-length/quota gating, so it works
 	// regardless of quota state — see subscribeIntentPattern's doc comment.
@@ -1420,6 +1480,11 @@ func (s *Service) handleTransactionInput(ctx context.Context, user *models.User,
 
 	if first.Intent == ai.IntentSetDefaultAccount {
 		s.handleSetDefaultAccount(ctx, user, first.AccountName)
+		return
+	}
+
+	if first.Intent == ai.IntentRenameAccount {
+		s.handleRenameAccount(ctx, user, first.FromAccountName, first.ToAccountName)
 		return
 	}
 

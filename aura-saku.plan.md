@@ -353,6 +353,18 @@ Two new tools: `record_loan` (direction `lent`/`borrowed`) and `record_repayment
 
 Verified: `go build`/`vet`/`test ./...` clean, including a budget regression test proving borrowing/lending/repaying never moves the Needs/Wants limits or spent totals. Live-verified against the real Gemini API for every phrasing (lend, borrow, repay both directions, both query forms) plus an adversarial check mirroring the move_money fix above — a one-off gift with no loan framing ("aku kasih duit ke Budi 100rb buat jajan") correctly stays a plain transfer, not a misclassified loan.
 
+### Status: Rename an account (2026-10-03)
+
+Found via user testing immediately after the "change default account" fix above: "Rename account from 'bank Jago' to 'Bank Jago'" (just fixing casing) got the same "I can't do that" generic reply — no rename capability existed at all, only auto-create-by-name.
+
+New `account.Rename(ctx, db, userID, oldName, newName)`: the old name must already exist (`apperror.ErrAccountNotFound` otherwise — unlike every other account resolver, renaming isn't a creation path); the new name is rejected with a new `apperror.ErrAccountNameTaken` only when it collides with a DIFFERENT existing account — renaming to a casing variant of the account's own current name (exactly the reported use case) is explicitly allowed, since that resolves back to the same account. Purely a display-name change: `IsDefault` and every transaction's `AccountID` are untouched.
+
+New tool `rename_account` (`ai.IntentRenameAccount`), reusing the existing `FromAccountName`/`ToAccountName` fields as old/new rather than adding a new pair — the same "two account names" shape `move_money` already has. Natural language is the primary surface here (the reported case used free text with multi-word, differently-cased names, which a model parses correctly without any positional-splitting ambiguity). `/accounts rename <old> <new>` also added for the command form, with a small quoted-token parser (`quotedFields`) so a multi-word name survives at all on the command line — a plain `strings.Fields` split can't tell `rename bank Jago Bank Jago` apart as old="bank Jago"/new="Bank Jago" vs. old="bank"/new="Jago Bank Jago"; quoting (`rename "bank Jago" "Bank Jago"`) resolves the ambiguity.
+
+Verified: `go build`/`vet`/`test ./...` clean, including new coverage for the collision guard, the nonexistent-old-name error, history surviving a rename, and the quoted-multi-word command parser. Live-verified against the real Gemini API with the exact reported phrase plus two more variants, confirming no regression on `set_default_account`/`move_money`.
+
+**Workflow note**: from this point in the session on, the user asked to stop auto-building/pushing the Docker image after each change — just `git commit`/`git push`, they'll build and push the image to Docker Hub themselves when ready.
+
 ### Status: Change which account is the default (2026-10-03)
 
 Found via user testing: after tagging transactions to a second account (BCA) and transferring money there via `move_money`, there was no way to make BCA the account untagged messages fall back to — "Move default account to BCA" correctly failed since nothing supported it. `models.Account.IsDefault` was always permanently stuck on whichever account `account.GetOrCreateDefault` first auto-created (literally named "Default").
