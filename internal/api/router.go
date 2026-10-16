@@ -83,4 +83,17 @@ func Setup(app *fiber.App, deps Deps) {
 
 	exportHandler := handlers.NewExportHandler(deps.DB)
 	v1.Get("/export", exportHandler.Export)
+
+	accountHandler := handlers.NewAccountHandler(deps.DB)
+	v1.Get("/accounts", accountHandler.List)
+	v1.Post("/accounts/default", accountHandler.SetDefault)
+	v1.Post("/accounts/rename", accountHandler.Rename)
+
+	debtHandler := handlers.NewDebtHandler(deps.DB)
+	v1.Get("/debts", debtHandler.List)
+
+	alertHandler := handlers.NewAlertHandler(deps.DB, deps.ReportService)
+	v1.Get("/alerts", alertHandler.List)
+	v1.Post("/alerts", alertHandler.Create)
+	v1.Post("/alerts/:id/cancel", alertHandler.Cancel)
 }

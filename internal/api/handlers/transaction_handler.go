@@ -6,7 +6,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
-	"aura-saku/internal/models"
 	"aura-saku/pkg/httpresponse"
 )
 
@@ -31,13 +30,15 @@ func (h *TransactionHandler) List(c *fiber.Ctx) error {
 		limit = 20
 	}
 
-	rows, err := fetchTransactionRows(c.Context(), h.db, userID, limit, (page-1)*limit)
+	search := c.Query("search", "")
+
+	rows, err := fetchTransactionRows(c.Context(), h.db, userID, search, limit, (page-1)*limit)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to fetch transactions")
 	}
 
-	var totalCount int64
-	if err := h.db.Model(&models.Transaction{}).Where("user_id = ?", userID).Count(&totalCount).Error; err != nil {
+	totalCount, err := countTransactionRows(c.Context(), h.db, userID, search)
+	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to count transactions")
 	}
 

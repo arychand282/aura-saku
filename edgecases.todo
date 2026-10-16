@@ -1,0 +1,7 @@
+issues and something to ask found:
+- why rejected_count is always 0 in quota_usages table?
+- how to list all of command in telegram when user typing `/` ?
+- add clarification whenever user uploading image or receipt or uploading voice notes since sometimes the model cannot extract information properly from the image or receipt or voice notes.
+- what happens if user upload 2 photos simultanously before ai model can response one of them?
+- update category of transaction using language model (case: photo receipt => ai model said it is food category and belongs to need => turns out it should be snacks that belongs to wants)
+- create .sh file to run the docker image start from git pull until deployed

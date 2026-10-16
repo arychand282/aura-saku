@@ -42,7 +42,7 @@ func (h *ExportHandler) Export(c *fiber.Ctx) error {
 		return httpresponse.Error(c, fiber.StatusBadRequest, "format must be csv or xlsx")
 	}
 
-	rows, err := fetchTransactionRows(c.Context(), h.db, userID, exportMaxRows, 0)
+	rows, err := fetchTransactionRows(c.Context(), h.db, userID, "", exportMaxRows, 0)
 	if err != nil {
 		return httpresponse.Error(c, fiber.StatusInternalServerError, "failed to fetch transactions for export")
 	}
